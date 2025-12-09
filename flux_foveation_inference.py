@@ -1,7 +1,7 @@
 import argparse
 import os
-from pipeline_flux_foveation_crpa import FluxPipeline_Foveation
-from transformer_flux_phase_aligned_v2 import FluxPhaseAlignedTransformer2DModel
+from pipeline_flux_foveation import FluxPipeline_Foveation
+from transformer_flux_crpa import FluxPhaseAlignedTransformer2DModel
 import torch
 import numpy as np
 import utils
