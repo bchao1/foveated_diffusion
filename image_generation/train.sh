@@ -1,0 +1,24 @@
+accelerate launch train_flux_foveation.py \
+  --pretrained_model_name_or_path="black-forest-labs/FLUX.1-dev" \
+  --dataset_name="raulc0399/open_pose_controlnet" \
+  --output_dir="pose-control" \
+  --mixed_precision="bf16" \
+  --train_batch_size=2 \
+  --dataloader_num_workers=4 \
+  --gradient_accumulation_steps=4 \
+  --gradient_checkpointing \
+  --use_8bit_adam \
+  --proportion_empty_prompts=0.2 \
+  --learning_rate=5e-5 \
+  --adam_weight_decay=1e-4 \
+  --report_to="wandb" \
+  --lr_scheduler="cosine" \
+  --lr_warmup_steps=1000 \
+  --checkpointing_steps=1000 \
+  --max_train_steps=10000 \
+  --validation_steps=200 \
+  --validation_image "2_pose_1024.jpg" "3_pose_1024.jpg" \
+  --validation_prompt "two friends sitting by each other enjoying a day at the park, full hd, cinematic" "person enjoying a day at the park, full hd, cinematic" \
+  --offload \
+  --seed="0" \
+  --push_to_hub

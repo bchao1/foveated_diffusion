@@ -1,6 +1,8 @@
 import argparse
 import os
-from pipeline_flux_foveation import FluxPipeline_Foveation
+import sys
+sys.path.append("..")
+from pipeline_flux_foveation_tokenAE import FluxPipeline_Foveation
 from transformer_flux_crpa import FluxPhaseAlignedTransformer2DModel
 import torch
 import numpy as np
@@ -9,6 +11,7 @@ import random
 from torchvision.utils import save_image
 from utils import create_foveation_mask
 import torch.nn.functional as F
+from adapter_foveation import TokenDownsampler, TokenUpsampler
 
 def main(args):
     # fix randomness
@@ -36,6 +39,9 @@ def main(args):
         transformer=transformer,
         torch_dtype=torch.bfloat16
     ).to(device)
+
+    token_upsampler = TokenUpsampler(in_channels=64, out_channels=64, num_res_blocks=10).to(device).bfloat16()
+    token_downsampler = TokenDownsampler(in_channels=64, out_channels=64, num_res_blocks=10).to(device).bfloat16()
 
     prompt = args.prompt
     prompt = "A highly detailed photograph of a racecar parked on a road, cinematic composition"
@@ -72,14 +78,21 @@ def main(args):
                 image.save(f"{output_dir}/img_{x_idx}_{y_idx}.png")
     elif args.experiment == "radius_ablation":
         r_list = np.linspace(0.1, 1.0, 10)
-        #r_list = [0.1]
+        #r_list = [0.3]
         for r_idx, r in enumerate(r_list):
             r_idx = str(r_idx).zfill(2)
+
+            # low-res foveation mask
             foveation_mask = create_foveation_mask(args.height // 16 // 2, args.width // 16 // 2, center=(0, 0), r = r) # low-res foveation mask then upsample
+            foveation_mask_low_res = foveation_mask.clone()
+
+            # create high-res foveation mask
             foveation_mask = foveation_mask.unsqueeze(0).unsqueeze(0).float() # [1, 1, H, W]
-            save_image(foveation_mask, f"{output_dir}/foveation_mask_low_res_{r_idx}.png")
-            foveation_mask = F.interpolate(foveation_mask, size=(args.height // 16, args.width // 16), mode='nearest')
+
+            #save_image(foveation_mask, f"{output_dir}/foveation_mask_low_res_{r_idx}.png")
+            foveation_mask_high_res = F.interpolate(foveation_mask, size=(args.height // 16, args.width // 16), mode='nearest')
             save_image(foveation_mask, f"{output_dir}/foveation_mask_high_res_{r_idx}.png")
+            foveation_mask_high_res = foveation_mask_high_res.squeeze()
 
             image = pipe(
                 prompt,
@@ -88,8 +101,11 @@ def main(args):
                 generator=torch.Generator("cpu").manual_seed(args.seed),
                 height=args.height,
                 width=args.width,
-                foveation_mask=foveation_mask.squeeze(), # [H, W]
-                foveation_start_step=args.foveation_start_step
+                foveation_mask_high_res=foveation_mask_high_res, # [H, W]
+                foveation_mask_low_res=foveation_mask_low_res, # [H, W]
+                foveation_start_step=args.foveation_start_step,
+                token_upsampler=token_upsampler,
+                token_downsampler=token_downsampler
                 #foveation_mask=None
             ).images[0]
             image.save(f"{output_dir}/img_{r_idx}.png")

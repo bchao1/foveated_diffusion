@@ -131,6 +131,7 @@ def make_videos(folder, output_file, fps=5):
     mask_files = [f for f in sorted(os.listdir(folder)) if f.startswith("foveation_mask_high_res") and f.endswith('.png')]
     image_files.sort()
     mask_files.sort()
+    print(len(image_files), len(mask_files))
     images = [imageio.imread(os.path.join(folder, f)) for f in image_files]
     masks = [imageio.imread(os.path.join(folder, f)) for f in mask_files]
     with imageio.get_writer(output_file, fps=fps) as writer:
