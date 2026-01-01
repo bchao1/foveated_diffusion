@@ -217,6 +217,7 @@ class FluxPipeline_Foveation(
         )
         self.default_sample_size = 128
 
+    
     def _get_t5_prompt_embeds(
         self,
         prompt: Union[str, List[str]] = None,
@@ -594,7 +595,8 @@ class FluxPipeline_Foveation(
             resolution_mask_top_left = resolution_mask_grid.clone().reshape(-1) # dummy, not used
             return latent_image_ids.to(device=device, dtype=dtype), None, None
     
-    def _downsample_latents(self, latents, height, width, foveation_mask=None, sample_mode="top_left"):
+    @staticmethod
+    def _downsample_latents(latents, height, width, foveation_mask=None, sample_mode="top_left", token_downsampler=None):
         """
         Downsamples latents spatially based on the foveation mask to match the 
         mixed-resolution structure of latent_image_ids.
@@ -641,12 +643,12 @@ class FluxPipeline_Foveation(
         
         # Define fallback sample mode (used only if token_downsampler is None)
 
-        if self.token_downsampler is not None:
+        if token_downsampler is not None:
             print("using learned downsampler")
             # STRATEGY: Learned Downsampler
             # Run convolution on the original spatial grid
             latents_permuted = latents_spatial.permute(0, 3, 1, 2) # [B, C, H, W]
-            downsampled_spatial = self.token_downsampler(latents_permuted).permute(0, 2, 3, 1) # [B, H/2, W/2, C]
+            downsampled_spatial = token_downsampler(latents_permuted).permute(0, 2, 3, 1) # [B, H/2, W/2, C]
             
             # Inject learned values into the 0-th index of low-res blocks
             output_latents[:, is_low_res_block, 0, :] = downsampled_spatial[:, is_low_res_block, :]
@@ -758,36 +760,37 @@ class FluxPipeline_Foveation(
         
         # Flatten to sequence
         return final_grid.reshape(batch_size, h_2 * w_2, channels)
-
-    def upsample_noise_pred(self, noise_pred):
-        if self.foveation_mask_high_res is None:
+    
+    @staticmethod
+    def _upsample_noise_pred(noise_pred, latent_height, latent_width, foveation_mask=None, token_upsampler=None):
+        if foveation_mask is None:
             return noise_pred
         batch_size = noise_pred.shape[0]
         # 1. Pseudo-Downsample High-Res to Create Uniform Grid [H/2, W/2]
         # This averages the 4 high-res tokens into 1, so the grid is compatible with the CNN.
-        noise_pred_low_res = self._downsample_remaining_high_res(
+        noise_pred_low_res = FluxPipeline_Foveation._downsample_remaining_high_res(
             noise_pred, 
-            self.latent_height, 
-            self.latent_width, 
-            foveation_mask=self.foveation_mask_high_res
+            latent_height, 
+            latent_width, 
+            foveation_mask=foveation_mask
         )
 
         # 2. Run Learned Upsampler (CNN)
         # [B, L, C] -> [B, C, H/2, W/2]
         noise_pred_low_res_spatial = noise_pred_low_res.view(
-            batch_size, self.latent_height // 2, self.latent_width // 2, -1
+            batch_size, latent_height // 2, latent_width // 2, -1
         ).permute(0, 3, 1, 2) 
         
         # Upsample to [B, C, H, W]
         # This gives us restored detail for Low-Res areas, but an approximation for High-Res areas.
-        noise_pred_upsampled = self.token_upsampler(noise_pred_low_res_spatial) # [B, C, H, W]
+        noise_pred_upsampled = token_upsampler(noise_pred_low_res_spatial) # [B, C, H, W]
         pred_full_res = noise_pred_upsampled.permute(0, 2, 3, 1) # [B, H, W, C]
 
         # 3. Reconstruct the "Original" High-Res Tokens Spatially
         # We need to retrieve the original high-res tokens from the mixed input `noise_pred`
         # and place them in their correct (H, W) coordinates.
-        h_2, w_2 = self.latent_height // 2, self.latent_width // 2
-        mask = self.foveation_mask_high_res
+        h_2, w_2 = latent_height // 2, latent_width // 2
+        mask = foveation_mask
         
         # Identify High-Res Blocks
         mask_blocks = mask.view(h_2, 2, w_2, 2).permute(0, 2, 1, 3).reshape(h_2, w_2, 4)
@@ -811,7 +814,7 @@ class FluxPipeline_Foveation(
         # view as [2, 2] -> permute to interleave axes -> reshape to [H, W]
         original_spatial_grid = reconstructed_blocks.view(
             batch_size, h_2, w_2, 2, 2, -1
-        ).permute(0, 1, 3, 2, 4, 5).reshape(batch_size, self.latent_height, self.latent_width, -1)
+        ).permute(0, 1, 3, 2, 4, 5).reshape(batch_size, latent_height, latent_width, -1)
 
         # 4. Combine CNN Output with Original High-Res Tokens
         # Create a boolean mask for the full HxW pixels
@@ -919,7 +922,7 @@ class FluxPipeline_Foveation(
             return latents.to(device=device, dtype=dtype), latent_image_ids, resolution_mask, resolution_mask_top_left
 
         # ... [Generation logic] ...
-        latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
+        latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype) 
         latents = self._pack_latents(latents, batch_size, num_channels_latents, height, width)
         latents = self._downsample_latents(latents, self.latent_height, self.latent_width, foveation_mask=foveation_mask)
         
@@ -978,8 +981,7 @@ class FluxPipeline_Foveation(
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
         max_sequence_length: int = 512,
-        foveation_mask_high_res: Optional[torch.FloatTensor] = None,
-        foveation_mask_low_res: Optional[torch.FloatTensor] = None,
+        foveation_mask: Optional[torch.FloatTensor] = None,
         foveation_start_step: int = 0,
         token_upsampler: Optional[torch.nn.Module] = None,
         token_downsampler: Optional[torch.nn.Module] = None,
@@ -1107,10 +1109,6 @@ class FluxPipeline_Foveation(
         self._interrupt = False
         
         # for token upsampling and downsampling
-        self.token_upsampler = token_upsampler
-        self.token_downsampler = token_downsampler
-        self.foveation_mask_high_res = foveation_mask_high_res
-        self.foveation_mask_low_res = foveation_mask_low_res
 
         if self.joint_attention_kwargs is None:
             self._joint_attention_kwargs = {}
@@ -1146,6 +1144,8 @@ class FluxPipeline_Foveation(
             max_sequence_length=max_sequence_length,
             lora_scale=lora_scale,
         )
+        #print(prompt_embeds.shape, pooled_prompt_embeds.shape, text_ids.shape)
+
         if do_true_cfg:
             (
                 negative_prompt_embeds,
@@ -1257,11 +1257,11 @@ class FluxPipeline_Foveation(
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
 
-                if self.foveation_mask_high_res is not None:
+                if foveation_mask is not None:
                     # mixed-resolution tokens that are passed into the transformer
-                    latents = self._downsample_latents(latents, self.latent_height, self.latent_width, foveation_mask=self.foveation_mask_high_res)
+                    latents = self._downsample_latents(latents, self.latent_height, self.latent_width, foveation_mask=foveation_mask, token_downsampler=token_downsampler)
                     latent_image_ids, resolution_mask, resolution_mask_top_left = self._prepare_latent_image_ids(
-                        batch_size * num_images_per_prompt, self.latent_height, self.latent_width, device, latents.dtype, self.foveation_mask_high_res
+                        batch_size * num_images_per_prompt, self.latent_height, self.latent_width, device, latents.dtype, foveation_mask
                     )
                     self._joint_attention_kwargs.update({"resolution_mask": resolution_mask, "resolution_mask_top_left": resolution_mask_top_left})
 
@@ -1277,7 +1277,7 @@ class FluxPipeline_Foveation(
                         joint_attention_kwargs=self.joint_attention_kwargs,
                         return_dict=False,
                     )[0]
-                    noise_pred = self.upsample_noise_pred(noise_pred)
+                    noise_pred = self.upsample_noise_pred(noise_pred, self.latent_height, self.latent_width, foveation_mask, token_upsampler=token_upsampler)
 
                 if do_true_cfg:
                     if negative_image_embeds is not None:
@@ -1295,7 +1295,7 @@ class FluxPipeline_Foveation(
                             joint_attention_kwargs=self.joint_attention_kwargs,
                             return_dict=False,
                         )[0]
-                        neg_noise_pred = self.upsample_noise_pred(neg_noise_pred)
+                        neg_noise_pred = self.upsample_noise_pred(neg_noise_pred, self.latent_height, self.latent_width, foveation_mask, token_upsampler=token_upsampler)
 
                     noise_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
 

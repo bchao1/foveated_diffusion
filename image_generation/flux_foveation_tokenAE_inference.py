@@ -101,8 +101,7 @@ def main(args):
                 generator=torch.Generator("cpu").manual_seed(args.seed),
                 height=args.height,
                 width=args.width,
-                foveation_mask_high_res=foveation_mask_high_res, # [H, W]
-                foveation_mask_low_res=foveation_mask_low_res, # [H, W]
+                foveation_mask=foveation_mask_high_res, # [H, W]
                 foveation_start_step=args.foveation_start_step,
                 token_upsampler=token_upsampler,
                 token_downsampler=token_downsampler

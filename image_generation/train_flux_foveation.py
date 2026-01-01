@@ -845,6 +845,36 @@ class DreamBoothDataset(Dataset):
 
         return example
 
+class DreamBoothDatasetDummy(Dataset):
+    """
+    A dataset to prepare the instance and class images with the prompts for fine-tuning the model.
+    It pre-processes the images.
+    """
+
+    def __init__(
+        self,
+        instance_data_root,
+        instance_prompt,
+        class_prompt,
+        class_data_root=None,
+        class_num=None,
+        size=1024,
+        repeats=1,
+        center_crop=False,
+    ):
+        pass
+
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, index):
+        example = {}
+        example["instance_images"] = torch.randn(3, 1024, 1024)
+        example["instance_prompt"] = "dummy image"
+        example["class_images"] = torch.randn(3, 1024, 1024)
+        example["class_prompt"] = "dummy image"
+        return example
+
 
 def collate_fn(examples, with_prior_preservation=False):
     pixel_values = [example["instance_images"] for example in examples]
@@ -1358,7 +1388,7 @@ def main(args):
         )
 
     # Dataset and DataLoaders creation:
-    train_dataset = DreamBoothDataset(
+    train_dataset = DreamBoothDatasetDummy(
         instance_data_root=args.instance_data_dir,
         instance_prompt=args.instance_prompt,
         class_prompt=args.class_prompt,
@@ -1615,7 +1645,7 @@ def main(args):
                     model_input.shape[2] // 2,
                     model_input.shape[3] // 2,
                     accelerator.device,
-                    weight_dtype,
+                    weight_dtype
                 )
 
                 # Sample noise that we'll add to the latents
