@@ -45,12 +45,14 @@ scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(model_id, subfolder=
 #pipe = FluxPipeline_Foveation.from_pretrained(model_id, transformer=transformer, torch_dtype=weight_dtype).to(device, dtype=weight_dtype)
 
 # foveation mask logic. dummy foveation mask
-foveation_mask = create_foveation_mask(resolution // 16 // 2, resolution // 16 // 2, center=(0, 0), r = 0.1) # low-res foveation mask then upsample
-foveation_mask_low_res = foveation_mask.clone()
-foveation_mask = foveation_mask.unsqueeze(0).unsqueeze(0).float() # [1, 1, H, W]
-foveation_mask_high_res = F.interpolate(foveation_mask, size=(resolution // 16, resolution // 16), mode='nearest')
-foveation_mask_high_res = foveation_mask_high_res.squeeze()
-foveation_mask = foveation_mask_high_res.to(device, dtype=weight_dtype) # 64, 64
+foveation_mask = create_foveation_mask(resolution // 16, resolution // 16, center=(0, 0), r = 0.1) # low-res foveation mask then upsample
+print(f"foveation_mask shape: {foveation_mask.shape}")
+
+#foveation_mask_low_res = foveation_mask.clone()
+#foveation_mask = foveation_mask.unsqueeze(0).unsqueeze(0).float() # [1, 1, H, W]
+#foveation_mask_high_res = F.interpolate(foveation_mask, size=(resolution // 16, resolution // 16), mode='nearest')
+#foveation_mask_high_res = foveation_mask_high_res.squeeze()
+#foveation_mask = foveation_mask_high_res.to(device, dtype=weight_dtype) # 64, 64
 
 # set token_upsampler and token_downsampler attributes in pipe
 token_upsampler = TokenUpsampler(in_channels=64, out_channels=64, num_res_blocks=10).to(device).bfloat16()

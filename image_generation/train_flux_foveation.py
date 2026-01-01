@@ -28,6 +28,10 @@
 # ]
 # ///
 
+import os
+import sys
+sys.path.append("..")
+
 import argparse
 import copy
 import gc
@@ -56,7 +60,9 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from torchvision.transforms.functional import crop
 from tqdm.auto import tqdm
-from transformers import CLIPTextModelWithProjection, CLIPTokenizer, PretrainedConfig, T5EncoderModel, T5TokenizerFast
+from transformers import CLIPTextModel, CLIPTokenizer, PretrainedConfig, T5EncoderModel, T5TokenizerFast
+# use CLIPTextModel instead of CLIPTextModelWithProjection to match inference pipeline
+# https://www.reddit.com/r/localdiffusion/comments/1995s27/difference_between_transformers_cliptextmodel_and/
 
 import diffusers
 from diffusers import (
@@ -65,6 +71,11 @@ from diffusers import (
     FluxPipeline,
     FluxTransformer2DModel,
 )
+
+from transformer_flux_crpa import FluxPhaseAlignedTransformer2DModel 
+from pipeline_flux_foveation_tokenAE import FluxPipeline_Foveation
+from utils import create_foveation_mask
+
 from diffusers.optimization import get_scheduler
 from diffusers.training_utils import compute_density_for_timestep_sampling, compute_loss_weighting_for_sd3
 from diffusers.utils import (
@@ -74,6 +85,9 @@ from diffusers.utils import (
 from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_card
 from diffusers.utils.import_utils import is_torch_npu_available
 from diffusers.utils.torch_utils import is_compiled_module
+
+# for token upsampling and downsampling 
+from adapter_foveation import TokenDownsampler, TokenUpsampler
 
 
 if is_wandb_available():
@@ -172,6 +186,8 @@ def load_text_encoders(class_one, class_two):
 
 def log_validation(
     pipeline,
+    token_upsampler,
+    token_downsampler,
     args,
     accelerator,
     pipeline_args,
@@ -184,6 +200,10 @@ def log_validation(
         f" {args.validation_prompt}."
     )
     pipeline = pipeline.to(accelerator.device)
+    # ===============================
+    token_upsampler = token_upsampler.to(accelerator.device) # 0101: tokenAE
+    token_downsampler = token_downsampler.to(accelerator.device) # 0101: tokenAE
+    # ===============================
     pipeline.set_progress_bar_config(disable=True)
 
     # run inference
@@ -192,7 +212,7 @@ def log_validation(
     autocast_ctx = nullcontext()
 
     with autocast_ctx:
-        images = [pipeline(**pipeline_args, generator=generator).images[0] for _ in range(args.num_validation_images)]
+        images = [pipeline(**pipeline_args, token_upsampler=token_upsampler, token_downsampler=token_downsampler, generator=generator).images[0] for _ in range(args.num_validation_images)]
 
     for tracker in accelerator.trackers:
         phase_name = "test" if is_final_validation else "validation"
@@ -845,36 +865,6 @@ class DreamBoothDataset(Dataset):
 
         return example
 
-class DreamBoothDatasetDummy(Dataset):
-    """
-    A dataset to prepare the instance and class images with the prompts for fine-tuning the model.
-    It pre-processes the images.
-    """
-
-    def __init__(
-        self,
-        instance_data_root,
-        instance_prompt,
-        class_prompt,
-        class_data_root=None,
-        class_num=None,
-        size=1024,
-        repeats=1,
-        center_crop=False,
-    ):
-        pass
-
-    def __len__(self):
-        return 1
-
-    def __getitem__(self, index):
-        example = {}
-        example["instance_images"] = torch.randn(3, 1024, 1024)
-        example["instance_prompt"] = "dummy image"
-        example["class_images"] = torch.randn(3, 1024, 1024)
-        example["class_prompt"] = "dummy image"
-        return example
-
 
 def collate_fn(examples, with_prior_preservation=False):
     pixel_values = [example["instance_images"] for example in examples]
@@ -1124,7 +1114,7 @@ def main(args):
                 torch_dtype = torch.float16
             elif args.prior_generation_precision == "bf16":
                 torch_dtype = torch.bfloat16
-            pipeline = FluxPipeline.from_pretrained(
+            pipeline = FluxPipeline_Foveation.from_pretrained(
                 args.pretrained_model_name_or_path,
                 torch_dtype=torch_dtype,
                 revision=args.revision,
@@ -1200,11 +1190,11 @@ def main(args):
         revision=args.revision,
         variant=args.variant,
     )
-    transformer = FluxTransformer2DModel.from_pretrained(
+    transformer = FluxPhaseAlignedTransformer2DModel.from_pretrained(
         args.pretrained_model_name_or_path, subfolder="transformer", revision=args.revision, variant=args.variant
     )
 
-    transformer.requires_grad_(True)
+    transformer.requires_grad_(False) # 0101: don't train the transformer
     vae.requires_grad_(False)
     if args.train_text_encoder:
         text_encoder_one.requires_grad_(True)
@@ -1212,6 +1202,12 @@ def main(args):
     else:
         text_encoder_one.requires_grad_(False)
         text_encoder_two.requires_grad_(False)
+
+    # 0101: tokenAE 
+    # ===============================
+    token_upsampler = TokenUpsampler(in_channels=64, out_channels=64, num_res_blocks=10)
+    token_downsampler = TokenDownsampler(in_channels=64, out_channels=64, num_res_blocks=10)
+    # ===============================
 
     if args.enable_npu_flash_attention:
         if is_torch_npu_available():
@@ -1238,6 +1234,12 @@ def main(args):
     if not args.train_text_encoder:
         text_encoder_one.to(accelerator.device, dtype=weight_dtype)
         text_encoder_two.to(accelerator.device, dtype=weight_dtype)
+    
+    # move tokenAE to device and dtype
+    # ===============================
+    token_upsampler.to(accelerator.device, dtype=weight_dtype)
+    token_downsampler.to(accelerator.device, dtype=weight_dtype)
+    # ===============================
 
     if args.gradient_checkpointing:
         transformer.enable_gradient_checkpointing()
@@ -1249,17 +1251,25 @@ def main(args):
         model = model._orig_mod if is_compiled_module(model) else model
         return model
 
+    # 0101: TODO: no need to save transformer and text encoders, only tokenAE needs to be saved
     # create custom saving & loading hooks so that `accelerator.save_state(...)` serializes in a nice format
     def save_model_hook(models, weights, output_dir):
         if accelerator.is_main_process:
             for i, model in enumerate(models):
-                if isinstance(unwrap_model(model), FluxTransformer2DModel):
+                if isinstance(unwrap_model(model), FluxPhaseAlignedTransformer2DModel):
                     unwrap_model(model).save_pretrained(os.path.join(output_dir, "transformer"))
-                elif isinstance(unwrap_model(model), (CLIPTextModelWithProjection, T5EncoderModel)):
-                    if isinstance(unwrap_model(model), CLIPTextModelWithProjection):
+                elif isinstance(unwrap_model(model), (CLIPTextModel, T5EncoderModel)):
+                    if isinstance(unwrap_model(model), CLIPTextModel):
                         unwrap_model(model).save_pretrained(os.path.join(output_dir, "text_encoder"))
                     else:
                         unwrap_model(model).save_pretrained(os.path.join(output_dir, "text_encoder_2"))
+                # ===============================
+                elif isinstance(unwrap_model(model), (TokenUpsampler, TokenDownsampler)):
+                    if isinstance(unwrap_model(model), TokenUpsampler):
+                        unwrap_model(model).save_pretrained(os.path.join(output_dir, "token_upsampler"))
+                    else:
+                        unwrap_model(model).save_pretrained(os.path.join(output_dir, "token_downsampler"))
+                # ===============================
                 else:
                     raise ValueError(f"Wrong model supplied: {type(model)=}.")
 
@@ -1272,14 +1282,14 @@ def main(args):
             model = models.pop()
 
             # load diffusers style into model
-            if isinstance(unwrap_model(model), FluxTransformer2DModel):
-                load_model = FluxTransformer2DModel.from_pretrained(input_dir, subfolder="transformer")
+            if isinstance(unwrap_model(model), FluxPhaseAlignedTransformer2DModel):
+                load_model = FluxPhaseAlignedTransformer2DModel.from_pretrained(input_dir, subfolder="transformer")
                 model.register_to_config(**load_model.config)
 
                 model.load_state_dict(load_model.state_dict())
-            elif isinstance(unwrap_model(model), (CLIPTextModelWithProjection, T5EncoderModel)):
+            elif isinstance(unwrap_model(model), (CLIPTextModel, T5EncoderModel)):
                 try:
-                    load_model = CLIPTextModelWithProjection.from_pretrained(input_dir, subfolder="text_encoder")
+                    load_model = CLIPTextModel.from_pretrained(input_dir, subfolder="text_encoder")
                     model(**load_model.config)
                     model.load_state_dict(load_model.state_dict())
                 except Exception:
@@ -1289,6 +1299,15 @@ def main(args):
                         model.load_state_dict(load_model.state_dict())
                     except Exception:
                         raise ValueError(f"Couldn't load the model of type: ({type(model)}).")
+            # ===============================
+            elif isinstance(unwrap_model(model), (TokenUpsampler, TokenDownsampler)):
+                if isinstance(unwrap_model(model), TokenUpsampler):
+                    load_model = TokenUpsampler.from_pretrained(input_dir, subfolder="token_upsampler")
+                else:
+                    load_model = TokenDownsampler.from_pretrained(input_dir, subfolder="token_downsampler")
+                model(**load_model.config)
+                model.load_state_dict(load_model.state_dict())
+            # ===============================
             else:
                 raise ValueError(f"Unsupported model found: {type(model)=}")
 
@@ -1308,7 +1327,16 @@ def main(args):
         )
 
     # Optimization parameters
-    transformer_parameters_with_lr = {"params": transformer.parameters(), "lr": args.learning_rate}
+    transformer_parameters_with_lr = {"params": transformer.parameters(), "lr": args.learning_rate} # 0101: don't train the transformer
+    # ===============================
+    token_AE_parameters_with_lr = {
+        "params":  [
+            *token_upsampler.parameters(), 
+            *token_downsampler.parameters()
+        ], 
+        "lr": args.learning_rate
+    } # 0101: tokenAE
+    # ===============================
     if args.train_text_encoder:
         # different learning rate for text encoder and unet
         text_parameters_one_with_lr = {
@@ -1316,9 +1344,9 @@ def main(args):
             "weight_decay": args.adam_weight_decay_text_encoder,
             "lr": args.text_encoder_lr if args.text_encoder_lr else args.learning_rate,
         }
-        params_to_optimize = [transformer_parameters_with_lr, text_parameters_one_with_lr]
+        params_to_optimize = [token_AE_parameters_with_lr, text_parameters_one_with_lr]
     else:
-        params_to_optimize = [transformer_parameters_with_lr]
+        params_to_optimize = [token_AE_parameters_with_lr]
 
     # Optimizer creation
     if not (args.optimizer.lower() == "prodigy" or args.optimizer.lower() == "adamw"):
@@ -1388,7 +1416,7 @@ def main(args):
         )
 
     # Dataset and DataLoaders creation:
-    train_dataset = DreamBoothDatasetDummy(
+    train_dataset = DreamBoothDataset(
         instance_data_root=args.instance_data_dir,
         instance_prompt=args.instance_prompt,
         class_prompt=args.class_prompt,
@@ -1493,23 +1521,28 @@ def main(args):
     )
 
     # Prepare everything with our `accelerator`.
+    # 0101: add token_upsampler and token_downsampler to the list of models to prepare
     if args.train_text_encoder:
         (
             transformer,
             text_encoder_one,
+            token_upsampler,
+            token_downsampler,
             optimizer,
             train_dataloader,
             lr_scheduler,
         ) = accelerator.prepare(
             transformer,
             text_encoder_one,
+            token_upsampler,
+            token_downsampler,
             optimizer,
             train_dataloader,
             lr_scheduler,
         )
     else:
-        transformer, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-            transformer, optimizer, train_dataloader, lr_scheduler
+        transformer, token_upsampler, token_downsampler, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+            transformer, token_upsampler, token_downsampler, optimizer, train_dataloader, lr_scheduler
         )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -1598,7 +1631,16 @@ def main(args):
             text_encoder_one.train()
 
         for step, batch in enumerate(train_dataloader):
-            models_to_accumulate = [transformer]
+            # 0101: prepare foveation masks
+            # ===============================
+            foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(0, 0), r = 0.5)
+            foveation_mask = foveation_mask.to(accelerator.device, dtype=weight_dtype)
+            joint_attention_kwargs = {}
+            # ===============================
+
+
+            #models_to_accumulate = [transformer, token_upsampler, token_downsampler] # 0101: do not learn transformer
+            models_to_accumulate = [token_upsampler, token_downsampler] # 0101: learn tokenAE
             if args.train_text_encoder:
                 models_to_accumulate.extend([text_encoder_one])
             with accelerator.accumulate(models_to_accumulate):
@@ -1640,13 +1682,14 @@ def main(args):
 
                 vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
 
-                latent_image_ids = FluxPipeline._prepare_latent_image_ids(
-                    model_input.shape[0],
-                    model_input.shape[2] // 2,
-                    model_input.shape[3] // 2,
+                bsz, _, latent_height, latent_width = model_input.shape
+                latent_image_ids, resolution_mask, resolution_mask_top_left = FluxPipeline_Foveation._prepare_latent_image_ids(
+                    bsz, latent_height, latent_width,
                     accelerator.device,
-                    weight_dtype
+                    weight_dtype,
+                    foveation_mask=foveation_mask
                 )
+                joint_attention_kwargs.update({"resolution_mask": resolution_mask, "resolution_mask_top_left": resolution_mask_top_left})
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(model_input)
@@ -1669,12 +1712,16 @@ def main(args):
                 sigmas = get_sigmas(timesteps, n_dim=model_input.ndim, dtype=model_input.dtype)
                 noisy_model_input = (1.0 - sigmas) * model_input + sigmas * noise
 
-                packed_noisy_model_input = FluxPipeline._pack_latents(
+                packed_noisy_model_input = FluxPipeline_Foveation._pack_latents(
                     noisy_model_input,
                     batch_size=model_input.shape[0],
                     num_channels_latents=model_input.shape[1],
                     height=model_input.shape[2],
                     width=model_input.shape[3],
+                )
+                packed_noisy_model_input = FluxPipeline_Foveation._downsample_latents(
+                    packed_noisy_model_input, latent_height, latent_width, 
+                    foveation_mask=foveation_mask, token_downsampler=token_downsampler
                 )
 
                 # handle guidance
@@ -1694,10 +1741,15 @@ def main(args):
                     encoder_hidden_states=prompt_embeds,
                     txt_ids=text_ids,
                     img_ids=latent_image_ids,
+                    joint_attention_kwargs=joint_attention_kwargs,
                     return_dict=False,
                 )[0]
                 # upscaling height & width as discussed in https://github.com/huggingface/diffusers/pull/9257#discussion_r1731108042
-                model_pred = FluxPipeline._unpack_latents(
+                model_pred = FluxPipeline_Foveation._upsample_noise_pred(
+                    model_pred, latent_height, latent_width, 
+                    foveation_mask=foveation_mask, token_upsampler=token_upsampler
+                )
+                model_pred = FluxPipeline_Foveation._unpack_latents(
                     model_pred,
                     height=model_input.shape[2] * vae_scale_factor,
                     width=model_input.shape[3] * vae_scale_factor,
@@ -1738,11 +1790,10 @@ def main(args):
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    params_to_clip = (
-                        itertools.chain(transformer.parameters(), text_encoder_one.parameters())
-                        if args.train_text_encoder
-                        else transformer.parameters()
-                    )
+                    if args.train_text_encoder:
+                        params_to_clip = itertools.chain(transformers.paramters(), text_encoder_one.parameters(), token_upsampler.parameters(), token_downsampler.parameters())
+                    else:
+                        params_to_clip = itertools.chain(transformers.paramters(), token_upsampler.parameters(), token_downsampler.parameters())
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
@@ -1801,7 +1852,7 @@ def main(args):
                         revision=args.revision,
                         variant=args.variant,
                     )
-                pipeline = FluxPipeline.from_pretrained(
+                pipeline = FluxPipeline_Foveation.from_pretrained(
                     args.pretrained_model_name_or_path,
                     vae=vae,
                     text_encoder=unwrap_model(text_encoder_one, keep_fp32_wrapper=False),
@@ -1814,6 +1865,8 @@ def main(args):
                 pipeline_args = {"prompt": args.validation_prompt}
                 images = log_validation(
                     pipeline=pipeline,
+                    token_upsampler=token_upsampler,
+                    token_downsampler=token_downsampler,
                     args=args,
                     accelerator=accelerator,
                     pipeline_args=pipeline_args,
@@ -1838,20 +1891,20 @@ def main(args):
 
         if args.train_text_encoder:
             text_encoder_one = unwrap_model(text_encoder_one)
-            pipeline = FluxPipeline.from_pretrained(
+            pipeline = FluxPipeline_Foveation.from_pretrained(
                 args.pretrained_model_name_or_path,
                 transformer=transformer,
                 text_encoder=text_encoder_one,
             )
         else:
-            pipeline = FluxPipeline.from_pretrained(args.pretrained_model_name_or_path, transformer=transformer)
+            pipeline = FluxPipeline_Foveation.from_pretrained(args.pretrained_model_name_or_path, transformer=transformer)
 
         # save the pipeline
         pipeline.save_pretrained(args.output_dir)
 
         # Final inference
         # Load previous pipeline
-        pipeline = FluxPipeline.from_pretrained(
+        pipeline = FluxPipeline_Foveation.from_pretrained(
             args.output_dir,
             revision=args.revision,
             variant=args.variant,
@@ -1864,6 +1917,8 @@ def main(args):
             pipeline_args = {"prompt": args.validation_prompt}
             images = log_validation(
                 pipeline=pipeline,
+                token_upsampler=token_upsampler,
+                token_downsampler=token_downsampler,
                 args=args,
                 accelerator=accelerator,
                 pipeline_args=pipeline_args,
