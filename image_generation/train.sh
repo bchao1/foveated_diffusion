@@ -1,4 +1,4 @@
-accelerate launch --main_process_port 0 --num_processes 1 train_flux_foveation.py \
+accelerate launch --main_process_port 29503 --num_processes 4 train_flux_foveation.py \
   --pretrained_model_name_or_path="black-forest-labs/FLUX.1-dev" \
   --dataset_name="zhang0jhon/Aesthetic-Train-V2" \
   --output_dir="results/test_1228" \
@@ -17,7 +17,8 @@ accelerate launch --main_process_port 0 --num_processes 1 train_flux_foveation.p
   --max_train_steps=10000 \
   --validation_prompt "A highly detailed photograph of a racecar parked on a road, cinematic composition" \
   --seed="0" \
-  --instance_prompt "A highly detailed photograph of a racecar parked on a road, cinematic composition"
+  --instance_prompt "A highly detailed photograph of a racecar parked on a road, cinematic composition" \
+  --cache_dir "/miele/brian/data/hf_datasets/Aesthetic-Train-V2"
 #  --push_to_hub
 
 # check diffusers version (validation image, offload, number of images with no prompts.... check FLUX finetuning scripts)
