@@ -29,13 +29,13 @@ def main(args):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     transformer = FluxPhaseAlignedTransformer2DModel.from_pretrained(
-        "black-forest-labs/FLUX.1-dev", 
+        args.pretrained_model_name_or_path, 
         subfolder="transformer",
         torch_dtype=torch.bfloat16
     ).to(device)
 
     pipe = FluxPipeline_Foveation.from_pretrained(
-        "black-forest-labs/FLUX.1-dev",
+        args.pretrained_model_name_or_path,
         transformer=transformer,
         torch_dtype=torch.bfloat16
     ).to(device)
@@ -127,6 +127,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run FluxPipeline with custom arguments")
 
+    parser.add_argument('--pretrained_model_name_or_path', required=True)
     parser.add_argument('--height', type=int, default=1024, help='Image height')
     parser.add_argument('--width', type=int, default=1024, help='Image width')
     parser.add_argument('--guidance_scale', type=float, default=3.5, help='Guidance scale')
