@@ -1277,7 +1277,7 @@ class FluxPipeline_Foveation(
                         joint_attention_kwargs=self.joint_attention_kwargs,
                         return_dict=False,
                     )[0]
-                    noise_pred = self.upsample_noise_pred(noise_pred, self.latent_height, self.latent_width, foveation_mask, token_upsampler=token_upsampler)
+                    noise_pred = self._upsample_noise_pred(noise_pred, self.latent_height, self.latent_width, foveation_mask, token_upsampler=token_upsampler)
 
                 if do_true_cfg:
                     if negative_image_embeds is not None:
@@ -1295,7 +1295,7 @@ class FluxPipeline_Foveation(
                             joint_attention_kwargs=self.joint_attention_kwargs,
                             return_dict=False,
                         )[0]
-                        neg_noise_pred = self.upsample_noise_pred(neg_noise_pred, self.latent_height, self.latent_width, foveation_mask, token_upsampler=token_upsampler)
+                        neg_noise_pred = self._upsample_noise_pred(neg_noise_pred, self.latent_height, self.latent_width, foveation_mask, token_upsampler=token_upsampler)
 
                     noise_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
 
