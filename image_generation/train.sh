@@ -15,9 +15,9 @@ accelerate launch --main_process_port 0 --num_processes 1 train_flux_foveation.p
   --lr_warmup_steps=1000 \
   --checkpointing_steps=1000 \
   --max_train_steps=10000 \
-  --validation_prompt "dummy image" \
+  --validation_prompt "A highly detailed photograph of a racecar parked on a road, cinematic composition" \
   --seed="0" \
-  --instance_prompt "dummy image"
+  --instance_prompt "A highly detailed photograph of a racecar parked on a road, cinematic composition"
 #  --push_to_hub
 
 # check diffusers version (validation image, offload, number of images with no prompts.... check FLUX finetuning scripts)
