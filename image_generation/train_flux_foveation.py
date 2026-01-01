@@ -1069,6 +1069,9 @@ def main(args):
         project_config=accelerator_project_config,
         kwargs_handlers=[kwargs],
     )
+    print("num_processes:", accelerator.num_processes)
+    print("local_rank:", accelerator.local_process_index)
+    print("device:", accelerator.device)
 
     # Disable AMP for MPS.
     if torch.backends.mps.is_available():
