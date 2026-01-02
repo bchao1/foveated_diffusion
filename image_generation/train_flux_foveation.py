@@ -8,6 +8,7 @@ import copy
 import gc
 import itertools
 import logging
+
 import math
 import os
 import random
@@ -25,7 +26,8 @@ from accelerate.logging import get_logger
 from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
 from huggingface_hub import create_repo, upload_folder
 from huggingface_hub.utils import insecure_hashlib
-from PIL import Image
+from PIL import Image, UnidentifiedImageError, PngImagePlugin, ImageFile
+
 from PIL.ImageOps import exif_transpose
 from torch.utils.data import Dataset
 from torchvision import transforms
@@ -60,6 +62,11 @@ from diffusers.utils.torch_utils import is_compiled_module
 # for token upsampling and downsampling 
 from adapter_foveation import TokenDownsampler, TokenUpsampler
 
+# handle image loading
+PngImagePlugin.MAX_TEXT_CHUNK = 1000 * (1024**2)
+Image.MAX_IMAGE_PIXELS = None
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
 
 if is_wandb_available():
     import wandb
@@ -68,6 +75,7 @@ if is_wandb_available():
 check_min_version("0.36.0")
 
 logger = get_logger(__name__)
+logging.getLogger("transformer_flux_crpa").setLevel(logging.ERROR)
 
 if is_torch_npu_available():
     import torch_npu
@@ -90,6 +98,7 @@ def load_text_encoders(class_one, class_two):
 
 def log_validation(
     pipeline,
+    foveation_mask,
     token_upsampler,
     token_downsampler,
     args,
@@ -116,7 +125,7 @@ def log_validation(
     autocast_ctx = nullcontext()
 
     with autocast_ctx:
-        images = [pipeline(**pipeline_args, token_upsampler=token_upsampler, token_downsampler=token_downsampler, generator=generator).images[0] for _ in range(args.num_validation_images)]
+        images = [pipeline(**pipeline_args, foveation_mask=foveation_mask, token_upsampler=token_upsampler, token_downsampler=token_downsampler, generator=generator).images[0] for _ in range(args.num_validation_images)]
 
     for tracker in accelerator.trackers:
         phase_name = "test" if is_final_validation else "validation"
@@ -228,16 +237,6 @@ def parse_args(input_args=None):
     )
 
     parser.add_argument("--repeats", type=int, default=1, help="How many times to repeat the training data.")
-
-
-    parser.add_argument(
-        "--instance_prompt",
-        type=str,
-        default=None,
-        required=True,
-        help="The prompt with identifier specifying the instance, e.g. 'photo of a TOK dog', 'in the style of TOK'",
-    )
-
     parser.add_argument(
         "--max_sequence_length",
         type=int,
@@ -261,7 +260,7 @@ def parse_args(input_args=None):
         type=int,
         default=50,
         help=(
-            "Run dreambooth validation every X epochs. Dreambooth validation consists of running the prompt"
+            "Run validation every X epochs. validation consists of running the prompt"
             " `args.validation_prompt` multiple times: `args.num_validation_images`."
         ),
     )
@@ -269,7 +268,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="flux-dreambooth",
+        default="flux-foveation",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
@@ -604,19 +603,22 @@ class CustomDataset(Dataset):
         return self._length
 
     def __getitem__(self, index):
-        example = {}
-        file_name = self.filenames[index]
-
-        image = Image.open(os.path.join(self.data_root, file_name))
-        image = exif_transpose(image)
-        if not image.mode == "RGB":
-            image = image.convert("RGB")
-        pixel_values = self.train_transforms(image)
-
-        example["pixel_values"] = pixel_values
-        example["prompt"] = self.prompts[index]
-
-        return example
+        for _ in range(5):  # retry a few times
+            try:
+                file_name = self.filenames[index]
+                image = Image.open(os.path.join(self.data_root, file_name))
+                image = exif_transpose(image)
+                image = image.convert("RGB")
+                pixel_values = self.train_transforms(image)
+    
+                return {
+                    "pixel_values": pixel_values,
+                    "prompt": self.prompts[index],
+                }
+    
+            except (UnidentifiedImageError, OSError, ValueError) as e:
+                # corrupted image → sample a different one
+                index = random.randint(0, self._length - 1)
 
 
 def collate_fn(examples):
@@ -913,7 +915,7 @@ def main(args):
     text_encoder_one.to(accelerator.device, dtype=weight_dtype)
     text_encoder_two.to(accelerator.device, dtype=weight_dtype)
     
-    # move tokenAE to device and dtype
+    # move tokenAE to device and float32 (CNN use float32, so explicitly cast when using)
     # ===============================
     token_upsampler.to(accelerator.device, dtype=weight_dtype)
     token_downsampler.to(accelerator.device, dtype=weight_dtype)
@@ -933,18 +935,22 @@ def main(args):
         if accelerator.is_main_process:
             for i, model in enumerate(models):
                 if isinstance(unwrap_model(model), FluxPhaseAlignedTransformer2DModel):
-                    unwrap_model(model).save_pretrained(os.path.join(output_dir, "transformer"))
+                    #unwrap_model(model).save_pretrained(os.path.join(output_dir, "transformer"))
+                    pass
                 elif isinstance(unwrap_model(model), (CLIPTextModelWithProjection, T5EncoderModel)):
-                    if isinstance(unwrap_model(model), CLIPTextModelWithProjection):
-                        unwrap_model(model).save_pretrained(os.path.join(output_dir, "text_encoder"))
-                    else:
-                        unwrap_model(model).save_pretrained(os.path.join(output_dir, "text_encoder_2"))
+                    #if isinstance(unwrap_model(model), CLIPTextModelWithProjection):
+                    #    unwrap_model(model).save_pretrained(os.path.join(output_dir, "text_encoder"))
+                    #else:
+                    #    unwrap_model(model).save_pretrained(os.path.join(output_dir, "text_encoder_2"))
+                    pass
                 # ===============================
                 elif isinstance(unwrap_model(model), (TokenUpsampler, TokenDownsampler)):
                     if isinstance(unwrap_model(model), TokenUpsampler):
-                        unwrap_model(model).save_pretrained(os.path.join(output_dir, "token_upsampler"))
+                        #unwrap_model(model).save_pretrained(os.path.join(output_dir, "token_upsampler"))
+                        torch.save(unwrap_model(model), os.path.join(output_dir, "token_upsampler.pt"))
                     else:
-                        unwrap_model(model).save_pretrained(os.path.join(output_dir, "token_downsampler"))
+                        #unwrap_model(model).save_pretrained(os.path.join(output_dir, "token_downsampler"))
+                        torch.save(unwrap_model(model), os.path.join(output_dir, "token_downsampler.pt"))
                 # ===============================
                 else:
                     raise ValueError(f"Wrong model supplied: {type(model)=}.")
@@ -959,29 +965,34 @@ def main(args):
 
             # load diffusers style into model
             if isinstance(unwrap_model(model), FluxPhaseAlignedTransformer2DModel):
-                load_model = FluxPhaseAlignedTransformer2DModel.from_pretrained(input_dir, subfolder="transformer")
-                model.register_to_config(**load_model.config)
+                #load_model = FluxPhaseAlignedTransformer2DModel.from_pretrained(input_dir, subfolder="transformer")
+                #model.register_to_config(**load_model.config)
 
-                model.load_state_dict(load_model.state_dict())
+                #model.load_state_dict(load_model.state_dict())
+                pass
             elif isinstance(unwrap_model(model), (CLIPTextModelWithProjection, T5EncoderModel)):
                 try:
-                    load_model = CLIPTextModelWithProjection.from_pretrained(input_dir, subfolder="text_encoder")
-                    model(**load_model.config)
-                    model.load_state_dict(load_model.state_dict())
+                    #load_model = CLIPTextModelWithProjection.from_pretrained(input_dir, subfolder="text_encoder")
+                    #model(**load_model.config)
+                    #model.load_state_dict(load_model.state_dict())
+                    pass
                 except Exception:
                     try:
-                        load_model = T5EncoderModel.from_pretrained(input_dir, subfolder="text_encoder_2")
-                        model(**load_model.config)
-                        model.load_state_dict(load_model.state_dict())
+                        #load_model = T5EncoderModel.from_pretrained(input_dir, subfolder="text_encoder_2")
+                        #model(**load_model.config)
+                        #model.load_state_dict(load_model.state_dict())
+                        pass
                     except Exception:
                         raise ValueError(f"Couldn't load the model of type: ({type(model)}).")
             # ===============================
             elif isinstance(unwrap_model(model), (TokenUpsampler, TokenDownsampler)):
                 if isinstance(unwrap_model(model), TokenUpsampler):
-                    load_model = TokenUpsampler.from_pretrained(input_dir, subfolder="token_upsampler")
+                    #load_model = TokenUpsampler.from_pretrained(input_dir, subfolder="token_upsampler")
+                    load_model = torch.load(os.path.join(input_dir, "token_upsampler.pt"))
                 else:
-                    load_model = TokenDownsampler.from_pretrained(input_dir, subfolder="token_downsampler")
-                model(**load_model.config)
+                    #load_model = TokenDownsampler.from_pretrained(input_dir, subfolder="token_downsampler")
+                    load_model = torch.load(os.path.join(input_dir, "token_downsampler.pt"))
+                #model(**load_model.config)
                 model.load_state_dict(load_model.state_dict())
             # ===============================
             else:
@@ -1146,7 +1157,7 @@ def main(args):
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
-        tracker_name = "dreambooth-flux-dev-lora"
+        tracker_name = "flux-foveation"
         accelerator.init_trackers(tracker_name, config=vars(args))
 
     # Train!
@@ -1240,7 +1251,9 @@ def main(args):
 
                 vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
 
-                bsz, _, latent_height, latent_width = model_input.shape
+                bsz, latent_height, latent_width = model_input.shape[0], model_input.shape[2] // 2, model_input.shape[3] // 2
+                #print("train", model_input.shape, latent_height, foveation_mask.shape)
+                #exit()
                 latent_image_ids, resolution_mask, resolution_mask_top_left = FluxPipeline_Foveation._prepare_latent_image_ids(
                     bsz, latent_height, latent_width,
                     accelerator.device,
@@ -1330,7 +1343,7 @@ def main(args):
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    params_to_clip = itertools.chain(transformers.paramters(), token_upsampler.parameters(), token_downsampler.parameters())
+                    params_to_clip = itertools.chain(transformer.parameters(), token_upsampler.parameters(), token_downsampler.parameters())
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
@@ -1375,44 +1388,54 @@ def main(args):
             if global_step >= args.max_train_steps:
                 break
 
-        if accelerator.is_main_process:
-            if args.validation_prompt is not None and epoch % args.validation_epochs == 0:
-                # create pipeline
-                text_encoder_one, text_encoder_two = load_text_encoders(text_encoder_cls_one, text_encoder_cls_two)
-                text_encoder_one.to(weight_dtype)
-                text_encoder_two.to(weight_dtype)
-                
-                pipeline = FluxPipeline_Foveation.from_pretrained(
-                    args.pretrained_model_name_or_path,
-                    vae=vae,
-                    text_encoder=unwrap_model(text_encoder_one, keep_fp32_wrapper=False),
-                    text_encoder_2=unwrap_model(text_encoder_two, keep_fp32_wrapper=False),
-                    transformer=unwrap_model(transformer, keep_fp32_wrapper=False),
-                    revision=args.revision,
-                    variant=args.variant,
-                    torch_dtype=weight_dtype,
-                )
-                pipeline_args = {"prompt": args.validation_prompt}
-                images = log_validation(
-                    pipeline=pipeline,
-                    token_upsampler=token_upsampler,
-                    token_downsampler=token_downsampler,
-                    args=args,
-                    accelerator=accelerator,
-                    pipeline_args=pipeline_args,
-                    epoch=epoch,
-                    torch_dtype=weight_dtype,
-                )
-                
-                del text_encoder_one, text_encoder_two
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                elif is_torch_npu_available():
-                    torch_npu.npu.empty_cache()
-                gc.collect()
-
-                images = None
-                del pipeline
+            if accelerator.is_main_process:
+                if args.validation_prompt is not None and global_step % 1000 == 0:
+                    # create pipeline
+                    text_encoder_one, text_encoder_two = load_text_encoders(text_encoder_cls_one, text_encoder_cls_two)
+                    text_encoder_one.to(weight_dtype)
+                    text_encoder_two.to(weight_dtype)
+                    
+                    pipeline = FluxPipeline_Foveation.from_pretrained(
+                        args.pretrained_model_name_or_path,
+                        vae=vae,
+                        text_encoder=unwrap_model(text_encoder_one),
+                        text_encoder_2=unwrap_model(text_encoder_two),
+                        transformer=unwrap_model(transformer),
+                        revision=args.revision,
+                        variant=args.variant,
+                        torch_dtype=weight_dtype,
+                    )
+                    pipeline_args = {
+                        "prompt": args.validation_prompt, 
+                        "guidance_scale": 3.5, 
+                        "height": 1024, 
+                        "width": 1024, 
+                        "max_sequence_length": 256,
+                        "foveation_start_step": 0
+                    }
+                    foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(0, 0), r = 0.5)
+                    foveation_mask = foveation_mask.to(accelerator.device, dtype=weight_dtype)
+                    images = log_validation(
+                        pipeline=pipeline,
+                        foveation_mask=foveation_mask,
+                        token_upsampler=token_upsampler,
+                        token_downsampler=token_downsampler,
+                        args=args,
+                        accelerator=accelerator,
+                        pipeline_args=pipeline_args,
+                        epoch=epoch,
+                        torch_dtype=weight_dtype,
+                    )
+                    
+                    del text_encoder_one, text_encoder_two
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    elif is_torch_npu_available():
+                        torch_npu.npu.empty_cache()
+                    gc.collect()
+    
+                    images = None
+                    del pipeline
 
     # Save the lora layers
     accelerator.wait_for_everyone()
@@ -1436,9 +1459,19 @@ def main(args):
         # run inference
         images = []
         if args.validation_prompt and args.num_validation_images > 0:
-            pipeline_args = {"prompt": args.validation_prompt}
+            pipeline_args = {
+                    "prompt": args.validation_prompt, 
+                    "guidance_scale": 3.5, 
+                    "height": 1024, 
+                    "width": 1024, 
+                    "max_sequence_length": 256,
+                    "foveation_start_step": 0
+                }
+            foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(0, 0), r = 0.5)
+            foveation_mask = foveation_mask.to(accelerator.device, dtype=weight_dtype)
             images = log_validation(
                 pipeline=pipeline,
+                foveation_mask=foveation_mask,
                 token_upsampler=token_upsampler,
                 token_downsampler=token_downsampler,
                 args=args,

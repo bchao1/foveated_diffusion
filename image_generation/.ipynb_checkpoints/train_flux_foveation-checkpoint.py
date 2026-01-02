@@ -1,32 +1,3 @@
-#!/usr/bin/env python
-# coding=utf-8
-# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-# /// script
-# dependencies = [
-#     "diffusers @ git+https://github.com/huggingface/diffusers.git",
-#     "torch>=2.0.0",
-#     "accelerate>=0.31.0",
-#     "transformers>=4.41.2",
-#     "ftfy",
-#     "tensorboard",
-#     "Jinja2",
-#     "peft>=0.11.1",
-#     "sentencepiece",
-# ]
-# ///
 
 import os
 import sys
@@ -37,6 +8,7 @@ import copy
 import gc
 import itertools
 import logging
+
 import math
 import os
 import random
@@ -54,13 +26,14 @@ from accelerate.logging import get_logger
 from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration, set_seed
 from huggingface_hub import create_repo, upload_folder
 from huggingface_hub.utils import insecure_hashlib
-from PIL import Image
+from PIL import Image, UnidentifiedImageError, PngImagePlugin, ImageFile
+
 from PIL.ImageOps import exif_transpose
 from torch.utils.data import Dataset
 from torchvision import transforms
 from torchvision.transforms.functional import crop
 from tqdm.auto import tqdm
-from transformers import CLIPTextModel, ClipTextModelWithProjection, CLIPTokenizer, PretrainedConfig, T5EncoderModel, T5TokenizerFast
+from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer, PretrainedConfig, T5EncoderModel, T5TokenizerFast
 # use CLIPTextModel instead of CLIPTextModelWithProjection to match inference pipeline
 # https://www.reddit.com/r/localdiffusion/comments/1995s27/difference_between_transformers_cliptextmodel_and/
 
@@ -89,6 +62,11 @@ from diffusers.utils.torch_utils import is_compiled_module
 # for token upsampling and downsampling 
 from adapter_foveation import TokenDownsampler, TokenUpsampler
 
+# handle image loading
+PngImagePlugin.MAX_TEXT_CHUNK = 1000 * (1024**2)
+Image.MAX_IMAGE_PIXELS = None
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
 
 if is_wandb_available():
     import wandb
@@ -97,6 +75,7 @@ if is_wandb_available():
 check_min_version("0.36.0")
 
 logger = get_logger(__name__)
+logging.getLogger("transformer_flux_crpa").setLevel(logging.ERROR)
 
 if is_torch_npu_available():
     import torch_npu
@@ -119,6 +98,7 @@ def load_text_encoders(class_one, class_two):
 
 def log_validation(
     pipeline,
+    foveation_mask,
     token_upsampler,
     token_downsampler,
     args,
@@ -145,7 +125,7 @@ def log_validation(
     autocast_ctx = nullcontext()
 
     with autocast_ctx:
-        images = [pipeline(**pipeline_args, token_upsampler=token_upsampler, token_downsampler=token_downsampler, generator=generator).images[0] for _ in range(args.num_validation_images)]
+        images = [pipeline(**pipeline_args, foveation_mask=foveation_mask, token_upsampler=token_upsampler, token_downsampler=token_downsampler, generator=generator).images[0] for _ in range(args.num_validation_images)]
 
     for tracker in accelerator.trackers:
         phase_name = "test" if is_final_validation else "validation"
@@ -257,16 +237,6 @@ def parse_args(input_args=None):
     )
 
     parser.add_argument("--repeats", type=int, default=1, help="How many times to repeat the training data.")
-
-
-    parser.add_argument(
-        "--instance_prompt",
-        type=str,
-        default=None,
-        required=True,
-        help="The prompt with identifier specifying the instance, e.g. 'photo of a TOK dog', 'in the style of TOK'",
-    )
-
     parser.add_argument(
         "--max_sequence_length",
         type=int,
@@ -290,7 +260,7 @@ def parse_args(input_args=None):
         type=int,
         default=50,
         help=(
-            "Run dreambooth validation every X epochs. Dreambooth validation consists of running the prompt"
+            "Run validation every X epochs. validation consists of running the prompt"
             " `args.validation_prompt` multiple times: `args.num_validation_images`."
         ),
     )
@@ -298,7 +268,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="flux-dreambooth",
+        default="flux-foveation",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
@@ -585,7 +555,7 @@ def parse_args(input_args=None):
     return args
 
 
-class DreamBoothDataset(Dataset):
+class CustomDataset(Dataset):
     """
     A dataset to prepare the instance and class images with the prompts for fine-tuning the model.
     It pre-processes the images.
@@ -593,152 +563,67 @@ class DreamBoothDataset(Dataset):
 
     def __init__(
         self,
-        instance_data_root,
-        instance_prompt,
+        data_root,
         size=1024,
         repeats=1,
         center_crop=False,
     ):
+        self.data_root = data_root
         self.size = size
         self.center_crop = center_crop
 
-        self.instance_prompt = instance_prompt
-        self.custom_instance_prompts = None
 
-        # if --dataset_name is provided or a metadata jsonl file is provided in the local --instance_data directory,
-        # we load the training data using load_dataset
-        if args.dataset_name is not None:
-            try:
-                from datasets import load_dataset
-            except ImportError:
-                raise ImportError(
-                    "You are trying to load your data using the datasets library. If you wish to train using custom "
-                    "captions please install the datasets library: `pip install datasets`. If you wish to load a "
-                    "local folder containing images only, specify --instance_data_dir instead."
+        self.filenames = []
+        self.prompts = []
+
+        from torchvision import transforms
+        self.train_transforms = transforms.Compose(
+                    [
+                        transforms.Resize(self.size, interpolation=transforms.InterpolationMode.BILINEAR),
+                        transforms.CenterCrop(self.size) if self.center_crop else transforms.RandomCrop(self.size),
+                        transforms.RandomHorizontalFlip(p=0.5),
+                        transforms.ToTensor(),
+                        transforms.Normalize([0.5], [0.5]),
+                    ]
                 )
-            # Downloading and loading a dataset from the hub.
-            # See more about loading custom images at
-            # https://huggingface.co/docs/datasets/v2.0.0/en/dataset_script
-            dataset = load_dataset(
-                args.dataset_name,
-                args.dataset_config_name,
-                cache_dir=args.cache_dir,
-            )
-            # Preprocessing the datasets.
-            column_names = dataset["train"].column_names
-            print(dataset["train"]["jpg"])
-            exit()
+        
+        import json
+        with open(os.path.join(self.data_root, "metadata.jsonl"), "r") as json_file:
+            json_list = list(json_file)
 
-            # 6. Get the column names for input/target.
-            if args.image_column is None:
-                image_column = column_names[0]
-                logger.info(f"image column defaulting to {image_column}")
-            else:
-                image_column = args.image_column
-                if image_column not in column_names:
-                    raise ValueError(
-                        f"`--image_column` value '{args.image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-                    )
-            instance_images = dataset["train"][image_column]
+            for json_str in json_list:
+                example = json.loads(json_str)
+                self.filenames.append(example["file_name"])
+                self.prompts.append(example["text"])
+                
 
-            if args.caption_column is None:
-                logger.info(
-                    "No caption column provided, defaulting to instance_prompt for all images. If your dataset "
-                    "contains captions/prompts for the images, make sure to specify the "
-                    "column as --caption_column"
-                )
-                self.custom_instance_prompts = None
-            else:
-                if args.caption_column not in column_names:
-                    raise ValueError(
-                        f"`--caption_column` value '{args.caption_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-                    )
-                custom_instance_prompts = dataset["train"][args.caption_column]
-                # create final list of captions according to --repeats
-                self.custom_instance_prompts = []
-                for caption in custom_instance_prompts:
-                    self.custom_instance_prompts.extend(itertools.repeat(caption, repeats))
-        else:
-            self.instance_data_root = Path(instance_data_root)
-            if not self.instance_data_root.exists():
-                raise ValueError("Instance images root doesn't exists.")
-
-            instance_images = [Image.open(path) for path in list(Path(instance_data_root).iterdir())]
-            self.custom_instance_prompts = None
-
-        self.instance_images = []
-        for img in instance_images:
-            self.instance_images.extend(itertools.repeat(img, repeats))
-
-        self.pixel_values = []
-        interpolation = getattr(transforms.InterpolationMode, args.image_interpolation_mode.upper(), None)
-        if interpolation is None:
-            raise ValueError(f"Unsupported interpolation mode {interpolation=}.")
-        train_resize = transforms.Resize(size, interpolation=interpolation)
-        train_crop = transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size)
-        train_flip = transforms.RandomHorizontalFlip(p=1.0)
-        train_transforms = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-        )
-        for image in self.instance_images:
-            image = exif_transpose(image)
-            if not image.mode == "RGB":
-                image = image.convert("RGB")
-            image = train_resize(image)
-            if args.random_flip and random.random() < 0.5:
-                # flip
-                image = train_flip(image)
-            if args.center_crop:
-                y1 = max(0, int(round((image.height - args.resolution) / 2.0)))
-                x1 = max(0, int(round((image.width - args.resolution) / 2.0)))
-                image = train_crop(image)
-            else:
-                y1, x1, h, w = train_crop.get_params(image, (args.resolution, args.resolution))
-                image = crop(image, y1, x1, h, w)
-            image = train_transforms(image)
-            self.pixel_values.append(image)
-
-        self.num_instance_images = len(self.instance_images)
-        self._length = self.num_instance_images
-
-
-        self.image_transforms = transforms.Compose(
-            [
-                transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-        )
+        self._length = len(self.filenames)
 
     def __len__(self):
         return self._length
 
     def __getitem__(self, index):
-        example = {}
-        instance_image = self.pixel_values[index % self.num_instance_images]
-        example["instance_images"] = instance_image
-
-        if self.custom_instance_prompts:
-            caption = self.custom_instance_prompts[index % self.num_instance_images]
-            if caption:
-                example["instance_prompt"] = caption
-            else:
-                example["instance_prompt"] = self.instance_prompt
-
-        else:  # custom prompts were provided, but length does not match size of image dataset
-            example["instance_prompt"] = self.instance_prompt
-
-        return example
+        for _ in range(5):  # retry a few times
+            try:
+                file_name = self.filenames[index]
+                image = Image.open(os.path.join(self.data_root, file_name))
+                image = exif_transpose(image)
+                image = image.convert("RGB")
+                pixel_values = self.train_transforms(image)
+    
+                return {
+                    "pixel_values": pixel_values,
+                    "prompt": self.prompts[index],
+                }
+    
+            except (UnidentifiedImageError, OSError, ValueError) as e:
+                # corrupted image → sample a different one
+                index = random.randint(0, self._length - 1)
 
 
 def collate_fn(examples):
-    pixel_values = [example["instance_images"] for example in examples]
-    prompts = [example["instance_prompt"] for example in examples]
-
+    pixel_values = [example["pixel_values"] for example in examples]
+    prompts = [example["prompt"] for example in examples]
 
     pixel_values = torch.stack(pixel_values)
     pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
@@ -1030,7 +915,7 @@ def main(args):
     text_encoder_one.to(accelerator.device, dtype=weight_dtype)
     text_encoder_two.to(accelerator.device, dtype=weight_dtype)
     
-    # move tokenAE to device and dtype
+    # move tokenAE to device and float32 (CNN use float32, so explicitly cast when using)
     # ===============================
     token_upsampler.to(accelerator.device, dtype=weight_dtype)
     token_downsampler.to(accelerator.device, dtype=weight_dtype)
@@ -1050,18 +935,22 @@ def main(args):
         if accelerator.is_main_process:
             for i, model in enumerate(models):
                 if isinstance(unwrap_model(model), FluxPhaseAlignedTransformer2DModel):
-                    unwrap_model(model).save_pretrained(os.path.join(output_dir, "transformer"))
+                    #unwrap_model(model).save_pretrained(os.path.join(output_dir, "transformer"))
+                    pass
                 elif isinstance(unwrap_model(model), (CLIPTextModelWithProjection, T5EncoderModel)):
-                    if isinstance(unwrap_model(model), CLIPTextModelWithProjection):
-                        unwrap_model(model).save_pretrained(os.path.join(output_dir, "text_encoder"))
-                    else:
-                        unwrap_model(model).save_pretrained(os.path.join(output_dir, "text_encoder_2"))
+                    #if isinstance(unwrap_model(model), CLIPTextModelWithProjection):
+                    #    unwrap_model(model).save_pretrained(os.path.join(output_dir, "text_encoder"))
+                    #else:
+                    #    unwrap_model(model).save_pretrained(os.path.join(output_dir, "text_encoder_2"))
+                    pass
                 # ===============================
                 elif isinstance(unwrap_model(model), (TokenUpsampler, TokenDownsampler)):
                     if isinstance(unwrap_model(model), TokenUpsampler):
-                        unwrap_model(model).save_pretrained(os.path.join(output_dir, "token_upsampler"))
+                        #unwrap_model(model).save_pretrained(os.path.join(output_dir, "token_upsampler"))
+                        torch.save(unwrap_model(model), os.path.join(output_dir, "token_upsampler.pt"))
                     else:
-                        unwrap_model(model).save_pretrained(os.path.join(output_dir, "token_downsampler"))
+                        #unwrap_model(model).save_pretrained(os.path.join(output_dir, "token_downsampler"))
+                        torch.save(unwrap_model(model), os.path.join(output_dir, "token_downsampler.pt"))
                 # ===============================
                 else:
                     raise ValueError(f"Wrong model supplied: {type(model)=}.")
@@ -1076,29 +965,34 @@ def main(args):
 
             # load diffusers style into model
             if isinstance(unwrap_model(model), FluxPhaseAlignedTransformer2DModel):
-                load_model = FluxPhaseAlignedTransformer2DModel.from_pretrained(input_dir, subfolder="transformer")
-                model.register_to_config(**load_model.config)
+                #load_model = FluxPhaseAlignedTransformer2DModel.from_pretrained(input_dir, subfolder="transformer")
+                #model.register_to_config(**load_model.config)
 
-                model.load_state_dict(load_model.state_dict())
+                #model.load_state_dict(load_model.state_dict())
+                pass
             elif isinstance(unwrap_model(model), (CLIPTextModelWithProjection, T5EncoderModel)):
                 try:
-                    load_model = CLIPTextModelWithProjection.from_pretrained(input_dir, subfolder="text_encoder")
-                    model(**load_model.config)
-                    model.load_state_dict(load_model.state_dict())
+                    #load_model = CLIPTextModelWithProjection.from_pretrained(input_dir, subfolder="text_encoder")
+                    #model(**load_model.config)
+                    #model.load_state_dict(load_model.state_dict())
+                    pass
                 except Exception:
                     try:
-                        load_model = T5EncoderModel.from_pretrained(input_dir, subfolder="text_encoder_2")
-                        model(**load_model.config)
-                        model.load_state_dict(load_model.state_dict())
+                        #load_model = T5EncoderModel.from_pretrained(input_dir, subfolder="text_encoder_2")
+                        #model(**load_model.config)
+                        #model.load_state_dict(load_model.state_dict())
+                        pass
                     except Exception:
                         raise ValueError(f"Couldn't load the model of type: ({type(model)}).")
             # ===============================
             elif isinstance(unwrap_model(model), (TokenUpsampler, TokenDownsampler)):
                 if isinstance(unwrap_model(model), TokenUpsampler):
-                    load_model = TokenUpsampler.from_pretrained(input_dir, subfolder="token_upsampler")
+                    #load_model = TokenUpsampler.from_pretrained(input_dir, subfolder="token_upsampler")
+                    load_model = torch.load(os.path.join(input_dir, "token_upsampler.pt"))
                 else:
-                    load_model = TokenDownsampler.from_pretrained(input_dir, subfolder="token_downsampler")
-                model(**load_model.config)
+                    #load_model = TokenDownsampler.from_pretrained(input_dir, subfolder="token_downsampler")
+                    load_model = torch.load(os.path.join(input_dir, "token_downsampler.pt"))
+                #model(**load_model.config)
                 model.load_state_dict(load_model.state_dict())
             # ===============================
             else:
@@ -1191,9 +1085,8 @@ def main(args):
         )
 
     # Dataset and DataLoaders creation:
-    train_dataset = DreamBoothDataset(
-        instance_data_root=args.instance_data_dir,
-        instance_prompt=args.instance_prompt,
+    train_dataset = CustomDataset(
+        data_root=args.instance_data_dir,
         size=args.resolution,
         repeats=args.repeats,
         center_crop=args.center_crop,
@@ -1264,7 +1157,7 @@ def main(args):
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
-        tracker_name = "dreambooth-flux-dev-lora"
+        tracker_name = "flux-foveation"
         accelerator.init_trackers(tracker_name, config=vars(args))
 
     # Train!
@@ -1358,7 +1251,9 @@ def main(args):
 
                 vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
 
-                bsz, _, latent_height, latent_width = model_input.shape
+                bsz, latent_height, latent_width = model_input.shape[0], model_input.shape[2] // 2, model_input.shape[3] // 2
+                #print("train", model_input.shape, latent_height, foveation_mask.shape)
+                #exit()
                 latent_image_ids, resolution_mask, resolution_mask_top_left = FluxPipeline_Foveation._prepare_latent_image_ids(
                     bsz, latent_height, latent_width,
                     accelerator.device,
@@ -1448,7 +1343,7 @@ def main(args):
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    params_to_clip = itertools.chain(transformers.paramters(), token_upsampler.parameters(), token_downsampler.parameters())
+                    params_to_clip = itertools.chain(transformer.parameters(), token_upsampler.parameters(), token_downsampler.parameters())
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
@@ -1493,44 +1388,54 @@ def main(args):
             if global_step >= args.max_train_steps:
                 break
 
-        if accelerator.is_main_process:
-            if args.validation_prompt is not None and epoch % args.validation_epochs == 0:
-                # create pipeline
-                text_encoder_one, text_encoder_two = load_text_encoders(text_encoder_cls_one, text_encoder_cls_two)
-                text_encoder_one.to(weight_dtype)
-                text_encoder_two.to(weight_dtype)
-                
-                pipeline = FluxPipeline_Foveation.from_pretrained(
-                    args.pretrained_model_name_or_path,
-                    vae=vae,
-                    text_encoder=unwrap_model(text_encoder_one, keep_fp32_wrapper=False),
-                    text_encoder_2=unwrap_model(text_encoder_two, keep_fp32_wrapper=False),
-                    transformer=unwrap_model(transformer, keep_fp32_wrapper=False),
-                    revision=args.revision,
-                    variant=args.variant,
-                    torch_dtype=weight_dtype,
-                )
-                pipeline_args = {"prompt": args.validation_prompt}
-                images = log_validation(
-                    pipeline=pipeline,
-                    token_upsampler=token_upsampler,
-                    token_downsampler=token_downsampler,
-                    args=args,
-                    accelerator=accelerator,
-                    pipeline_args=pipeline_args,
-                    epoch=epoch,
-                    torch_dtype=weight_dtype,
-                )
-                
-                del text_encoder_one, text_encoder_two
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+            if accelerator.is_main_process:
+                if args.validation_prompt is not None and global_step % 1000 == 0:
+                    # create pipeline
+                    text_encoder_one, text_encoder_two = load_text_encoders(text_encoder_cls_one, text_encoder_cls_two)
+                    text_encoder_one.to(weight_dtype)
+                    text_encoder_two.to(weight_dtype)
+                    
+                    pipeline = FluxPipeline_Foveation.from_pretrained(
+                        args.pretrained_model_name_or_path,
+                        vae=vae,
+                        text_encoder=unwrap_model(text_encoder_one),
+                        text_encoder_2=unwrap_model(text_encoder_two),
+                        transformer=unwrap_model(transformer),
+                        revision=args.revision,
+                        variant=args.variant,
+                        torch_dtype=weight_dtype,
+                    )
+                    pipeline_args = {
+                        "prompt": args.validation_prompt, 
+                        "guidance_scale": 3.5, 
+                        "height": 1024, 
+                        "width": 1024, 
+                        "max_sequence_length": 256,
+                        "foveation_start_step": 0
+                    }
+                    foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(0, 0), r = 0.5)
+                    foveation_mask = foveation_mask.to(accelerator.device, dtype=weight_dtype)
+                    images = log_validation(
+                        pipeline=pipeline,
+                        foveation_mask=foveation_mask,
+                        token_upsampler=token_upsampler,
+                        token_downsampler=token_downsampler,
+                        args=args,
+                        accelerator=accelerator,
+                        pipeline_args=pipeline_args,
+                        epoch=epoch,
+                        torch_dtype=weight_dtype,
+                    )
+                    
+                    del text_encoder_one, text_encoder_two
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                     elif is_torch_npu_available():
                         torch_npu.npu.empty_cache()
                     gc.collect()
-
-                images = None
-                del pipeline
+    
+                    images = None
+                    del pipeline
 
     # Save the lora layers
     accelerator.wait_for_everyone()
@@ -1554,9 +1459,19 @@ def main(args):
         # run inference
         images = []
         if args.validation_prompt and args.num_validation_images > 0:
-            pipeline_args = {"prompt": args.validation_prompt}
+            pipeline_args = {
+                    "prompt": args.validation_prompt, 
+                    "guidance_scale": 3.5, 
+                    "height": 1024, 
+                    "width": 1024, 
+                    "max_sequence_length": 256,
+                    "foveation_start_step": 0
+                }
+            foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(0, 0), r = 0.5)
+            foveation_mask = foveation_mask.to(accelerator.device, dtype=weight_dtype)
             images = log_validation(
                 pipeline=pipeline,
+                foveation_mask=foveation_mask,
                 token_upsampler=token_upsampler,
                 token_downsampler=token_downsampler,
                 args=args,

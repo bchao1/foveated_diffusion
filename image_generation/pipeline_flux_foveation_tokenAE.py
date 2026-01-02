@@ -569,18 +569,18 @@ class FluxPipeline_Foveation(
             # find the number of tokens with fractional strides in x or Y - IF strides 
             fractional_strides = (output_grid[..., 1] % 1 != 0) | (output_grid[..., 2] % 1 != 0)
             num_fractional_strides = fractional_strides.sum()
-            print("latent_image_ids shape: ", latent_image_ids.shape)
-            print("resolution_mask shape: ", resolution_mask.shape, resolution_mask.sum())
-            print("num_fractional_strides: ", num_fractional_strides)
-            print("resolution_mask_top_left shape: ", resolution_mask_top_left.shape, resolution_mask_top_left.sum())
-            print(resolution_mask_top_left.sum(), resolution_mask.sum())
+            #print("latent_image_ids shape: ", latent_image_ids.shape)
+            #print("resolution_mask shape: ", resolution_mask.shape, resolution_mask.sum())
+            #print("num_fractional_strides: ", num_fractional_strides)
+            #print("resolution_mask_top_left shape: ", resolution_mask_top_left.shape, resolution_mask_top_left.sum())
+            #print(resolution_mask_top_left.sum(), resolution_mask.sum())
             
             num_hr_tokens = resolution_mask.sum().item()
             num_lr_tokens = resolution_mask.shape[0] - num_hr_tokens
             num_hr_top_left_tokens = num_hr_tokens // 4
-            print("num_hr_tokens: ", num_hr_tokens)
-            print("num_lr_tokens: ", num_lr_tokens)
-            print("num_hr_top_left_tokens: ", num_hr_top_left_tokens)
+            #print("num_hr_tokens: ", num_hr_tokens)
+            #print("num_lr_tokens: ", num_lr_tokens)
+            #print("num_hr_top_left_tokens: ", num_hr_top_left_tokens)
             #assert resolution_mask_top_left.sum().item() == num_hr_top_left_tokens + num_lr_tokens
 
             # resolution mask is 1 for HR, 0 for LR
@@ -644,17 +644,17 @@ class FluxPipeline_Foveation(
         # Define fallback sample mode (used only if token_downsampler is None)
 
         if token_downsampler is not None:
-            print("using learned downsampler")
+            #print("using learned downsampler")
             # STRATEGY: Learned Downsampler
             # Run convolution on the original spatial grid
             latents_permuted = latents_spatial.permute(0, 3, 1, 2) # [B, C, H, W]
-            downsampled_spatial = token_downsampler(latents_permuted).permute(0, 2, 3, 1) # [B, H/2, W/2, C]
+            downsampled_spatial = token_downsampler(latents_permuted).permute(0, 2, 3, 1).to(output_latents.dtype) # [B, H/2, W/2, C]
             
             # Inject learned values into the 0-th index of low-res blocks
             output_latents[:, is_low_res_block, 0, :] = downsampled_spatial[:, is_low_res_block, :]
             
         elif sample_mode == "average":
-            print("using average pooling")
+            #print("using average pooling")
             # STRATEGY: Average Pooling
             # Compute mean across the 4 tokens in the block
             low_res_values = latents_blocks.mean(dim=3) * 2 # variance correction
@@ -766,6 +766,7 @@ class FluxPipeline_Foveation(
         if foveation_mask is None:
             return noise_pred
         batch_size = noise_pred.shape[0]
+        input_dtype = noise_pred.dtype
         # 1. Pseudo-Downsample High-Res to Create Uniform Grid [H/2, W/2]
         # This averages the 4 high-res tokens into 1, so the grid is compatible with the CNN.
         noise_pred_low_res = FluxPipeline_Foveation._downsample_remaining_high_res(
@@ -783,7 +784,7 @@ class FluxPipeline_Foveation(
         
         # Upsample to [B, C, H, W]
         # This gives us restored detail for Low-Res areas, but an approximation for High-Res areas.
-        noise_pred_upsampled = token_upsampler(noise_pred_low_res_spatial) # [B, C, H, W]
+        noise_pred_upsampled = token_upsampler(noise_pred_low_res_spatial)#.to(input_dtype) # [B, C, H, W]
         pred_full_res = noise_pred_upsampled.permute(0, 2, 3, 1) # [B, H, W, C]
 
         # 3. Reconstruct the "Original" High-Res Tokens Spatially
@@ -1176,8 +1177,8 @@ class FluxPipeline_Foveation(
             latents,
             foveation_mask=None
         )
-        print("resolution_mask", resolution_mask)
-        print("resolution_mask_top_left", resolution_mask_top_left)
+        #print("resolution_mask", resolution_mask)
+        #print("resolution_mask_top_left", resolution_mask_top_left)
 
         self._joint_attention_kwargs["resolution_mask"] = resolution_mask
         self._joint_attention_kwargs["resolution_mask_top_left"] = resolution_mask_top_left
@@ -1259,6 +1260,8 @@ class FluxPipeline_Foveation(
 
                 if foveation_mask is not None:
                     # mixed-resolution tokens that are passed into the transformer
+                    #print("pipeline", latents.shape, self.latent_height, foveation_mask.shape)
+                    #exit()
                     latents = self._downsample_latents(latents, self.latent_height, self.latent_width, foveation_mask=foveation_mask, token_downsampler=token_downsampler)
                     latent_image_ids, resolution_mask, resolution_mask_top_left = self._prepare_latent_image_ids(
                         batch_size * num_images_per_prompt, self.latent_height, self.latent_width, device, latents.dtype, foveation_mask
@@ -1331,7 +1334,7 @@ class FluxPipeline_Foveation(
         else:
             latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
             latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
-            image = self.vae.decode(latents, return_dict=False)[0]
+            image = self.vae.decode(latents.to(self.vae.dtype), return_dict=False)[0]
             image = self.image_processor.postprocess(image, output_type=output_type)
 
         # Offload all models
