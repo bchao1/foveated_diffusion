@@ -1,32 +1,3 @@
-#!/usr/bin/env python
-# coding=utf-8
-# Copyright 2025 The HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-# /// script
-# dependencies = [
-#     "diffusers @ git+https://github.com/huggingface/diffusers.git",
-#     "torch>=2.0.0",
-#     "accelerate>=0.31.0",
-#     "transformers>=4.41.2",
-#     "ftfy",
-#     "tensorboard",
-#     "Jinja2",
-#     "peft>=0.11.1",
-#     "sentencepiece",
-# ]
-# ///
 
 import os
 import sys
@@ -60,7 +31,7 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from torchvision.transforms.functional import crop
 from tqdm.auto import tqdm
-from transformers import CLIPTextModel, ClipTextModelWithProjection, CLIPTokenizer, PretrainedConfig, T5EncoderModel, T5TokenizerFast
+from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer, PretrainedConfig, T5EncoderModel, T5TokenizerFast
 # use CLIPTextModel instead of CLIPTextModelWithProjection to match inference pipeline
 # https://www.reddit.com/r/localdiffusion/comments/1995s27/difference_between_transformers_cliptextmodel_and/
 
@@ -585,7 +556,7 @@ def parse_args(input_args=None):
     return args
 
 
-class DreamBoothDataset(Dataset):
+class CustomDataset(Dataset):
     """
     A dataset to prepare the instance and class images with the prompts for fine-tuning the model.
     It pre-processes the images.
@@ -593,152 +564,65 @@ class DreamBoothDataset(Dataset):
 
     def __init__(
         self,
-        instance_data_root,
-        instance_prompt,
+        data_root,
         size=1024,
         repeats=1,
         center_crop=False,
     ):
+        self.data_root = data_root
         self.size = size
         self.center_crop = center_crop
 
-        self.instance_prompt = instance_prompt
-        self.custom_instance_prompts = None
 
-        # if --dataset_name is provided or a metadata jsonl file is provided in the local --instance_data directory,
-        # we load the training data using load_dataset
-        if args.dataset_name is not None:
-            try:
-                from datasets import load_dataset
-            except ImportError:
-                raise ImportError(
-                    "You are trying to load your data using the datasets library. If you wish to train using custom "
-                    "captions please install the datasets library: `pip install datasets`. If you wish to load a "
-                    "local folder containing images only, specify --instance_data_dir instead."
+        # self.pixel_values = []
+        self.filenames = []
+        self.prompts = []
+
+        from torchvision import transforms
+        self.train_transforms = transforms.Compose(
+                    [
+                        transforms.Resize(self.size, interpolation=transforms.InterpolationMode.BILINEAR),
+                        transforms.CenterCrop(self.size) if self.center_crop else transforms.RandomCrop(self.size),
+                        transforms.RandomHorizontalFlip(p=0.5),
+                        transforms.ToTensor(),
+                        transforms.Normalize([0.5], [0.5]),
+                    ]
                 )
-            # Downloading and loading a dataset from the hub.
-            # See more about loading custom images at
-            # https://huggingface.co/docs/datasets/v2.0.0/en/dataset_script
-            dataset = load_dataset(
-                args.dataset_name,
-                args.dataset_config_name,
-                cache_dir=args.cache_dir,
-            )
-            # Preprocessing the datasets.
-            column_names = dataset["train"].column_names
-            print(dataset["train"]["jpg"])
-            exit()
+        
+        import json
+        with open(self.data_root+"/metadata.jsonl", "r") as json_file:
+            json_list = list(json_file)
 
-            # 6. Get the column names for input/target.
-            if args.image_column is None:
-                image_column = column_names[0]
-                logger.info(f"image column defaulting to {image_column}")
-            else:
-                image_column = args.image_column
-                if image_column not in column_names:
-                    raise ValueError(
-                        f"`--image_column` value '{args.image_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-                    )
-            instance_images = dataset["train"][image_column]
+            for json_str in json_list:
+                example = json.loads(json_str)
+                self.filenames.append(example["file_name"])
+                self.prompts.append(example["text"])
+                
 
-            if args.caption_column is None:
-                logger.info(
-                    "No caption column provided, defaulting to instance_prompt for all images. If your dataset "
-                    "contains captions/prompts for the images, make sure to specify the "
-                    "column as --caption_column"
-                )
-                self.custom_instance_prompts = None
-            else:
-                if args.caption_column not in column_names:
-                    raise ValueError(
-                        f"`--caption_column` value '{args.caption_column}' not found in dataset columns. Dataset columns are: {', '.join(column_names)}"
-                    )
-                custom_instance_prompts = dataset["train"][args.caption_column]
-                # create final list of captions according to --repeats
-                self.custom_instance_prompts = []
-                for caption in custom_instance_prompts:
-                    self.custom_instance_prompts.extend(itertools.repeat(caption, repeats))
-        else:
-            self.instance_data_root = Path(instance_data_root)
-            if not self.instance_data_root.exists():
-                raise ValueError("Instance images root doesn't exists.")
-
-            instance_images = [Image.open(path) for path in list(Path(instance_data_root).iterdir())]
-            self.custom_instance_prompts = None
-
-        self.instance_images = []
-        for img in instance_images:
-            self.instance_images.extend(itertools.repeat(img, repeats))
-
-        self.pixel_values = []
-        interpolation = getattr(transforms.InterpolationMode, args.image_interpolation_mode.upper(), None)
-        if interpolation is None:
-            raise ValueError(f"Unsupported interpolation mode {interpolation=}.")
-        train_resize = transforms.Resize(size, interpolation=interpolation)
-        train_crop = transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size)
-        train_flip = transforms.RandomHorizontalFlip(p=1.0)
-        train_transforms = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-        )
-        for image in self.instance_images:
-            image = exif_transpose(image)
-            if not image.mode == "RGB":
-                image = image.convert("RGB")
-            image = train_resize(image)
-            if args.random_flip and random.random() < 0.5:
-                # flip
-                image = train_flip(image)
-            if args.center_crop:
-                y1 = max(0, int(round((image.height - args.resolution) / 2.0)))
-                x1 = max(0, int(round((image.width - args.resolution) / 2.0)))
-                image = train_crop(image)
-            else:
-                y1, x1, h, w = train_crop.get_params(image, (args.resolution, args.resolution))
-                image = crop(image, y1, x1, h, w)
-            image = train_transforms(image)
-            self.pixel_values.append(image)
-
-        self.num_instance_images = len(self.instance_images)
-        self._length = self.num_instance_images
-
-
-        self.image_transforms = transforms.Compose(
-            [
-                transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR),
-                transforms.CenterCrop(size) if center_crop else transforms.RandomCrop(size),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-        )
+        self._length = len(self.filenames)
 
     def __len__(self):
         return self._length
 
     def __getitem__(self, index):
         example = {}
-        instance_image = self.pixel_values[index % self.num_instance_images]
-        example["instance_images"] = instance_image
+        file_name = self.filenames[index]
 
-        if self.custom_instance_prompts:
-            caption = self.custom_instance_prompts[index % self.num_instance_images]
-            if caption:
-                example["instance_prompt"] = caption
-            else:
-                example["instance_prompt"] = self.instance_prompt
+        image = Image.open(os.path.join(self.data_root, file_name))
+        image = exif_transpose(image)
+        if not image.mode == "RGB":
+            image = image.convert("RGB")
+        pixel_values = self.train_transforms(image)
 
-        else:  # custom prompts were provided, but length does not match size of image dataset
-            example["instance_prompt"] = self.instance_prompt
+        example["pixel_values"] = pixel_values
+        example["prompt"] = self.prompts[index]
 
         return example
 
 
 def collate_fn(examples):
-    pixel_values = [example["instance_images"] for example in examples]
-    prompts = [example["instance_prompt"] for example in examples]
-
+    pixel_values = [example["pixel_values"] for example in examples]
+    prompts = [example["prompt"] for example in examples]
 
     pixel_values = torch.stack(pixel_values)
     pixel_values = pixel_values.to(memory_format=torch.contiguous_format).float()
@@ -1191,9 +1075,8 @@ def main(args):
         )
 
     # Dataset and DataLoaders creation:
-    train_dataset = DreamBoothDataset(
-        instance_data_root=args.instance_data_dir,
-        instance_prompt=args.instance_prompt,
+    train_dataset = CustomDataset(
+        data_root=args.instance_data_dir,
         size=args.resolution,
         repeats=args.repeats,
         center_crop=args.center_crop,
@@ -1525,9 +1408,9 @@ def main(args):
                 del text_encoder_one, text_encoder_two
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                    elif is_torch_npu_available():
-                        torch_npu.npu.empty_cache()
-                    gc.collect()
+                elif is_torch_npu_available():
+                    torch_npu.npu.empty_cache()
+                gc.collect()
 
                 images = None
                 del pipeline
