@@ -574,7 +574,6 @@ class CustomDataset(Dataset):
         self.center_crop = center_crop
 
 
-        # self.pixel_values = []
         self.filenames = []
         self.prompts = []
 
@@ -590,7 +589,7 @@ class CustomDataset(Dataset):
                 )
         
         import json
-        with open(self.data_root+"/metadata.jsonl", "r") as json_file:
+        with open(os.path.join(self.data_root, "metadata.jsonl"), "r") as json_file:
             json_list = list(json_file)
 
             for json_str in json_list:
