@@ -124,8 +124,15 @@ def log_validation(
     # autocast_ctx = torch.autocast(accelerator.device.type) if not is_final_validation else nullcontext()
     autocast_ctx = nullcontext()
 
+    # generate masks
+    foveation_mask_list = []
+    for r in np.linspace(0.1, 1.0, args.num_validation_images):
+        foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(0, 0), r = r)
+        foveation_mask = foveation_mask.to(accelerator.device, dtype=weight_dtype)
+        foveation_mask_list.append(foveation_mask)
+
     with autocast_ctx:
-        images = [pipeline(**pipeline_args, foveation_mask=foveation_mask, token_upsampler=token_upsampler, token_downsampler=token_downsampler, generator=generator).images[0] for _ in range(args.num_validation_images)]
+        images = [pipeline(**pipeline_args, foveation_mask=foveation_mask_list[i], token_upsampler=token_upsampler, token_downsampler=token_downsampler, generator=generator).images[0] for i in range(args.num_validation_images)]
 
     for tracker in accelerator.trackers:
         phase_name = "test" if is_final_validation else "validation"
@@ -1227,7 +1234,8 @@ def main(args):
         for step, batch in enumerate(train_dataloader):
             # 0101: prepare foveation masks
             # ===============================
-            foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(0, 0), r = 0.5)
+            r = np.random.choice(np.linspace(0.1, 1.0, 10))
+            foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(0, 0), r = r)
             foveation_mask = foveation_mask.to(accelerator.device, dtype=weight_dtype)
             joint_attention_kwargs = {}
             # ===============================
@@ -1381,63 +1389,63 @@ def main(args):
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
 
+                    if (args.validation_prompt is not None) and (global_step % 1000 == 0):
+                        # create pipeline
+                        text_encoder_one, text_encoder_two = load_text_encoders(text_encoder_cls_one, text_encoder_cls_two)
+                        text_encoder_one.to(weight_dtype)
+                        text_encoder_two.to(weight_dtype)
+                        
+                        pipeline = FluxPipeline_Foveation.from_pretrained(
+                            args.pretrained_model_name_or_path,
+                            vae=vae,
+                            text_encoder=unwrap_model(text_encoder_one),
+                            text_encoder_2=unwrap_model(text_encoder_two),
+                            transformer=unwrap_model(transformer),
+                            revision=args.revision,
+                            variant=args.variant,
+                            torch_dtype=weight_dtype,
+                        )
+                        pipeline_args = {
+                            "prompt": args.validation_prompt, 
+                            "guidance_scale": 3.5, 
+                            "height": 1024, 
+                            "width": 1024, 
+                            "max_sequence_length": 256,
+                            "foveation_start_step": 0
+                        }
+                        r = np.random.choice(np.linspace(0.1, 1.0, 10))
+                        foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(0, 0), r = r)
+                        foveation_mask = foveation_mask.to(accelerator.device, dtype=weight_dtype)
+                        images = log_validation(
+                            pipeline=pipeline,
+                            foveation_mask=foveation_mask,
+                            token_upsampler=token_upsampler,
+                            token_downsampler=token_downsampler,
+                            args=args,
+                            accelerator=accelerator,
+                            pipeline_args=pipeline_args,
+                            epoch=epoch,
+                            torch_dtype=weight_dtype,
+                        )
+                        
+                        del text_encoder_one, text_encoder_two
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        elif is_torch_npu_available():
+                            torch_npu.npu.empty_cache()
+                        gc.collect()
+        
+                        images = None
+                        del pipeline
+
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
 
             if global_step >= args.max_train_steps:
                 break
+                
 
-            if accelerator.is_main_process:
-                if args.validation_prompt is not None and global_step % 1000 == 0:
-                    # create pipeline
-                    text_encoder_one, text_encoder_two = load_text_encoders(text_encoder_cls_one, text_encoder_cls_two)
-                    text_encoder_one.to(weight_dtype)
-                    text_encoder_two.to(weight_dtype)
-                    
-                    pipeline = FluxPipeline_Foveation.from_pretrained(
-                        args.pretrained_model_name_or_path,
-                        vae=vae,
-                        text_encoder=unwrap_model(text_encoder_one),
-                        text_encoder_2=unwrap_model(text_encoder_two),
-                        transformer=unwrap_model(transformer),
-                        revision=args.revision,
-                        variant=args.variant,
-                        torch_dtype=weight_dtype,
-                    )
-                    pipeline_args = {
-                        "prompt": args.validation_prompt, 
-                        "guidance_scale": 3.5, 
-                        "height": 1024, 
-                        "width": 1024, 
-                        "max_sequence_length": 256,
-                        "foveation_start_step": 0
-                    }
-                    foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(0, 0), r = 0.5)
-                    foveation_mask = foveation_mask.to(accelerator.device, dtype=weight_dtype)
-                    images = log_validation(
-                        pipeline=pipeline,
-                        foveation_mask=foveation_mask,
-                        token_upsampler=token_upsampler,
-                        token_downsampler=token_downsampler,
-                        args=args,
-                        accelerator=accelerator,
-                        pipeline_args=pipeline_args,
-                        epoch=epoch,
-                        torch_dtype=weight_dtype,
-                    )
-                    
-                    del text_encoder_one, text_encoder_two
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                    elif is_torch_npu_available():
-                        torch_npu.npu.empty_cache()
-                    gc.collect()
-    
-                    images = None
-                    del pipeline
-
-    # Save the lora layers
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         transformer = unwrap_model(transformer)
@@ -1467,7 +1475,8 @@ def main(args):
                     "max_sequence_length": 256,
                     "foveation_start_step": 0
                 }
-            foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(0, 0), r = 0.5)
+            r = np.random.choice(np.linspace(0.1, 1.0, 10))
+            foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(0, 0), r = r)
             foveation_mask = foveation_mask.to(accelerator.device, dtype=weight_dtype)
             images = log_validation(
                 pipeline=pipeline,
