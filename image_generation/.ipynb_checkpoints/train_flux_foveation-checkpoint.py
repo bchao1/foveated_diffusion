@@ -128,7 +128,7 @@ def log_validation(
     foveation_mask_list = []
     for r in np.linspace(0.1, 1.0, args.num_validation_images):
         foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(0, 0), r = r)
-        foveation_mask = foveation_mask.to(accelerator.device, dtype=weight_dtype)
+        foveation_mask = foveation_mask.to(accelerator.device, dtype=torch_dtype)
         foveation_mask_list.append(foveation_mask)
 
     with autocast_ctx:
@@ -1235,7 +1235,10 @@ def main(args):
             # 0101: prepare foveation masks
             # ===============================
             r = np.random.choice(np.linspace(0.1, 1.0, 10))
-            foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(0, 0), r = r)
+            center_min = -(1 - r) * 0.5
+            center_max = (1 - r) * 0.5
+            center_x, center_y = np.random.uniform(center_min, center_max, 2)
+            foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(center_x, center_y), r = r)
             foveation_mask = foveation_mask.to(accelerator.device, dtype=weight_dtype)
             joint_attention_kwargs = {}
             # ===============================
