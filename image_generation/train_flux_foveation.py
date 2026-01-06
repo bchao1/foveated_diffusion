@@ -27,6 +27,7 @@ from accelerate.utils import DistributedDataParallelKwargs, ProjectConfiguration
 from huggingface_hub import create_repo, upload_folder
 from huggingface_hub.utils import insecure_hashlib
 from PIL import Image, UnidentifiedImageError, PngImagePlugin, ImageFile
+from diffusers.utils.torch_utils import randn_tensor
 
 from PIL.ImageOps import exif_transpose
 from torch.utils.data import Dataset
@@ -106,7 +107,7 @@ def log_validation(
     pipeline_args,
     epoch,
     torch_dtype,
-    is_final_validation=False,
+    is_final_validation=False
 ):
     logger.info(
         f"Running validation... \n Generating {args.num_validation_images} images with prompt:"
@@ -543,6 +544,7 @@ def parse_args(input_args=None):
         help="The image interpolation method to use for resizing images.",
     )
     parser.add_argument("--enable_npu_flash_attention", action="store_true", help="Enabla Flash Attention for NPU")
+    parser.add_argument("--debug_mode", default=None, type=str)
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -574,6 +576,7 @@ class CustomDataset(Dataset):
         size=1024,
         repeats=1,
         center_crop=False,
+        debug_mode=None
     ):
         self.data_root = data_root
         self.size = size
@@ -584,24 +587,40 @@ class CustomDataset(Dataset):
         self.prompts = []
 
         from torchvision import transforms
-        self.train_transforms = transforms.Compose(
-                    [
-                        transforms.Resize(self.size, interpolation=transforms.InterpolationMode.BILINEAR),
-                        transforms.CenterCrop(self.size) if self.center_crop else transforms.RandomCrop(self.size),
-                        transforms.RandomHorizontalFlip(p=0.5),
-                        transforms.ToTensor(),
-                        transforms.Normalize([0.5], [0.5]),
-                    ]
-                )
+        if debug_mode == "single":
+            self.train_transforms = transforms.Compose(
+                        [
+                            transforms.Resize(self.size, interpolation=transforms.InterpolationMode.BILINEAR),
+                            transforms.CenterCrop(self.size),
+                            transforms.ToTensor(),
+                            transforms.Normalize([0.5], [0.5]),
+                        ]
+                    )
+        else:
+            self.train_transforms = transforms.Compose(
+                        [
+                            transforms.Resize(self.size, interpolation=transforms.InterpolationMode.BILINEAR),
+                            transforms.CenterCrop(self.size) if self.center_crop else transforms.RandomCrop(self.size),
+                            transforms.RandomHorizontalFlip(p=0.5),
+                            transforms.ToTensor(),
+                            transforms.Normalize([0.5], [0.5]),
+                        ]
+                    )
         
         import json
         with open(os.path.join(self.data_root, "metadata.jsonl"), "r") as json_file:
             json_list = list(json_file)
 
+            json_list.sort() # important!
             for json_str in json_list:
                 example = json.loads(json_str)
                 self.filenames.append(example["file_name"])
                 self.prompts.append(example["text"])
+
+        if debug_mode == "single":
+            self.filenames = [self.filenames[0]] * len(json_list)
+            self.prompts = [self.prompts[0]] * len(json_list)
+            print(self.prompts[0])
                 
 
         self._length = len(self.filenames)
@@ -1097,7 +1116,10 @@ def main(args):
         size=args.resolution,
         repeats=args.repeats,
         center_crop=args.center_crop,
+        debug_mode=args.debug_mode
     )
+    if args.debug_mode == "single":
+        args.validation_prompt = train_dataset.prompts[0]
 
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
@@ -1228,6 +1250,9 @@ def main(args):
             sigma = sigma.unsqueeze(-1)
         return sigma
 
+    # for fixed seed generation
+    generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed is not None else None
+    fixed_noise = None
     for epoch in range(first_epoch, args.num_train_epochs):
         transformer.train()
 
@@ -1273,8 +1298,16 @@ def main(args):
                 )
                 joint_attention_kwargs.update({"resolution_mask": resolution_mask, "resolution_mask_top_left": resolution_mask_top_left})
 
+                
                 # Sample noise that we'll add to the latents
-                noise = torch.randn_like(model_input)
+                if args.debug_mode == "single":
+                    if fixed_noise is None:
+                        fixed_noise = randn_tensor(model_input.shape, generator=generator, device=model_input.device, dtype=model_input.dtype) 
+                    #print(noise)
+                    noise = fixed_noise
+                else:
+                    noise = torch.randn_like(model_input)
+            
                 bsz = model_input.shape[0]
 
                 # Sample a random timestep for each image
@@ -1428,7 +1461,7 @@ def main(args):
                             accelerator=accelerator,
                             pipeline_args=pipeline_args,
                             epoch=epoch,
-                            torch_dtype=weight_dtype,
+                            torch_dtype=weight_dtype
                         )
                         
                         del text_encoder_one, text_encoder_two
@@ -1491,7 +1524,7 @@ def main(args):
                 pipeline_args=pipeline_args,
                 epoch=epoch,
                 is_final_validation=True,
-                torch_dtype=weight_dtype,
+                torch_dtype=weight_dtype
             )
 
 
