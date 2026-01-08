@@ -141,8 +141,8 @@ if __name__ == "__main__":
     x = torch.randn(1, 128, 64, 64).to(device)
 
     # Instantiate
-    downsampler = TokenDownsampler(in_channels=128, out_channels=128, num_res_blocks=2).to(device)
-    upsampler = TokenUpsampler(in_channels=128, out_channels=128, num_res_blocks=2).to(device)
+    downsampler = TokenDownsampler(in_channels=128, out_channels=128, num_res_blocks=10).to(device)
+    upsampler = TokenUpsampler(in_channels=128, out_channels=128, num_res_blocks=10).to(device)
 
     # Forward Pass
     x_down = downsampler(x)
@@ -160,7 +160,7 @@ if __name__ == "__main__":
     # Verify Residual Initialization (Expect roughly naive output initially)
     # Since we zero-init the learned branch, x_down should be exactly AvgPool(x) initially
     # (ignoring float precision slightly)
-    x_naive_down = F.avg_pool2d(x, 2)
+    x_naive_down = F.avg_pool2d(x, kernel_size=2, stride=2) * 2
     diff = (x_down - x_naive_down).abs().sum()
     print(f"Difference from naive avg pool after init: {diff.item():.6f} (Should be close to 0)")
     

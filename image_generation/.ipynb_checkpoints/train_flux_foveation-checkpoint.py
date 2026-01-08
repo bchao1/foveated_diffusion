@@ -973,10 +973,10 @@ def main(args):
                 elif isinstance(unwrap_model(model), (TokenUpsampler, TokenDownsampler)):
                     if isinstance(unwrap_model(model), TokenUpsampler):
                         #unwrap_model(model).save_pretrained(os.path.join(output_dir, "token_upsampler"))
-                        torch.save(unwrap_model(model), os.path.join(output_dir, "token_upsampler.pt"))
+                        torch.save(unwrap_model(model).state_dict(), os.path.join(output_dir, "token_upsampler.pt"))
                     else:
                         #unwrap_model(model).save_pretrained(os.path.join(output_dir, "token_downsampler"))
-                        torch.save(unwrap_model(model), os.path.join(output_dir, "token_downsampler.pt"))
+                        torch.save(unwrap_model(model).state_dict(), os.path.join(output_dir, "token_downsampler.pt"))
                 # ===============================
                 else:
                     raise ValueError(f"Wrong model supplied: {type(model)=}.")
