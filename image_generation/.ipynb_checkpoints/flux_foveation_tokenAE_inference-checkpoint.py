@@ -40,8 +40,14 @@ def main(args):
         torch_dtype=torch.bfloat16
     ).to(device)
 
-    token_upsampler = TokenUpsampler(in_channels=64, out_channels=64, num_res_blocks=10).to(device).bfloat16()
-    token_downsampler = TokenDownsampler(in_channels=64, out_channels=64, num_res_blocks=10).to(device).bfloat16()
+    token_upsampler = TokenUpsampler(in_channels=64, out_channels=64, num_res_blocks=10)
+    token_downsampler = TokenDownsampler(in_channels=64, out_channels=64, num_res_blocks=10)
+    if args.tokenAE_folder is not None:
+        token_upsampler = torch.load(os.path.join(args.tokenAE_folder, "token_upsampler.pt"), map_location='cpu', weights_only=False)
+        token_downsampler = torch.load(os.path.join(args.tokenAE_folder, "token_downsampler.pt"), map_location='cpu', weights_only=False)
+    token_upsampler = token_upsampler.to(device).bfloat16()
+    token_downsampler = token_downsampler.to(device).bfloat16()
+    
 
     prompt = args.prompt
     prompt = "A highly detailed photograph of a racecar parked on a road, cinematic composition"
@@ -128,6 +134,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run FluxPipeline with custom arguments")
 
     parser.add_argument('--pretrained_model_name_or_path', required=True)
+    parser.add_argument('--tokenAE_folder', default=None, type=str)
     parser.add_argument('--height', type=int, default=1024, help='Image height')
     parser.add_argument('--width', type=int, default=1024, help='Image width')
     parser.add_argument('--guidance_scale', type=float, default=3.5, help='Guidance scale')
