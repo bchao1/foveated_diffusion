@@ -18,7 +18,7 @@ from transformers import (
 from transformer_flux_crpa import FluxPhaseAlignedTransformer2DModel 
 from pipeline_flux_foveation_tokenAE import FluxPipeline_Foveation
 from utils import create_foveation_mask
-from adapter_foveation import TokenDownsampler, TokenUpsampler
+from adapter_foveation_time_cond import TokenDownsampler, TokenUpsampler
 
 ## 1. Setup Configuration
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -55,8 +55,8 @@ print(f"foveation_mask shape: {foveation_mask.shape}")
 #foveation_mask = foveation_mask_high_res.to(device, dtype=weight_dtype) # 64, 64
 
 # set token_upsampler and token_downsampler attributes in pipe
-token_upsampler = TokenUpsampler(in_channels=64, out_channels=64, num_res_blocks=10).to(device).bfloat16()
-token_downsampler = TokenDownsampler(in_channels=64, out_channels=64, num_res_blocks=10).to(device).bfloat16()
+token_upsampler = TokenUpsampler(in_channels=64, out_channels=64, embedding_dim=transformer.inner_dim, num_res_blocks=10).to(device).bfloat16()
+token_downsampler = TokenDownsampler(in_channels=64, out_channels=64, embedding_dim=transformer.inner_dim, num_res_blocks=10).to(device).bfloat16()
 
 
 
@@ -127,16 +127,21 @@ with torch.no_grad():
     )
     joint_attention_kwargs.update({"resolution_mask": resolution_mask, "resolution_mask_top_left": resolution_mask_top_left})
 
+
+    guidance = torch.tensor([3.5]).to(device, dtype=weight_dtype).expand(bsz) # Line 1213
+    timesteps = torch.tensor([1.0]).to(device, dtype=weight_dtype).expand(bsz) # Line 1261
+    
+    # calculate timeembeddings
+    temb = transformer.time_text_embed(timesteps, guidance, pooled_prompt_embeds)
+    print(f"temb shape: {temb.shape}", transformer.inner_dim, temb.device)
+
     # pack model input and add noise (no noise here)
     # add noise here and pack
     noise = torch.randn_like(model_input)
     noisy_model_input = model_input + noise # fix noise here
     # pack and downsample latents
     packed_noisy_model_input = FluxPipeline_Foveation._pack_latents(noisy_model_input, model_input.shape[0], model_input.shape[1], model_input.shape[2], model_input.shape[3]) # Line 924. (1, 4096, 64)
-    packed_noisy_model_input = FluxPipeline_Foveation._downsample_latents(packed_noisy_model_input, latent_height, latent_width, foveation_mask=foveation_mask, token_downsampler=token_downsampler) # Line 1265, (1, 1087, 64)
-
-    guidance = torch.tensor([3.5]).to(device, dtype=weight_dtype).expand(bsz) # Line 1213
-    timesteps = torch.tensor([1.0]).to(device, dtype=weight_dtype).expand(bsz) # Line 1261
+    packed_noisy_model_input = FluxPipeline_Foveation._downsample_latents(packed_noisy_model_input, latent_height, latent_width, foveation_mask=foveation_mask, token_downsampler=token_downsampler, temb=temb) # Line 1265, (1, 1087, 64)
 
     model_pred = transformer(
         hidden_states=packed_noisy_model_input,
@@ -150,7 +155,7 @@ with torch.no_grad():
         joint_attention_kwargs=joint_attention_kwargs,
         return_dict=False,
     )[0] # (1, 1087, 64) # Line 1272
-    model_pred = FluxPipeline_Foveation._upsample_noise_pred(model_pred, latent_height, latent_width, foveation_mask, token_upsampler=token_upsampler) # Line 1283, (1, 4096, 64)
+    model_pred = FluxPipeline_Foveation._upsample_noise_pred(model_pred, latent_height, latent_width, foveation_mask, token_upsampler=token_upsampler, temb=temb) # Line 1283, (1, 4096, 64)
     model_pred = FluxPipeline_Foveation._unpack_latents(
         model_pred,
         height=model_input.shape[2] * vae_scale_factor,
