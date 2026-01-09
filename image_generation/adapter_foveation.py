@@ -18,7 +18,7 @@ class ResidualBlock(nn.Module):
         return x + self.block(x)
 
 class TokenDownsampler(nn.Module):
-    def __init__(self, in_channels, out_channels, num_res_blocks=2):
+    def __init__(self, in_channels, out_channels, embedding_dim=None, num_res_blocks=2):
         super().__init__()
         
         # 1. Learned Branch (CNN)
@@ -76,7 +76,7 @@ class TokenDownsampler(nn.Module):
         return x_naive + x_learned
 
 class TokenUpsampler(nn.Module):
-    def __init__(self, in_channels, out_channels, num_res_blocks=2):
+    def __init__(self, in_channels, out_channels, embedding_dim=None, num_res_blocks=2):
         super().__init__()
 
         # 1. Learned Branch (CNN)
