@@ -133,7 +133,7 @@ with torch.no_grad():
     
     # calculate timeembeddings
     temb = transformer.time_text_embed(timesteps, guidance, pooled_prompt_embeds)
-    print(f"temb shape: {temb.shape}", transformer.inner_dim, temb.device)
+    print(f"temb shape: {temb.shape}", transformer.inner_dim, temb.device, timesteps.dtype, temb.dtype)
 
     # pack model input and add noise (no noise here)
     # add noise here and pack

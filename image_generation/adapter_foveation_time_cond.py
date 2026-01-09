@@ -139,7 +139,7 @@ class TokenUpsampler(nn.Module):
         # 1. Learned Branch (CNN)
         self.res_blocks = []
         for _ in range(num_res_blocks):
-            self.res_blocks.append(ResidualBlock(in_channels, embedding_dim))
+            self.res_blocks.append(ResidualBlock(out_channels, embedding_dim))
         self.res_blocks = nn.ModuleList(self.res_blocks)
         
         # Transposed conv to increase resolution
@@ -177,9 +177,9 @@ class TokenUpsampler(nn.Module):
             x_naive = self.naive_proj(x_naive)
 
         # Path B: Learned Residual
+        x_learned = self.upsample(x)
         for block in self.res_blocks:
-            x_learned = block(x, temb)
-        x_learned = self.upsample(x_learned)
+            x_learned = block(x_learned, temb)
 
         # Output = Naive + Residual
         return x_naive + x_learned
