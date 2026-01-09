@@ -18,7 +18,7 @@ class ResidualBlock(nn.Module):
         return x + self.block(x)
 
 class TokenDownsampler(nn.Module):
-    def __init__(self, in_channels, out_channels, num_res_blocks=2):
+    def __init__(self, in_channels, out_channels, embedding_dim=None, num_res_blocks=2):
         super().__init__()
         
         # 1. Learned Branch (CNN)
@@ -58,7 +58,7 @@ class TokenDownsampler(nn.Module):
             if m.bias is not None:
                 nn.init.zeros_(m.bias)
 
-    def forward(self, x):
+    def forward(self, x, temb=None):
         # Path A: Naive (Average Pooling)
         # We assume "variance preserving" average pooling often used in diffusion
         # (Avg * 2) if fitting a specific distribution, but standard Avg is safer as baseline.
@@ -76,7 +76,7 @@ class TokenDownsampler(nn.Module):
         return x_naive + x_learned
 
 class TokenUpsampler(nn.Module):
-    def __init__(self, in_channels, out_channels, num_res_blocks=2):
+    def __init__(self, in_channels, out_channels, embedding_dim=None, num_res_blocks=2):
         super().__init__()
 
         # 1. Learned Branch (CNN)
@@ -112,7 +112,7 @@ class TokenUpsampler(nn.Module):
             if m.bias is not None:
                 nn.init.zeros_(m.bias)
 
-    def forward(self, x):
+    def forward(self, x, temb=None):
         # Path A: Naive (Bilinear Upsampling)
         x_naive = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False) * 0.5
 

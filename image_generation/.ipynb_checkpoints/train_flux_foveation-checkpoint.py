@@ -61,7 +61,8 @@ from diffusers.utils.import_utils import is_torch_npu_available
 from diffusers.utils.torch_utils import is_compiled_module
 
 # for token upsampling and downsampling 
-from adapter_foveation import TokenDownsampler, TokenUpsampler
+from adapter_foveation_time_cond import TokenDownsampler, TokenUpsampler
+#from adapter_foveation import TokenDownsampler, TokenUpsampler
 
 # handle image loading
 PngImagePlugin.MAX_TEXT_CHUNK = 1000 * (1024**2)
@@ -912,8 +913,8 @@ def main(args):
 
     # 0101: tokenAE 
     # ===============================
-    token_upsampler = TokenUpsampler(in_channels=64, out_channels=64, num_res_blocks=10)
-    token_downsampler = TokenDownsampler(in_channels=64, out_channels=64, num_res_blocks=10)
+    token_upsampler = TokenUpsampler(in_channels=64, out_channels=64, embedding_dim=transformer.inner_dim, num_res_blocks=10)
+    token_downsampler = TokenDownsampler(in_channels=64, out_channels=64, embedding_dim=transformer.inner_dim, num_res_blocks=10)
     # ===============================
 
     if args.enable_npu_flash_attention:
@@ -937,6 +938,7 @@ def main(args):
             "Mixed precision training with bfloat16 is not supported on MPS. Please use fp16 (recommended) or fp32 instead."
         )
 
+    transformer.to(accelerator.device, dtype=weight_dtype)
     vae.to(accelerator.device, dtype=weight_dtype)
     text_encoder_one.to(accelerator.device, dtype=weight_dtype)
     text_encoder_two.to(accelerator.device, dtype=weight_dtype)
@@ -1322,6 +1324,19 @@ def main(args):
                 indices = (u * noise_scheduler_copy.config.num_train_timesteps).long()
                 timesteps = noise_scheduler_copy.timesteps[indices].to(device=model_input.device)
 
+                # handle guidance
+                if unwrap_model(transformer).config.guidance_embeds:
+                    guidance = torch.tensor([args.guidance_scale], device=accelerator.device)
+                    guidance = guidance.expand(model_input.shape[0])
+                else:
+                    guidance = None
+
+                # generate time and text embeddings (for token samplers)
+                #print(timesteps.dtype, guidance.dtype, pooled_prompt_embeds.dtype)
+                #exit()
+                temb = transformer.time_text_embed(timesteps.to(dtype=pooled_prompt_embeds.dtype), guidance.to(dtype=pooled_prompt_embeds.dtype), pooled_prompt_embeds)
+                #temb = None
+
                 # Add noise according to flow matching.
                 # zt = (1 - texp) * x + texp * z1
                 sigmas = get_sigmas(timesteps, n_dim=model_input.ndim, dtype=model_input.dtype)
@@ -1336,15 +1351,9 @@ def main(args):
                 )
                 packed_noisy_model_input = FluxPipeline_Foveation._downsample_latents(
                     packed_noisy_model_input, latent_height, latent_width, 
-                    foveation_mask=foveation_mask, token_downsampler=token_downsampler
+                    foveation_mask=foveation_mask, token_downsampler=token_downsampler,
+                    temb=temb
                 )
-
-                # handle guidance
-                if unwrap_model(transformer).config.guidance_embeds:
-                    guidance = torch.tensor([args.guidance_scale], device=accelerator.device)
-                    guidance = guidance.expand(model_input.shape[0])
-                else:
-                    guidance = None
 
                 # Predict the noise residual
                 model_pred = transformer(
@@ -1362,7 +1371,8 @@ def main(args):
                 # upscaling height & width as discussed in https://github.com/huggingface/diffusers/pull/9257#discussion_r1731108042
                 model_pred = FluxPipeline_Foveation._upsample_noise_pred(
                     model_pred, latent_height, latent_width, 
-                    foveation_mask=foveation_mask, token_upsampler=token_upsampler
+                    foveation_mask=foveation_mask, token_upsampler=token_upsampler,
+                    temb=temb
                 )
                 model_pred = FluxPipeline_Foveation._unpack_latents(
                     model_pred,

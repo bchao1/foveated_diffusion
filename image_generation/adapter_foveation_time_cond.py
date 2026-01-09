@@ -114,7 +114,7 @@ class TokenDownsampler(nn.Module):
             if m.bias is not None:
                 nn.init.zeros_(m.bias)
 
-    def forward(self, x, temb=None):
+    def forward(self, x, temb):
         # Path A: Naive (Average Pooling)
         # We assume "variance preserving" average pooling often used in diffusion
         # (Avg * 2) if fitting a specific distribution, but standard Avg is safer as baseline.
@@ -169,7 +169,7 @@ class TokenUpsampler(nn.Module):
             if m.bias is not None:
                 nn.init.zeros_(m.bias)
 
-    def forward(self, x, temb=None):
+    def forward(self, x, temb):
         # Path A: Naive (Bilinear Upsampling)
         x_naive = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False) * 0.5
 
