@@ -80,10 +80,10 @@ class TokenUpsampler(nn.Module):
         super().__init__()
 
         # 1. Learned Branch (CNN)
-        layers = []
+        self.res_blocks = []
         for _ in range(num_res_blocks):
-            layers.append(ResidualBlock(in_channels))
-        self.res_blocks = nn.Sequential(*layers)
+            self.res_blocks.append(ResidualBlock(out_channels))
+        self.res_blocks = nn.ModuleList(self.res_blocks)
         
         # Transposed conv to increase resolution
         self.upsample = nn.ConvTranspose2d(
@@ -120,8 +120,9 @@ class TokenUpsampler(nn.Module):
             x_naive = self.naive_proj(x_naive)
 
         # Path B: Learned Residual
-        x_learned = self.res_blocks(x)
-        x_learned = self.upsample(x_learned)
+        x_learned = self.upsample(x)
+        for block in self.res_blocks:
+            x_learned = block(x_learned)
 
         # Output = Naive + Residual
         return x_naive + x_learned
