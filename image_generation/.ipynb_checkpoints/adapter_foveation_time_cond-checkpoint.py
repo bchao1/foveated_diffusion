@@ -75,8 +75,10 @@ class ResidualBlock(nn.Module):
         return residual + x
 
 class TokenDownsampler(nn.Module):
-    def __init__(self, in_channels, out_channels, embedding_dim, num_res_blocks=2):
+    def __init__(self, in_channels, out_channels, embedding_dim, num_res_blocks=2, variance_correction=False):
         super().__init__()
+
+        self.variance_correction = variance_correction
         
         # 1. Learned Branch (CNN)
         self.res_blocks = []
@@ -119,7 +121,9 @@ class TokenDownsampler(nn.Module):
         # We assume "variance preserving" average pooling often used in diffusion
         # (Avg * 2) if fitting a specific distribution, but standard Avg is safer as baseline.
         # Check if your specific VAE/DiT expects variance correction. Standard here:
-        x_naive = F.avg_pool2d(x, kernel_size=2, stride=2) * 2
+        x_naive = F.avg_pool2d(x, kernel_size=2, stride=2)
+        if self.variance_correction:
+            x_naive *= 2 # used in first-step of the training-free results
         
         if self.use_projection:
             x_naive = self.naive_proj(x_naive)
@@ -146,7 +150,7 @@ class UpsampleBilinear(nn.Module):
         )
         
 class TokenUpsampler(nn.Module):
-    def __init__(self, in_channels, out_channels, embedding_dim, num_res_blocks=2, upsample_mode="bilinear", learn_residual=False):
+    def __init__(self, in_channels, out_channels, embedding_dim, num_res_blocks=2, upsample_mode="bilinear", learn_residual=True):
         super().__init__()
 
         self.learn_residual = learn_residual
