@@ -60,7 +60,8 @@ from diffusers.utils.hub_utils import load_or_create_model_card, populate_model_
 from diffusers.utils.import_utils import is_torch_npu_available
 from diffusers.utils.torch_utils import is_compiled_module
 
-# for token upsampling and downsampling 
+# for token upsampling and downsampling. either time-conditioned or no
+
 from adapter_foveation_time_cond import TokenDownsampler, TokenUpsampler
 #from adapter_foveation import TokenDownsampler, TokenUpsampler
 
@@ -547,6 +548,10 @@ def parse_args(input_args=None):
     parser.add_argument("--enable_npu_flash_attention", action="store_true", help="Enabla Flash Attention for NPU")
     parser.add_argument("--debug_mode", default=None, type=str)
 
+    # token AE params
+    parser.add_argument("--downsampler_variance_correction", action="store_true")
+    parser.add_argument("--upsampler_learn_residual", action="store_true")
+
     if input_args is not None:
         args = parser.parse_args(input_args)
     else:
@@ -913,8 +918,10 @@ def main(args):
 
     # 0101: tokenAE 
     # ===============================
-    token_upsampler = TokenUpsampler(in_channels=64, out_channels=64, embedding_dim=transformer.inner_dim, num_res_blocks=10)
-    token_downsampler = TokenDownsampler(in_channels=64, out_channels=64, embedding_dim=transformer.inner_dim, num_res_blocks=10)
+    token_upsampler = TokenUpsampler(in_channels=64, out_channels=64, embedding_dim=transformer.inner_dim, num_res_blocks=10, 
+                                     learn_residual=args.upsampler_learn_residual)
+    token_downsampler = TokenDownsampler(in_channels=64, out_channels=64, embedding_dim=transformer.inner_dim, num_res_blocks=10,
+                                         variance_correction=args.downsampler_variance_correction)
     # ===============================
 
     if args.enable_npu_flash_attention:
