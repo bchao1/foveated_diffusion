@@ -62,8 +62,8 @@ from diffusers.utils.torch_utils import is_compiled_module
 
 # for token upsampling and downsampling. either time-conditioned or no
 
-#from adapter_foveation_time_cond import TokenDownsampler, TokenUpsampler
-from adapter_foveation import TokenDownsampler, TokenUpsampler
+from adapter_foveation_time_cond import TokenDownsampler, TokenUpsampler
+#from adapter_foveation import TokenDownsampler, TokenUpsampler
 
 # handle image loading
 PngImagePlugin.MAX_TEXT_CHUNK = 1000 * (1024**2)
