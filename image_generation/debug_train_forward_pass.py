@@ -25,7 +25,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 weight_dtype = torch.bfloat16
 model_id = "black-forest-labs/FLUX.1-dev"
 resolution = 1024
-batch_size = 1
+batch_size = 2
 max_sequence_length = 256
 
 print(f"Testing on device: {device} with dtype: {weight_dtype}")
@@ -156,12 +156,18 @@ with torch.no_grad():
         return_dict=False,
     )[0] # (1, 1087, 64) # Line 1272
     model_pred = FluxPipeline_Foveation._upsample_noise_pred(model_pred, latent_height, latent_width, foveation_mask, token_upsampler=token_upsampler, temb=temb) # Line 1283, (1, 4096, 64)
+   
+    print(f"model_pred shape before unpacking: {model_pred.shape}")
     model_pred = FluxPipeline_Foveation._unpack_latents(
         model_pred,
         height=model_input.shape[2] * vae_scale_factor,
         width=model_input.shape[3] * vae_scale_factor,
         vae_scale_factor=vae_scale_factor,
     ) # (1, 16, 128, 128)
+    print(f"model_pred shape after unpacking: {model_pred.shape}")
+
+    print(f"model_pred shape: {model_pred.shape}")
+    print(f"noisy_model_input shape: {noisy_model_input.shape}")
 
     assert model_pred.shape == noisy_model_input.shape
     
