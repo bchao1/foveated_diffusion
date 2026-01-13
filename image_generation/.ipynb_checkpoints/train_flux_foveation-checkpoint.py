@@ -159,6 +159,63 @@ def log_validation(
 
     return images
 
+def tensor_to_pil(flow_tensor):
+    """
+    Converts a flow tensor [B, C, H, W] to a list of PIL Images.
+    Visualizes the first 3 channels mapped to RGB.
+    """
+    # 1. Detach and move to CPU
+    # Take first 3 channels for RGB visualization
+    # Shape: [B, 3, H, W]
+    viz = flow_tensor[:, :3, :, :].detach().float().cpu()
+
+    # 2. Normalize to [0, 1] range for visualization
+    # We normalize each image individually based on its max absolute value
+    # This ensures 0 flow looks "Gray" (0.5), positive is bright, negative is dark.
+    images = []
+    for i in range(viz.shape[0]):
+        max_val = torch.max(torch.abs(viz[i]))
+        if max_val > 1e-6:
+            # Scale to [-0.5, 0.5] then shift to [0, 1]
+            # Result: 0.0 -> 0.5 (Gray), +Max -> 1.0 (White), -Max -> 0.0 (Black)
+            img_tensor = (viz[i] / (2 * max_val)) + 0.5
+        else:
+            img_tensor = torch.full_like(viz[i], 0.5) # Gray if zero flow
+
+        # 3. Clamp and convert to uint8 [H, W, C]
+        img_tensor = torch.clamp(img_tensor, 0, 1)
+        img_np = (img_tensor.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+        
+        # 4. Convert to PIL
+        images.append(Image.fromarray(img_np))
+        
+    return images
+    
+def log_images(accelerator, images_dict, is_final_validation=False):
+
+    for tracker in accelerator.trackers:
+        phase_name = "test" if is_final_validation else "validation"
+
+        log_payload = {}
+
+        for image_name, image_list in images_dict.items():
+            # 2. Create a unique key using the phase and the image type
+            # Example keys: "validation/target_flow", "validation/pred_flow"
+            key = f"{phase_name}/{image_name}"
+            
+            # 3. Add to the payload
+            log_payload[key] = [
+                wandb.Image(image, caption=f"{image_name} {i}") 
+                for i, image in enumerate(image_list)
+            ]
+        
+        # 4. Log everything at once
+        # This guarantees they all appear on the same timeline step
+        if tracker.name == "wandb":
+            tracker.log(log_payload)
+        else:
+            raise ValueError(f"Tracker {tracker.name} not found!")
+        
 
 def import_model_class_from_model_name_or_path(
     pretrained_model_name_or_path: str, revision: str, subfolder: str = "text_encoder"
@@ -1269,9 +1326,13 @@ def main(args):
             # 0101: prepare foveation masks
             # ===============================
             r = np.random.choice(np.linspace(0.1, 1.0, 10))
+            #r = 0.5
+            
             center_min = -(1 - r) * 0.5
             center_max = (1 - r) * 0.5
             center_x, center_y = np.random.uniform(center_min, center_max, 2)
+            center_x, center_y = 0, 0
+            
             foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(center_x, center_y), r = r)
             foveation_mask = foveation_mask.to(accelerator.device, dtype=weight_dtype)
             joint_attention_kwargs = {}
@@ -1330,7 +1391,11 @@ def main(args):
                 )
                 indices = (u * noise_scheduler_copy.config.num_train_timesteps).long()
                 timesteps = noise_scheduler_copy.timesteps[indices].to(device=model_input.device)
-
+                
+                if args.debug_mode == "single":
+                    # fix timestep training
+                    timesteps = torch.full_like(timesteps, 500)
+                
                 # handle guidance
                 if unwrap_model(transformer).config.guidance_embeds:
                     guidance = torch.tensor([args.guidance_scale], device=accelerator.device)
@@ -1441,6 +1506,15 @@ def main(args):
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
+
+                    if global_step % 100 == 0:
+                        # log images
+                        images_dict = {
+                            "model_pred": tensor_to_pil(model_pred.float()),
+                            "target": tensor_to_pil(target.float()),
+                            "error": tensor_to_pil((model_pred.float() - target.float())**2)
+                        }
+                        log_images(accelerator, images_dict)
 
                     if (args.validation_prompt is not None) and (global_step % 1000 == 0):
                         # create pipeline
