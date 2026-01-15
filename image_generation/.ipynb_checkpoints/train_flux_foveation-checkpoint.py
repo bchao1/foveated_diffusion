@@ -977,7 +977,7 @@ def main(args):
     # ===============================
     token_upsampler = TokenUpsampler(in_channels=16, out_channels=16, embedding_dim=transformer.inner_dim, num_res_blocks=10, 
                                      learn_residual=args.upsampler_learn_residual)
-    token_downsampler = TokenDownsampler(in_channels=64, out_channels=64, embedding_dim=transformer.inner_dim, num_res_blocks=10,
+    token_downsampler = TokenDownsampler(in_channels=16, out_channels=16, embedding_dim=transformer.inner_dim, num_res_blocks=10,
                                          variance_correction=args.downsampler_variance_correction)
     # ===============================
 
@@ -1392,9 +1392,9 @@ def main(args):
                 indices = (u * noise_scheduler_copy.config.num_train_timesteps).long()
                 timesteps = noise_scheduler_copy.timesteps[indices].to(device=model_input.device)
                 
-                if args.debug_mode == "single":
-                    # fix timestep training
-                    timesteps = torch.full_like(timesteps, 500)
+                #if args.debug_mode == "single":
+                #    # fix timestep training
+                #    timesteps = torch.full_like(timesteps, 500)
                 
                 # handle guidance
                 if unwrap_model(transformer).config.guidance_embeds:

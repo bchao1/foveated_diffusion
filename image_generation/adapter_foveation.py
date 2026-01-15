@@ -76,8 +76,10 @@ class TokenDownsampler(nn.Module):
         return x_naive + x_learned
 
 class TokenUpsampler(nn.Module):
-    def __init__(self, in_channels, out_channels, embedding_dim=None, num_res_blocks=2):
+    def __init__(self, in_channels, out_channels, embedding_dim=None, num_res_blocks=2, naive_upsample_mode="bilinear"):
         super().__init__()
+
+        self.naive_upsample_mode = naive_upsample_mode
 
         # 1. Learned Branch (CNN)
         self.res_blocks = []
@@ -114,7 +116,12 @@ class TokenUpsampler(nn.Module):
 
     def forward(self, x, temb=None):
         # Path A: Naive (Bilinear Upsampling)
-        x_naive = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False) * 0.5
+        if self.naive_upsample_mode == "bilinear":
+            x_naive = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False) * 0.5
+        elif self.naive_upsample_mode == "nearest":
+            x_naive = F.interpolate(x, scale_factor=2, mode="nearest")
+        else:
+            raise ValueError(f"Naive Upsample mode {self.naive_upsample_mode} is not supported!")
 
         if self.use_projection:
             x_naive = self.naive_proj(x_naive)
@@ -125,7 +132,7 @@ class TokenUpsampler(nn.Module):
             x_learned = block(x_learned)
 
         # Output = Naive + Residual
-        return x_naive + x_learned
+        return x_naive #+ x_learned
 
 def count_parameters(model):
     total_params = sum(p.numel() for p in model.parameters())
