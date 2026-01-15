@@ -129,7 +129,9 @@ def log_validation(
 
     # generate masks
     foveation_mask_list = []
-    for r in np.linspace(0.1, 1.0, args.num_validation_images):
+    #r_list = np.linspace(0.1, 1.0, args.num_validation_images)
+    r_list = [0.5]
+    for r in r_list:
         foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(0, 0), r = r)
         foveation_mask = foveation_mask.to(accelerator.device, dtype=torch_dtype)
         foveation_mask_list.append(foveation_mask)
@@ -607,6 +609,8 @@ def parse_args(input_args=None):
 
     # token AE params
     parser.add_argument("--downsampler_variance_correction", action="store_true")
+    parser.add_argument("--upsampler_variance_correction", action="store_true")
+    parser.add_argument("--downsampler_learn_residual", action="store_true")
     parser.add_argument("--upsampler_learn_residual", action="store_true")
 
     if input_args is not None:
@@ -978,7 +982,7 @@ def main(args):
     token_upsampler = TokenUpsampler(in_channels=16, out_channels=16, embedding_dim=transformer.inner_dim, num_res_blocks=10, 
                                      learn_residual=args.upsampler_learn_residual)
     token_downsampler = TokenDownsampler(in_channels=16, out_channels=16, embedding_dim=transformer.inner_dim, num_res_blocks=10,
-                                         variance_correction=args.downsampler_variance_correction)
+                                         learn_residual=args.downsampler_learn_residual)
     # ===============================
 
     if args.enable_npu_flash_attention:

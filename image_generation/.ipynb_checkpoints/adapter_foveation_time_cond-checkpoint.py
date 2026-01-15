@@ -75,10 +75,11 @@ class ResidualBlock(nn.Module):
         return residual + x
 
 class TokenDownsampler(nn.Module):
-    def __init__(self, in_channels, out_channels, embedding_dim, num_res_blocks=2, variance_correction=False):
+    def __init__(self, in_channels, out_channels, embedding_dim, num_res_blocks=2, learn_residual=False, variance_correction=False):
         super().__init__()
 
         self.variance_correction = variance_correction
+        self.learn_residual = learn_residual
         
         # 1. Learned Branch (CNN)
         self.res_blocks = []
@@ -121,12 +122,15 @@ class TokenDownsampler(nn.Module):
         # We assume "variance preserving" average pooling often used in diffusion
         # (Avg * 2) if fitting a specific distribution, but standard Avg is safer as baseline.
         # Check if your specific VAE/DiT expects variance correction. Standard here:
-        x_naive = F.avg_pool2d(x, kernel_size=2, stride=2)
-        if self.variance_correction:
-            x_naive *= 2 # used in first-step of the training-free results
-        
-        if self.use_projection:
-            x_naive = self.naive_proj(x_naive)
+        if self.learn_residual:
+            x_naive = F.avg_pool2d(x, kernel_size=2, stride=2)
+            if self.variance_correction:
+                x_naive *= 2 # used in first-step of the training-free results
+            
+            if self.use_projection:
+                x_naive = self.naive_proj(x_naive)
+        else:
+            x_naive = 0
 
         # Path B: Learned Residual
         for block in self.res_blocks:
@@ -150,11 +154,21 @@ class UpsampleBilinear(nn.Module):
         )
         
 class TokenUpsampler(nn.Module):
-    def __init__(self, in_channels, out_channels, embedding_dim, num_res_blocks=2, upsample_mode="bilinear", learn_residual=True):
+    def __init__(self, 
+        in_channels, 
+        out_channels, 
+        embedding_dim, 
+        num_res_blocks=2, 
+        cnn_upsample_mode="bilinear", 
+        naive_upsample_mode="bilinear",
+        learn_residual=False,
+        variance_correction=False
+    ):
         super().__init__()
 
         self.learn_residual = learn_residual
-        self.upsample_mode = upsample_mode
+        self.cnn_upsample_mode = cnn_upsample_mode
+        self.naive_upsample_mode = naive_upsample_mode
         
         # 1. Learned Branch (CNN)
         self.res_blocks = []
@@ -163,7 +177,7 @@ class TokenUpsampler(nn.Module):
         self.res_blocks = nn.ModuleList(self.res_blocks)
         
         # Transposed conv to increase resolution
-        if self.upsample_mode == "conv":
+        if self.cnn_upsample_mode == "conv":
             self.upsample = nn.ConvTranspose2d(
                 in_channels, 
                 out_channels, 
@@ -171,10 +185,10 @@ class TokenUpsampler(nn.Module):
                 stride=2, 
                 padding=1
             )
-        elif self.upsample_mode == "bilinear":
+        elif self.cnn_upsample_mode == "bilinear":
             self.upsample = UpsampleBilinear(scale_factor=2)
         else:
-            raise ValueError(f"Upsample mode {upsample_mode} is not supported!")
+            raise ValueError(f"CNN Upsample mode {cnn_upsample_mode} is not supported!")
 
         # 2. Projection for Naive Branch (if channels change)
         self.use_projection = in_channels != out_channels
@@ -189,7 +203,7 @@ class TokenUpsampler(nn.Module):
         # ZERO-INIT the final layer so it starts as 0 contribution
         #nn.init.zeros_(self.upsample.weight)
         #if self.upsample.bias is not None:
-        #    nn.init.zeros_(self.upsample.bias)
+        #     nn.init.zeros_(self.upsample.bias)
 
     def _init_weights(self, m):
         if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d, nn.Linear)):
@@ -201,7 +215,13 @@ class TokenUpsampler(nn.Module):
         
         # Path A: Naive (Bilinear Upsampling or straight-through)
         if self.learn_residual:
-            x_naive = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False) * 0.5
+            if self.naive_upsample_mode == "bilinear":
+                x_naive = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False) * 0.5
+            elif self.naive_upsample_mode == "nearest":
+                x_naive = F.interpolate(x, scale_factor=2, mode="nearest")
+            else:
+                raise ValueError(f"Naive Upsample mode {self.naive_upsample_mode} is not supported!")
+
             if self.use_projection:
                 x_naive = self.naive_proj(x_naive)
         else:
@@ -213,7 +233,7 @@ class TokenUpsampler(nn.Module):
             x_learned = block(x_learned, temb)
 
         # Output = Naive + Residual
-        return x_naive + x_learned
+        return x_naive #+ x_learned
 
 def count_parameters(model):
     total_params = sum(p.numel() for p in model.parameters())
@@ -231,7 +251,7 @@ if __name__ == "__main__":
 
     # Instantiate
     downsampler = TokenDownsampler(in_channels=128, out_channels=128, embedding_dim=3072, num_res_blocks=2).to(device)
-    upsampler = TokenUpsampler(in_channels=128, out_channels=128, embedding_dim=3072, num_res_blocks=2).to(device)
+    upsampler = TokenUpsampler(in_channels=128, out_channels=128, embedding_dim=3072, num_res_blocks=2, naive_upsample_mode="nearest").to(device)
     temb = torch.randn(1, 3072).to(device)
 
     # Forward Pass

@@ -536,11 +536,11 @@ class FluxPipeline_Foveation(
             is_high_res_block = (mask_blocks.sum(dim=-1) > 0) # [32, 32]
             is_low_res_block = ~is_high_res_block # [32, 32]
             
-            print(is_high_res_block.sum(), is_low_res_block.sum())
+            #print(is_high_res_block.sum(), is_low_res_block.sum())
             #print(is_high_res_block.shape, is_low_res_block.shape)
-            save_image(is_high_res_block, "results/is_high_res_block.png", debug_visualization=True)
-            save_image(is_low_res_block, "results/is_low_res_block.png", debug_visualization=True)
-            save_image(foveation_mask, "results/foveation_mask.png", debug_visualization=True)
+            #save_image(is_high_res_block, "results/is_high_res_block.png", debug_visualization=True)
+            #save_image(is_low_res_block, "results/is_low_res_block.png", debug_visualization=True)
+            #save_image(foveation_mask, "results/foveation_mask.png", debug_visualization=True)
             #exit()
 
             # Handle IDs for RoPE (Averaging for LR)
@@ -590,14 +590,14 @@ class FluxPipeline_Foveation(
             num_hr_tokens = resolution_mask.sum().item()
             num_lr_tokens = resolution_mask.shape[0] - num_hr_tokens
             num_hr_top_left_tokens = num_hr_tokens // 4
-            print("num_hr_tokens: ", num_hr_tokens)
-            print("num_lr_tokens: ", num_lr_tokens)
-            print("num_hr_top_left_tokens: ", num_hr_top_left_tokens)
+            #print("num_hr_tokens: ", num_hr_tokens)
+            #print("num_lr_tokens: ", num_lr_tokens)
+            #print("num_hr_top_left_tokens: ", num_hr_top_left_tokens)
             #assert resolution_mask_top_left.sum().item() == num_hr_top_left_tokens + num_lr_tokens
 
             # resolution mask is 1 for HR, 0 for LR
             # resolution mask top left is 1 for HR top-left AND LR, and 0 for other blocks
-            print(resolution_mask.shape, resolution_mask_top_left.shape)
+            #print(resolution_mask.shape, resolution_mask_top_left.shape)
             #exit()
 
             return latent_image_ids.to(device=device, dtype=dtype), resolution_mask.to(device=device, dtype=dtype), resolution_mask_top_left.to(device=device, dtype=dtype)
@@ -640,28 +640,28 @@ class FluxPipeline_Foveation(
         # [B, H, W, C] -> [B, H/2, 2, W/2, 2, C] -> [B, H/2, W/2, 4, C]
         # these are packed, high-resolution latents
         latents_spatial = latents.view(batch_size, height, width, channels) # [B, 64, 64, 64]
-        print(latents_spatial.shape)
+        #print(latents_spatial.shape)
         latents_blocks = latents_spatial.view(batch_size, h_2, 2, w_2, 2, channels) # [B, 32, 2, 32, 2, 64]
         # Permute puts block elements in order: (0,0), (0,1), (1,0), (1,1). Index 0 is Top-Left.
         latents_blocks = latents_blocks.permute(0, 1, 3, 2, 4, 5).reshape(batch_size, h_2, w_2, 4, channels) # [B, 32, 32, 4, 64]
 
         # [H, W] -> [H/2, 2, W/2, 2] -> [H/2, W/2, 4]
         mask_blocks = mask.view(h_2, 2, w_2, 2).permute(0, 2, 1, 3).reshape(h_2, w_2, 4) # [32, 32, 4]
-        print(mask_blocks.shape)
+        #print(mask_blocks.shape)
         # will all be 1s because we are using high-resolution latent masks
-        save_image(mask_blocks[..., 0], "results/mask_blocks_0.png", debug_visualization=True)
-        save_image(mask_blocks[..., 1], "results/mask_blocks_1.png", debug_visualization=True)
-        save_image(mask_blocks[..., 2], "results/mask_blocks_2.png", debug_visualization=True)
-        save_image(mask_blocks[..., 3], "results/mask_blocks_3.png", debug_visualization=True)
+        #save_image(mask_blocks[..., 0], "results/mask_blocks_0.png", debug_visualization=True)
+        #save_image(mask_blocks[..., 1], "results/mask_blocks_1.png", debug_visualization=True)
+        #save_image(mask_blocks[..., 2], "results/mask_blocks_2.png", debug_visualization=True)
+        #save_image(mask_blocks[..., 3], "results/mask_blocks_3.png", debug_visualization=True)
         #exit()
 
         # 2. Determine Block Status
         # High Res = Any 1 in the 2x2 block; Low Res = All 0
         is_high_res_block = (mask_blocks.sum(dim=-1) > 0) # [H/2, W/2]
         is_low_res_block = ~is_high_res_block # [H/2, W/2]
-        print(is_high_res_block.shape, is_low_res_block.shape)
-        save_image(is_high_res_block, "results/is_high_res_block_in_downsample.png", debug_visualization=True)
-        save_image(is_low_res_block, "results/is_low_res_block_in_downsample.png", debug_visualization=True)
+        #print(is_high_res_block.shape, is_low_res_block.shape)
+        #save_image(is_high_res_block, "results/is_high_res_block_in_downsample.png", debug_visualization=True)
+        #save_image(is_low_res_block, "results/is_low_res_block_in_downsample.png", debug_visualization=True)
         
 
         # 3. Calculate Low-Res Replacements
@@ -706,24 +706,24 @@ class FluxPipeline_Foveation(
         # Indices 1, 2, 3 are discarded.
         valid_tokens[is_low_res_block, 1:] = False
 
-        save_image(valid_tokens[..., 0], "results/valid_tokens_0.png", debug_visualization=True)
-        save_image(valid_tokens[..., 1], "results/valid_tokens_1.png", debug_visualization=True)
-        save_image(valid_tokens[..., 2], "results/valid_tokens_2.png", debug_visualization=True)
-        save_image(valid_tokens[..., 3], "results/valid_tokens_3.png", debug_visualization=True)
+        #save_image(valid_tokens[..., 0], "results/valid_tokens_0.png", debug_visualization=True)
+        #save_image(valid_tokens[..., 1], "results/valid_tokens_1.png", debug_visualization=True)
+        #save_image(valid_tokens[..., 2], "results/valid_tokens_2.png", debug_visualization=True)
+        #save_image(valid_tokens[..., 3], "results/valid_tokens_3.png", debug_visualization=True)
 
-        print(output_latents.shape, valid_tokens.shape)
+        #print(output_latents.shape, valid_tokens.shape)
         #exit()
 
         # permute back to orignal order
         output_latents = output_latents.view(batch_size, h_2, w_2, 2, 2, channels).permute(0, 1, 3, 2, 4, 5).reshape(batch_size, h_2 * 2, w_2 * 2, channels) # [B, 64, 64, 64]
         valid_tokens = valid_tokens.view(h_2, w_2, 2, 2).permute(0, 2, 1, 3).reshape(h_2 * 2, w_2 * 2) # [64, 64]
-        print(output_latents.shape, valid_tokens.shape)
+        #print(output_latents.shape, valid_tokens.shape)
         # flatten and select
         output_latents = output_latents.view(batch_size, -1, channels) # [B, Total_Tokens, C]
         valid_tokens = valid_tokens.view(-1) # [Total_Tokens]
-        print(output_latents.shape, valid_tokens.shape)
+        #print(output_latents.shape, valid_tokens.shape)
         latents_downsampled = output_latents[:, valid_tokens, :]
-        print(latents_downsampled.shape)
+        #print(latents_downsampled.shape)
         #exit()
         return latents_downsampled
     
@@ -764,7 +764,7 @@ class FluxPipeline_Foveation(
         #print(latents.shape)
         sample_mode = "average"
         if token_downsampler is not None:
-            print("using token downsampler")
+            #print("using token downsampler")
             latents = token_downsampler(latents, temb).to(output_latents.dtype)
         elif sample_mode == "average":
             latents = F.interpolate(latents, scale_factor=0.5, mode="bilinear") * 2 # [B, 16, 64, 64]
@@ -1136,7 +1136,7 @@ class FluxPipeline_Foveation(
 
         # ... [Generation logic] ...
         latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
-        print("latents shape before packing: ", latents.shape) 
+        #print("latents shape before packing: ", latents.shape) 
         latents = self._pack_latents(latents, batch_size, num_channels_latents, height, width)
         # prepare high-resolution latents, never downsample it
         #latents = self._downsample_latents(latents, self.latent_height, self.latent_width, foveation_mask=foveation_mask)
