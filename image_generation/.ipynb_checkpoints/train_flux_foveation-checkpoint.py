@@ -975,7 +975,7 @@ def main(args):
 
     # 0101: tokenAE 
     # ===============================
-    token_upsampler = TokenUpsampler(in_channels=64, out_channels=64, embedding_dim=transformer.inner_dim, num_res_blocks=10, 
+    token_upsampler = TokenUpsampler(in_channels=16, out_channels=16, embedding_dim=transformer.inner_dim, num_res_blocks=10, 
                                      learn_residual=args.upsampler_learn_residual)
     token_downsampler = TokenDownsampler(in_channels=64, out_channels=64, embedding_dim=transformer.inner_dim, num_res_blocks=10,
                                          variance_correction=args.downsampler_variance_correction)
@@ -1326,7 +1326,7 @@ def main(args):
             # 0101: prepare foveation masks
             # ===============================
             r = np.random.choice(np.linspace(0.1, 1.0, 10))
-            #r = 0.5
+            r = 0.5
             
             center_min = -(1 - r) * 0.5
             center_max = (1 - r) * 0.5
@@ -1441,6 +1441,7 @@ def main(args):
                     return_dict=False,
                 )[0]
                 # upscaling height & width as discussed in https://github.com/huggingface/diffusers/pull/9257#discussion_r1731108042
+                """
                 model_pred = FluxPipeline_Foveation._upsample_noise_pred(
                     model_pred, latent_height, latent_width, 
                     foveation_mask=foveation_mask, token_upsampler=token_upsampler,
@@ -1452,6 +1453,16 @@ def main(args):
                     width=model_input.shape[3] * vae_scale_factor,
                     vae_scale_factor=vae_scale_factor,
                 )
+                """
+                model_pred = FluxPipeline_Foveation._upsample_noise_pred_unpacked(
+                    model_pred, 
+                    latent_height, 
+                    latent_width, 
+                    vae_scale_factor=vae_scale_factor,
+                    foveation_mask=foveation_mask, 
+                    token_upsampler=token_upsampler, 
+                    temb=temb
+                ) # Returns [B, 16, 128, 128] directly
 
                 # these weighting schemes use a uniform timestep sampling
                 # and instead post-weight the loss
@@ -1459,6 +1470,7 @@ def main(args):
 
                 # flow matching loss
                 target = noise - model_input
+
 
                 # Compute regular loss.
                 loss = torch.mean(

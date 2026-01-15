@@ -1,7 +1,7 @@
 accelerate launch --main_process_port 29502 --num_processes 8 train_flux_foveation.py \
   --pretrained_model_name_or_path="/scratch/m000051-pm04/brianchc/FLUX.1-dev" \
   --instance_data_dir="/scratch/m000051-pm04/brianchc/Aesthetic-Train-V2" \
-  --output_dir="/scratch/m000051-pm04/brianchc/flux_foveation/model_checkpoints/0112_fix_t_center_fov" \
+  --output_dir="/scratch/m000051-pm04/brianchc/flux_foveation/model_checkpoints/0114_fix_t_fix_fov_unpacked" \
   --mixed_precision="bf16" \
   --train_batch_size=2 \
   --resolution 1024 \

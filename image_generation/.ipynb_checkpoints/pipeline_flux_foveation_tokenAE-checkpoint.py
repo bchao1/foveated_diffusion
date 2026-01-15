@@ -833,6 +833,96 @@ class FluxPipeline_Foveation(
         return final_output.reshape(batch_size, -1, noise_pred.shape[-1])
 
     @staticmethod
+    def _upsample_noise_pred_unpacked(noise_pred, latent_height, latent_width, vae_scale_factor, foveation_mask=None, token_upsampler=None, temb=None):
+        """
+        Upsamples in the Unpacked (Pixel) Domain to prevent grid artifacts,
+        while preserving the exact High-Res tokens from the Transformer.
+        """
+        if foveation_mask is None:
+            return noise_pred
+
+        batch_size = noise_pred.shape[0]
+        input_dtype = noise_pred.dtype
+        device = noise_pred.device
+
+        # LOW-RES UP-SAMPLING LOGIC
+        # 1. Pseudo-Downsample High-Res to Create Uniform Grid [H/2, W/2]
+        # This averages the 4 high-res tokens into 1, so the grid is compatible with the CNN.
+        # issue here? downsample still on packed latents...
+        noise_pred_low_res = FluxPipeline_Foveation._downsample_remaining_high_res(
+            noise_pred, 
+            latent_height, 
+            latent_width, 
+            foveation_mask=foveation_mask
+        ) # packed latents [B, H/2 * W/2, 64]
+        #print(f"noise_pred_low_res shape: {noise_pred_low_res.shape}, latent_height: {latent_height}, latent_width: {latent_width}")
+        noise_pred_low_res_unpacked = FluxPipeline_Foveation._unpack_latents(
+            noise_pred_low_res, 
+            height=latent_height * vae_scale_factor, 
+            width=latent_width * vae_scale_factor, 
+            vae_scale_factor=vae_scale_factor)
+        #print(f"noise_pred_low_res_unpacked shape: {noise_pred_low_res_unpacked.shape}")
+        noise_pred_low_res_unpacked_upsampled = token_upsampler(noise_pred_low_res_unpacked, temb)
+        #print(f"noise_pred_low_res_unpacked_upsampled shape: {noise_pred_low_res_unpacked_upsampled.shape}") # [1, 16, 128, 128]
+
+
+        # HIGH-RES UP-SAMPLING LOGIC
+        h_2, w_2 = latent_height // 2, latent_width // 2
+        mask = foveation_mask
+        mask_blocks = mask.view(h_2, 2, w_2, 2).permute(0, 2, 1, 3).reshape(h_2, w_2, 4)
+        is_high_res_block = (mask_blocks.sum(dim=-1) > 0) 
+        is_low_res_block = ~is_high_res_block
+
+        # B. Map sparse sequence to dense blocks
+        layout_mask = torch.ones(h_2, w_2, 4, device=device, dtype=torch.bool)
+        layout_mask[is_low_res_block, 1:] = False # Low res only uses index 0
+
+        reconstructed_blocks = torch.zeros(
+            batch_size, h_2 * w_2 * 4, noise_pred.shape[-1], 
+            device=device, dtype=noise_pred.dtype
+        )
+        reconstructed_blocks[:, layout_mask.view(-1), :] = noise_pred
+        reconstructed_blocks = reconstructed_blocks.view(batch_size, h_2, w_2, 4, -1)
+
+        # C. Fill Low-Res Holes (Replicate the single LR token to the other 3 empty slots)
+        # This is "Nearest Neighbor" upsampling in the Patch domain, just to get a valid grid for unpacking
+        if is_low_res_block.any():
+            lr_tokens = reconstructed_blocks[:, is_low_res_block, 0:1, :] # [B, N_LR, 1, C]
+            reconstructed_blocks[:, is_low_res_block, 1:, :] = lr_tokens # Fill indices 1,2,3
+            
+        # D. View as Spatial Grid of Patches [B, H, W, 64]
+        # (Standard FLUX Packing structure inverse)
+        dense_packed_grid = reconstructed_blocks.view(
+            batch_size, h_2, w_2, 2, 2, -1
+        ).permute(0, 1, 3, 2, 4, 5).reshape(batch_size, latent_height, latent_width, -1)
+
+        # 2. UNPACK to Pixel Space [B, 16, H_pixel, W_pixel]
+        # This restores the true spatial relationships between sub-pixels.
+        # height/width args here must be the PIXEL size.
+        # latent_height=64 means pixel_height=128 (since patch size is 2)
+        pixel_height = latent_height * 2 
+        pixel_width = latent_width * 2
+        
+        # Reshape to expected input for _unpack_latents: [B, H*W, 64]
+        flat_packed = dense_packed_grid.reshape(batch_size, -1, 64)
+        
+        noise_pred_high_res_unpacked = FluxPipeline_Foveation._unpack_latents(
+            flat_packed, 
+            height=pixel_height * vae_scale_factor, # _unpack divides by scale factor, so we multiply to cancel out
+            width=pixel_width * vae_scale_factor,
+            vae_scale_factor=vae_scale_factor
+        ) # Result: [B, 16, 128, 128]
+        #print(f"noise_pred_high_res_unpacked shape: {noise_pred_high_res_unpacked.shape}")
+        # upsampled foveation mask with NN
+        #print(foveation_mask.shape, pixel_height, pixel_width)
+        foveation_mask_upsampled = F.interpolate(foveation_mask.float().unsqueeze(0).unsqueeze(0), size=(pixel_height, pixel_width), mode='nearest').squeeze().bool()
+        #print(f"foveation_mask_upsampled shape: {foveation_mask_upsampled.shape}") # [128, 128]
+        
+        final_output = torch.where(foveation_mask_upsampled.to(device), noise_pred_high_res_unpacked.to(device), noise_pred_low_res_unpacked_upsampled.to(device))
+        #print(f"final_output shape: {final_output.shape}")
+        return final_output
+        
+    @staticmethod
     def _pack_latents(latents, batch_size, num_channels_latents, height, width):
         latents = latents.view(batch_size, num_channels_latents, height // 2, 2, width // 2, 2)
         latents = latents.permute(0, 2, 4, 1, 3, 5)
@@ -1284,7 +1374,17 @@ class FluxPipeline_Foveation(
                         joint_attention_kwargs=self.joint_attention_kwargs,
                         return_dict=False,
                     )[0]
-                    noise_pred = self._upsample_noise_pred(noise_pred, self.latent_height, self.latent_width, foveation_mask, token_upsampler=token_upsampler, temb=temb)
+                    #noise_pred = self._upsample_noise_pred(noise_pred, self.latent_height, self.latent_width, foveation_mask, token_upsampler=token_upsampler, temb=temb)
+                    noise_pred = FluxPipeline_Foveation._upsample_noise_pred_unpacked(
+                        noise_pred, 
+                        self.latent_height, 
+                        self.latent_width, 
+                        vae_scale_factor=self.vae_scale_factor,
+                        foveation_mask=foveation_mask, 
+                        token_upsampler=token_upsampler, 
+                        temb=temb
+                    ) # Returns [B, 16, 128, 128] directly
+                    noise_pred = FluxPipeline_Foveation._pack_latents(noise_pred, noise_pred.shape[0], noise_pred.shape[1], noise_pred.shape[2], noise_pred.shape[3])
 
                 if do_true_cfg:
                     if negative_image_embeds is not None:
@@ -1302,7 +1402,17 @@ class FluxPipeline_Foveation(
                             joint_attention_kwargs=self.joint_attention_kwargs,
                             return_dict=False,
                         )[0]
-                        neg_noise_pred = self._upsample_noise_pred(neg_noise_pred, self.latent_height, self.latent_width, foveation_mask, token_upsampler=token_upsampler, temb=temb)
+                        #neg_noise_pred = self._upsample_noise_pred(neg_noise_pred, self.latent_height, self.latent_width, foveation_mask, token_upsampler=token_upsampler, temb=temb)
+                        neg_noise_pred = FluxPipeline_Foveation._upsample_noise_pred_unpacked(
+                            neg_noise_pred, 
+                            self.latent_height, 
+                            self.latent_width, 
+                            vae_scale_factor=self.vae_scale_factor,
+                            foveation_mask=foveation_mask, 
+                            token_upsampler=token_upsampler, 
+                            temb=temb
+                        ) # Returns [B, 16, 128, 128] directly
+                        neg_noise_pred = FluxPipeline_Foveation._pack_latents(neg_noise_pred, neg_noise_pred.shape[0], neg_noise_pred.shape[1], neg_noise_pred.shape[2], neg_noise_pred.shape[3])
 
                     noise_pred = neg_noise_pred + true_cfg_scale * (noise_pred - neg_noise_pred)
 
