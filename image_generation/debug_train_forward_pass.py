@@ -25,7 +25,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 weight_dtype = torch.bfloat16
 model_id = "black-forest-labs/FLUX.1-dev"
 resolution = 1024
-batch_size = 2
+batch_size = 1
 max_sequence_length = 256
 
 print(f"Testing on device: {device} with dtype: {weight_dtype}")
@@ -48,14 +48,18 @@ scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(model_id, subfolder=
 foveation_mask = create_foveation_mask(resolution // 16, resolution // 16, center=(0, 0), r = 0.1) # low-res foveation mask then upsample
 print(f"foveation_mask shape: {foveation_mask.shape}")
 
-#foveation_mask_low_res = foveation_mask.clone()
-#foveation_mask = foveation_mask.unsqueeze(0).unsqueeze(0).float() # [1, 1, H, W]
-#foveation_mask_high_res = F.interpolate(foveation_mask, size=(resolution // 16, resolution // 16), mode='nearest')
-#foveation_mask_high_res = foveation_mask_high_res.squeeze()
-#foveation_mask = foveation_mask_high_res.to(device, dtype=weight_dtype) # 64, 64
+# foveation mask sampling logic
+# low-res then high-res: 1087
+# high-res directly: 1090 (+3 tokens, edges)
+
+# foveation_mask_low_res = foveation_mask.clone()
+# foveation_mask = foveation_mask.unsqueeze(0).unsqueeze(0).float() # [1, 1, H, W]
+# foveation_mask_high_res = F.interpolate(foveation_mask, size=(resolution // 16, resolution // 16), mode='nearest')
+# foveation_mask_high_res = foveation_mask_high_res.squeeze()
+# foveation_mask = foveation_mask_high_res.to(device, dtype=weight_dtype) # 64, 64
 
 # set token_upsampler and token_downsampler attributes in pipe
-token_upsampler = TokenUpsampler(in_channels=64, out_channels=64, embedding_dim=transformer.inner_dim, num_res_blocks=10).to(device).bfloat16()
+token_upsampler = TokenUpsampler(in_channels=16, out_channels=16, embedding_dim=transformer.inner_dim, num_res_blocks=10).to(device).bfloat16()
 token_downsampler = TokenDownsampler(in_channels=64, out_channels=64, embedding_dim=transformer.inner_dim, num_res_blocks=10).to(device).bfloat16()
 
 
@@ -155,9 +159,10 @@ with torch.no_grad():
         joint_attention_kwargs=joint_attention_kwargs,
         return_dict=False,
     )[0] # (1, 1087, 64) # Line 1272
+    print(f"model_pred shape before upsampling: {model_pred.shape}")
+    """
     model_pred = FluxPipeline_Foveation._upsample_noise_pred(model_pred, latent_height, latent_width, foveation_mask, token_upsampler=token_upsampler, temb=temb) # Line 1283, (1, 4096, 64)
-   
-    print(f"model_pred shape before unpacking: {model_pred.shape}")
+    print(f"model_pred shape after upsampling before unpacking: {model_pred.shape}")
     model_pred = FluxPipeline_Foveation._unpack_latents(
         model_pred,
         height=model_input.shape[2] * vae_scale_factor,
@@ -165,13 +170,21 @@ with torch.no_grad():
         vae_scale_factor=vae_scale_factor,
     ) # (1, 16, 128, 128)
     print(f"model_pred shape after unpacking: {model_pred.shape}")
+    """
+    model_pred_unpacked = FluxPipeline_Foveation._upsample_noise_pred_unpacked(
+        model_pred, 
+        latent_height, 
+        latent_width, 
+        vae_scale_factor=vae_scale_factor,
+        foveation_mask=foveation_mask, 
+        token_upsampler=token_upsampler, 
+        temb=temb
+    ) # Returns [B, 16, 128, 128] directly
+    model_pred_packed = FluxPipeline_Foveation._pack_latents(model_pred_unpacked, model_input.shape[0], model_input.shape[1], model_input.shape[2], model_input.shape[3])
+    print(f"model_pred_packed shape: {model_pred_packed.shape}")
+    print(f"model_pred_unpacked shape: {model_pred_unpacked.shape}")
+    exit()
 
-    print(f"model_pred shape: {model_pred.shape}")
-    print(f"noisy_model_input shape: {noisy_model_input.shape}")
-
-    assert model_pred.shape == noisy_model_input.shape
+    assert model_pred_unpacked.shape == noisy_model_input.shape
     
-    
-
-
-    print(f"SUCCESS! Output noise_pred shape: {model_pred.shape}")
+    print(f"SUCCESS! Output noise_pred shape: {model_pred_unpacked.shape}")

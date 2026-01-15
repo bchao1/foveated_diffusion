@@ -75,6 +75,7 @@ def main(args):
     elif args.experiment == "radius_ablation":
         r_list = np.linspace(0.1, 1.0, 10)
         #r_list = [0.1]
+        #r_list = [r_list[1]]
         for r_idx, r in enumerate(r_list):
             r_idx = str(r_idx).zfill(2)
             foveation_mask = create_foveation_mask(args.height // 16 // 2, args.width // 16 // 2, center=(0, 0), r = r) # low-res foveation mask then upsample

@@ -6,6 +6,34 @@ import imageio
 import os
 import cv2
 
+def save_image(tensor, path, debug_visualization=False):
+    # save tensor of shape [3, H, W] or [H, W] as image
+    tensor = tensor.detach().cpu().numpy()
+    tensor = (tensor * 255).astype(np.uint8) # [3, H, W] or [H, W]
+
+    if tensor.ndim == 2:
+        tensor = np.stack([tensor] * 3, axis=0)
+    elif tensor.ndim == 3 and tensor.shape[0] == 1:
+        tensor = np.concatenate([tensor] * 3, axis=0)
+
+    if tensor.shape[0] == 3:
+        img = tensor.transpose(1, 2, 0).copy()
+    else:
+        img = tensor
+
+    if debug_visualization:
+        scale = 10
+        h, w = img.shape[:2]
+        img = cv2.resize(img, (w * scale, h * scale), interpolation=cv2.INTER_NEAREST)
+        img[::scale, :, 0] = 255
+        img[::scale, :, 1] = 0
+        img[::scale, :, 2] = 0
+        img[:, ::scale, 0] = 255
+        img[:, ::scale, 1] = 0
+        img[:, ::scale, 2] = 0
+
+    imageio.imwrite(path, img)
+
 def create_foveation_mask(
     h: int, 
     w: int, 

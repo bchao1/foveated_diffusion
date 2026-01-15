@@ -595,7 +595,7 @@ class FluxPipeline_Foveation(
             return latent_image_ids.to(device=device, dtype=dtype), None, None
     
     @staticmethod
-    def _downsample_latents(latents, height, width, foveation_mask=None, sample_mode="top_left"):
+    def _downsample_latents_old(latents, height, width, foveation_mask=None, sample_mode="top_left"):
         """
         Downsamples latents spatially based on the foveation mask to match the 
         mixed-resolution structure of latent_image_ids.
@@ -667,8 +667,156 @@ class FluxPipeline_Foveation(
         # Flatten and Select
         output_latents = output_latents.view(batch_size, -1, channels) # [B, Total_Tokens, C]
         valid_tokens = valid_tokens.view(-1) # [Total_Tokens]
+        latents_downsampled = output_latents[:, valid_tokens, :]
 
-        # Select valid tokens. 
+        # permute back to orignal order
+        """
+        output_latents = output_latents.view(batch_size, h_2, w_2, 2, 2, channels).permute(0, 1, 3, 2, 4, 5).reshape(batch_size, h_2 * 2, w_2 * 2, channels) # [B, 64, 64, 64]
+        valid_tokens = valid_tokens.view(h_2, w_2, 2, 2).permute(0, 2, 1, 3).reshape(h_2 * 2, w_2 * 2) # [64, 64]
+        print(output_latents.shape, valid_tokens.shape)
+        # flatten and select
+        output_latents = output_latents.view(batch_size, -1, channels) # [B, Total_Tokens, C]
+        valid_tokens = valid_tokens.view(-1) # [Total_Tokens]
+        print(output_latents.shape, valid_tokens.shape)
+        latents_downsampled = output_latents[:, valid_tokens, :]
+        print(latents_downsampled.shape)
+        """
+
+        return latents_downsampled
+    
+    @staticmethod
+    def _downsample_latents(latents, height, width, foveation_mask=None, sample_mode="top_left"):
+        """
+        Downsamples latents spatially based on the foveation mask to match the 
+        mixed-resolution structure of latent_image_ids.
+        
+        Args:
+            latents: [Batch, Seq_Len, Channels]
+            height: Height of the latent grid (e.g. original_height // 2)
+            width: Width of the latent grid (e.g. original_width // 2)
+            foveation_mask: [height, width] Tensor indicating high-res regions.
+            sample_mode: "average" to mean-pool 2x2 blocks, "top_left" to keep the top-left pixel.
+        """
+        if foveation_mask is None:
+            return latents
+        mask = foveation_mask.to(latents.device)
+
+        batch_size, seq_len, channels = latents.shape
+        
+        # Verify dimensions
+        if height * width != seq_len:
+            raise ValueError(f"Height ({height}) * Width ({width}) does not match sequence length ({seq_len}).")
+
+        output_latents = latents.clone() # [B, 64, 64, 64] # B, H, W, C -> high-res latents
+
+        # downsample latents
+        # unpack latents back to original spatial order 
+        latents = latents.view(batch_size, height, width, channels // 4, 2, 2) # [B, 64, 64, 16, 2, 2], 0, 1, 2, 3, 4, 5
+        latents = latents.permute(0, 3, 1, 4, 2, 5) # [B, 16, 64, 2, 64, 2]
+        latents = latents.reshape(batch_size, channels // (2 * 2), height * 2, width * 2) # [B, 16, 128, 128] # original spatial order
+
+
+
+        # make sure downsampling is done here
+        #print(latents.shape)
+        sample_mode = "average"
+        if sample_mode == "average":
+            latents = F.interpolate(latents, scale_factor=0.5, mode="bilinear") * 2 # [B, 16, 64, 64]
+        elif sample_mode == "top_left":
+            latents = F.interpolate(latents, scale_factor=0.5, mode="nearest")
+        else:
+            raise ValueError(f"Unknown sample_mode '{sample_mode}'. Use 'average' or 'top_left'.")
+        latents = latents.reshape(batch_size, channels // (2 * 2), height // 2, 2, width // 2, 2) # [B, 16, 32, 2, 32, 2], (0, 1, 2, 3, 4, 5)
+        latents = latents.permute(0, 2, 4, 1, 3, 5) # [B, 32, 32, 16, 2, 2]
+        low_res_packed_latents = latents.reshape(batch_size, height // 2, width // 2, channels) # [B, 32, 32, 64]
+
+
+        h_2, w_2 = height // 2, width // 2
+        output_latents = output_latents.view(batch_size, height, width, channels)
+        output_latents = output_latents.view(batch_size, h_2, 2, w_2, 2, channels) # output latents as blocks
+        # The reshape puts the 2x2 block elements in order: (0,0), (0,1), (1,0), (1,1)
+        # So index 0 is Top-Left.
+        output_latents = output_latents.permute(0, 1, 3, 2, 4, 5).reshape(batch_size, h_2, w_2, 4, channels) # [B, 32, 32, 4, 64]
+
+        # 2. Reshape Mask into 2x2 blocks
+        # [H, W] -> [H/2, W/2, 4]
+        mask_blocks = mask.view(h_2, 2, w_2, 2).permute(0, 2, 1, 3).reshape(h_2, w_2, 4)
+
+        # 3. Determine Block Status
+        # High Res = Any 1 in the 2x2 block
+        # Low Res = All 0 in the 2x2 block
+        is_high_res_block = (mask_blocks.sum(dim=-1) > 0) # [H/2, W/2]
+        is_low_res_block = ~is_high_res_block
+
+        output_latents[:, is_low_res_block, 0, :] = low_res_packed_latents[:, is_low_res_block, :]
+
+        valid_tokens = torch.ones(h_2, w_2, 4, device=latents.device, dtype=torch.bool)
+        
+        # Mark indices 1, 2, 3 as invalid for low-res blocks.
+        # This keeps only index 0 (which is either the Average or the Top-Left pixel depending on mode).
+        valid_tokens[is_low_res_block, 1:] = False
+
+        # Flatten and Select
+        output_latents = output_latents.view(batch_size, -1, channels) # [B, Total_Tokens, C]
+        valid_tokens = valid_tokens.view(-1) # [Total_Tokens]
+        latents_downsampled = output_latents[:, valid_tokens, :]
+        #print(latents_downsampled.shape)
+        return latents_downsampled
+
+        
+        exit()
+
+        # Ensure mask is on the correct device for boolean operations
+        mask = foveation_mask.to(latents.device)
+
+        # 1. Reshape Latents into 2x2 blocks
+        # [B, H, W, C] -> [B, H/2, 2, W/2, 2, C] -> [B, H/2, W/2, 4, C]
+        h_2, w_2 = height // 2, width // 2
+        latents_spatial = latents.view(batch_size, height, width, channels)
+        latents_blocks = latents_spatial.view(batch_size, h_2, 2, w_2, 2, channels)
+        # The reshape puts the 2x2 block elements in order: (0,0), (0,1), (1,0), (1,1)
+        # So index 0 is Top-Left.
+        latents_blocks = latents_blocks.permute(0, 1, 3, 2, 4, 5).reshape(batch_size, h_2, w_2, 4, channels)
+
+        # 2. Reshape Mask into 2x2 blocks
+        # [H, W] -> [H/2, W/2, 4]
+        mask_blocks = mask.view(h_2, 2, w_2, 2).permute(0, 2, 1, 3).reshape(h_2, w_2, 4)
+
+        # 3. Determine Block Status
+        # High Res = Any 1 in the 2x2 block
+        # Low Res = All 0 in the 2x2 block
+        is_high_res_block = (mask_blocks.sum(dim=-1) > 0) # [H/2, W/2]
+        is_low_res_block = ~is_high_res_block
+
+        # 4. Apply Downsampling Strategy
+        output_latents = latents_blocks.clone()
+
+        sample_mode = "average" # variance preserving average
+        if sample_mode == "average":
+            # Compute Averages for Low Res Blocks: [B, H/2, W/2, C]
+            low_res_values = latents_blocks.mean(dim=3) * 2 # variance correction sqrt(N), N=4, ==> 2
+            # Overwrite the first token (index 0) with the average
+            output_latents[:, is_low_res_block, 0, :] = low_res_values[:, is_low_res_block, :]
+            
+        elif sample_mode == "top_left":
+            # For "top_left", we do nothing here. 
+            # Index 0 of `latents_blocks` already contains the top-left pixel.
+            # We simply let the valid_tokens mask below filter out indices 1, 2, and 3.
+            pass
+        else:
+            raise ValueError(f"Unknown sample_mode '{sample_mode}'. Use 'average' or 'top_left'.")
+
+        # 5. Filter Validity
+        # Create a validity mask matching the block structure [H/2, W/2, 4]
+        valid_tokens = torch.ones(h_2, w_2, 4, device=latents.device, dtype=torch.bool)
+        
+        # Mark indices 1, 2, 3 as invalid for low-res blocks.
+        # This keeps only index 0 (which is either the Average or the Top-Left pixel depending on mode).
+        valid_tokens[is_low_res_block, 1:] = False
+
+        # Flatten and Select
+        output_latents = output_latents.view(batch_size, -1, channels) # [B, Total_Tokens, C]
+        valid_tokens = valid_tokens.view(-1) # [Total_Tokens]
         latents_downsampled = output_latents[:, valid_tokens, :]
 
         return latents_downsampled
@@ -770,6 +918,9 @@ class FluxPipeline_Foveation(
         dtype = latents.dtype
         
         h_2, w_2 = height // 2, width // 2
+
+        # latents are in [32, 2, 32, 2, 64], ordering
+        
         
         # 1. Determine Block Status
         mask = foveation_mask.to(device)
@@ -783,6 +934,8 @@ class FluxPipeline_Foveation(
         # Create Layout Mask (same as downsample logic)
         layout_mask = torch.ones(h_2, w_2, 4, device=device, dtype=torch.bool)
         layout_mask[is_low_res_block, 1:] = False
+        # [32, 32, 4] -> [32, 32, 2, 2] -> [32, 2, 32, 2]
+        #layout_mask = layout_mask.view(h_2, w_2, 2, 2).permute(0, 2, 1, 3).reshape(h_2 * 2 * w_2 * 2)
         
         # Validation
         if layout_mask.sum() != reduced_len:
@@ -792,6 +945,7 @@ class FluxPipeline_Foveation(
         reconstructed_blocks = torch.zeros(batch_size, h_2 * w_2 * 4, channels, device=device, dtype=dtype)
         reconstructed_blocks[:, layout_mask.view(-1), :] = latents
         reconstructed_blocks = reconstructed_blocks.view(batch_size, h_2, w_2, 4, channels)
+        #reconstructed_blocks = reconstructed_blocks.view(batch_size, h_2, 2, w_2, 2, channels).permute(0, 1, 3, 2, 4, 5).reshape(batch_size, h_2, w_2, 4, channels)
 
         # 3. Handle Upsampling
         if upsample_mode == "nearest":
@@ -944,9 +1098,9 @@ class FluxPipeline_Foveation(
             return latents.to(device=device, dtype=dtype), latent_image_ids, resolution_mask, resolution_mask_top_left
 
         # ... [Generation logic] ...
-        latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
-        latents = self._pack_latents(latents, batch_size, num_channels_latents, height, width)
-        latents = self._downsample_latents(latents, self.latent_height, self.latent_width, foveation_mask=foveation_mask)
+        latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype) # [1, 16, 128, 128]
+        latents = self._pack_latents(latents, batch_size, num_channels_latents, height, width) # [1, 64, 64, 64]
+        #latents = self._downsample_latents(latents, self.latent_height, self.latent_width, foveation_mask=foveation_mask) # never downsample here
         
         latent_image_ids, resolution_mask, resolution_mask_top_left = self._prepare_latent_image_ids(batch_size, self.latent_height, self.latent_width, device, dtype, foveation_mask=foveation_mask)
 
@@ -1179,7 +1333,7 @@ class FluxPipeline_Foveation(
             )
 
         # Change: pass mask only if start_step is 0, otherwise start with None (Full High-Res)
-        initial_mask = foveation_mask if foveation_start_step == 0 else None
+        #initial_mask = foveation_mask if foveation_start_step == 0 else None
     
         # 4. Prepare latent variables
         num_channels_latents = self.transformer.config.in_channels // 4
@@ -1192,7 +1346,7 @@ class FluxPipeline_Foveation(
             device,
             generator,
             latents,
-            foveation_mask=initial_mask
+            foveation_mask=None
         )
         print("resolution_mask", resolution_mask)
         print("resolution_mask_top_left", resolution_mask_top_left)
@@ -1274,7 +1428,7 @@ class FluxPipeline_Foveation(
                 # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)
 
-                if foveation_mask is not None and i == foveation_start_step and i > 0:
+                if foveation_mask is not None and i == foveation_start_step:
                     latents = self._downsample_latents(latents, self.latent_height, self.latent_width, foveation_mask=foveation_mask)
                     latent_image_ids, resolution_mask, resolution_mask_top_left = self._prepare_latent_image_ids(
                         batch_size * num_images_per_prompt, self.latent_height, self.latent_width, device, latents.dtype, foveation_mask
