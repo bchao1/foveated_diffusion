@@ -41,7 +41,7 @@ def main(args):
     ).to(device)
 
     token_upsampler = TokenUpsampler(in_channels=16, out_channels=16, num_res_blocks=10, naive_upsample_mode="bilinear")
-    token_downsampler = TokenDownsampler(in_channels=64, out_channels=64, num_res_blocks=10)
+    token_downsampler = TokenDownsampler(in_channels=16, out_channels=16, num_res_blocks=10)
     if args.tokenAE_folder is not None:
         token_upsampler = torch.load(os.path.join(args.tokenAE_folder, "token_upsampler.pt"), map_location='cpu', weights_only=False)
         token_downsampler = torch.load(os.path.join(args.tokenAE_folder, "token_downsampler.pt"), map_location='cpu', weights_only=False)
@@ -84,7 +84,7 @@ def main(args):
                 image.save(f"{output_dir}/img_{x_idx}_{y_idx}.png")
     elif args.experiment == "radius_ablation":
         r_list = np.linspace(0.1, 1.0, 10)
-        r_list = [r_list[1]]
+        #r_list = [r_list[1]]
         for r_idx, r in enumerate(r_list):
             r_idx = str(r_idx).zfill(2)
 
