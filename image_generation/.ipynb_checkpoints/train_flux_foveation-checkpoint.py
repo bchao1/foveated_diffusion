@@ -129,13 +129,15 @@ def log_validation(
 
     # generate masks
     foveation_mask_list = []
-    for r in np.linspace(0.1, 1.0, args.num_validation_images):
+    #r_list = np.linspace(0.1, 1.0, args.num_validation_images)
+    r_list = [0.5]
+    for r in r_list:
         foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(0, 0), r = r)
         foveation_mask = foveation_mask.to(accelerator.device, dtype=torch_dtype)
         foveation_mask_list.append(foveation_mask)
 
     with autocast_ctx:
-        images = [pipeline(**pipeline_args, foveation_mask=foveation_mask_list[i], token_upsampler=token_upsampler, token_downsampler=token_downsampler, generator=generator).images[0] for i in range(args.num_validation_images)]
+        images = [pipeline(**pipeline_args, foveation_mask=foveation_mask_list[i], token_upsampler=token_upsampler, token_downsampler=token_downsampler, generator=generator).images[0] for i in range(len(foveation_mask_list))]
 
     for tracker in accelerator.trackers:
         phase_name = "test" if is_final_validation else "validation"
@@ -607,6 +609,8 @@ def parse_args(input_args=None):
 
     # token AE params
     parser.add_argument("--downsampler_variance_correction", action="store_true")
+    parser.add_argument("--upsampler_variance_correction", action="store_true")
+    parser.add_argument("--downsampler_learn_residual", action="store_true")
     parser.add_argument("--upsampler_learn_residual", action="store_true")
 
     if input_args is not None:
@@ -975,10 +979,10 @@ def main(args):
 
     # 0101: tokenAE 
     # ===============================
-    token_upsampler = TokenUpsampler(in_channels=64, out_channels=64, embedding_dim=transformer.inner_dim, num_res_blocks=10, 
+    token_upsampler = TokenUpsampler(in_channels=16, out_channels=16, embedding_dim=transformer.inner_dim, num_res_blocks=10, 
                                      learn_residual=args.upsampler_learn_residual)
-    token_downsampler = TokenDownsampler(in_channels=64, out_channels=64, embedding_dim=transformer.inner_dim, num_res_blocks=10,
-                                         variance_correction=args.downsampler_variance_correction)
+    token_downsampler = TokenDownsampler(in_channels=16, out_channels=16, embedding_dim=transformer.inner_dim, num_res_blocks=10,
+                                         learn_residual=args.downsampler_learn_residual)
     # ===============================
 
     if args.enable_npu_flash_attention:
@@ -1326,7 +1330,7 @@ def main(args):
             # 0101: prepare foveation masks
             # ===============================
             r = np.random.choice(np.linspace(0.1, 1.0, 10))
-            #r = 0.5
+            r = 0.5
             
             center_min = -(1 - r) * 0.5
             center_max = (1 - r) * 0.5
@@ -1372,6 +1376,7 @@ def main(args):
                 # Sample noise that we'll add to the latents
                 if args.debug_mode == "single":
                     if fixed_noise is None:
+                        print("setting fixed noise...")
                         fixed_noise = randn_tensor(model_input.shape, generator=generator, device=model_input.device, dtype=model_input.dtype) 
                     #print(noise)
                     noise = fixed_noise
@@ -1392,9 +1397,9 @@ def main(args):
                 indices = (u * noise_scheduler_copy.config.num_train_timesteps).long()
                 timesteps = noise_scheduler_copy.timesteps[indices].to(device=model_input.device)
                 
-                if args.debug_mode == "single":
-                    # fix timestep training
-                    timesteps = torch.full_like(timesteps, 500)
+                #if args.debug_mode == "single":
+                #    # fix timestep training
+                #    timesteps = torch.full_like(timesteps, 500)
                 
                 # handle guidance
                 if unwrap_model(transformer).config.guidance_embeds:
@@ -1441,6 +1446,7 @@ def main(args):
                     return_dict=False,
                 )[0]
                 # upscaling height & width as discussed in https://github.com/huggingface/diffusers/pull/9257#discussion_r1731108042
+                """
                 model_pred = FluxPipeline_Foveation._upsample_noise_pred(
                     model_pred, latent_height, latent_width, 
                     foveation_mask=foveation_mask, token_upsampler=token_upsampler,
@@ -1452,6 +1458,16 @@ def main(args):
                     width=model_input.shape[3] * vae_scale_factor,
                     vae_scale_factor=vae_scale_factor,
                 )
+                """
+                model_pred = FluxPipeline_Foveation._upsample_noise_pred_unpacked(
+                    model_pred, 
+                    latent_height, 
+                    latent_width, 
+                    vae_scale_factor=vae_scale_factor,
+                    foveation_mask=foveation_mask, 
+                    token_upsampler=token_upsampler, 
+                    temb=temb
+                ) # Returns [B, 16, 128, 128] directly
 
                 # these weighting schemes use a uniform timestep sampling
                 # and instead post-weight the loss
@@ -1459,6 +1475,7 @@ def main(args):
 
                 # flow matching loss
                 target = noise - model_input
+
 
                 # Compute regular loss.
                 loss = torch.mean(
