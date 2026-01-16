@@ -233,7 +233,7 @@ class TokenUpsampler(nn.Module):
             x_learned = block(x_learned, temb)
 
         # Output = Naive + Residual
-        return x_naive #+ x_learned
+        return x_naive + x_learned
 
 def count_parameters(model):
     total_params = sum(p.numel() for p in model.parameters())

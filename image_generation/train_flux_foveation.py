@@ -137,7 +137,7 @@ def log_validation(
         foveation_mask_list.append(foveation_mask)
 
     with autocast_ctx:
-        images = [pipeline(**pipeline_args, foveation_mask=foveation_mask_list[i], token_upsampler=token_upsampler, token_downsampler=token_downsampler, generator=generator).images[0] for i in range(args.num_validation_images)]
+        images = [pipeline(**pipeline_args, foveation_mask=foveation_mask_list[i], token_upsampler=token_upsampler, token_downsampler=token_downsampler, generator=generator).images[0] for i in range(len(foveation_mask_list))]
 
     for tracker in accelerator.trackers:
         phase_name = "test" if is_final_validation else "validation"
@@ -1376,6 +1376,7 @@ def main(args):
                 # Sample noise that we'll add to the latents
                 if args.debug_mode == "single":
                     if fixed_noise is None:
+                        print("setting fixed noise...")
                         fixed_noise = randn_tensor(model_input.shape, generator=generator, device=model_input.device, dtype=model_input.dtype) 
                     #print(noise)
                     noise = fixed_noise

@@ -971,6 +971,7 @@ class FluxPipeline_Foveation(
         # LOW-RES UP-SAMPLING LOGIC
         # 1. Pseudo-Downsample High-Res to Create Uniform Grid [H/2, W/2]
         # This averages the 4 high-res tokens into 1, so the grid is compatible with the CNN.
+        # is here correct?
         noise_pred_low_res = FluxPipeline_Foveation._downsample_remaining_high_res(
             noise_pred, 
             latent_height, 
