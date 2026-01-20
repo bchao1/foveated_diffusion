@@ -750,7 +750,7 @@ class FluxPipeline_Foveation(
         if height * width != seq_len:
             raise ValueError(f"Height ({height}) * Width ({width}) does not match sequence length ({seq_len}).")
 
-        output_latents = latents.clone() # [B, 64, 64, 64] # B, H, W, C -> high-res latents
+        output_latents = latents.clone() # [B, 64, 64, 64] # B, H, W, C -> high-res latents should be in [32, 2, 32, 2] order
 
         # downsample latents
         # unpack latents back to original spatial order 
@@ -807,6 +807,7 @@ class FluxPipeline_Foveation(
         valid_tokens = valid_tokens.view(-1) # [Total_Tokens]
         latents_downsampled = output_latents[:, valid_tokens, :]
         #print(latents_downsampled.shape)
+        # latents in [32, 32, 4] order
         return latents_downsampled
 
     @staticmethod
@@ -972,18 +973,19 @@ class FluxPipeline_Foveation(
         # 1. Pseudo-Downsample High-Res to Create Uniform Grid [H/2, W/2]
         # This averages the 4 high-res tokens into 1, so the grid is compatible with the CNN.
         # is here correct?
+        # in [32, 32, 4] order --> make sure this is correct. simply sampling [0, 1, 2, 3] in the 2x2 blocks. correct.
         noise_pred_low_res = FluxPipeline_Foveation._downsample_remaining_high_res(
             noise_pred, 
             latent_height, 
             latent_width, 
             foveation_mask=foveation_mask
-        ) # packed latents [B, H/2 * W/2, 64]
+        ) # packed latents [B, H/2 * W/2, 64] -> [32, 32, 64]
         #print(f"noise_pred_low_res shape: {noise_pred_low_res.shape}, latent_height: {latent_height}, latent_width: {latent_width}")
         noise_pred_low_res_unpacked = FluxPipeline_Foveation._unpack_latents(
             noise_pred_low_res, 
             height=latent_height * vae_scale_factor, 
             width=latent_width * vae_scale_factor, 
-            vae_scale_factor=vae_scale_factor)
+            vae_scale_factor=vae_scale_factor) # [B, 16, 64, 64]
         #print(f"noise_pred_low_res_unpacked shape: {noise_pred_low_res_unpacked.shape}")
         noise_pred_low_res_unpacked_upsampled = token_upsampler(noise_pred_low_res_unpacked, temb)
         #print(f"noise_pred_low_res_unpacked_upsampled shape: {noise_pred_low_res_unpacked_upsampled.shape}") # [1, 16, 128, 128]

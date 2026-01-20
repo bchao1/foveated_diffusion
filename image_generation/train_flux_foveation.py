@@ -612,6 +612,8 @@ def parse_args(input_args=None):
     parser.add_argument("--upsampler_variance_correction", action="store_true")
     parser.add_argument("--downsampler_learn_residual", action="store_true")
     parser.add_argument("--upsampler_learn_residual", action="store_true")
+    parser.add_argument("--use_ada_norm", action="store_true")
+    parser.add_argument("--tokenAE_feature_channels", type=int, default=16)
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -979,10 +981,20 @@ def main(args):
 
     # 0101: tokenAE 
     # ===============================
-    token_upsampler = TokenUpsampler(in_channels=16, out_channels=16, embedding_dim=transformer.inner_dim, num_res_blocks=10, 
-                                     learn_residual=args.upsampler_learn_residual)
-    token_downsampler = TokenDownsampler(in_channels=16, out_channels=16, embedding_dim=transformer.inner_dim, num_res_blocks=10,
-                                         learn_residual=args.downsampler_learn_residual)
+    token_upsampler = TokenUpsampler(in_channels=16,
+                                     feature_channels=args.tokenAE_feature_channels, 
+                                     embedding_dim=transformer.inner_dim, 
+                                     num_res_blocks=10, 
+                                     learn_residual=args.upsampler_learn_residual, 
+                                     use_ada_norm=args.use_ada_norm
+                                    )
+    token_downsampler = TokenDownsampler(in_channels=16,
+                                         feature_channels=args.tokenAE_feature_channels, 
+                                         embedding_dim=transformer.inner_dim, 
+                                         num_res_blocks=10,
+                                         learn_residual=args.downsampler_learn_residual,
+                                         use_ada_norm=args.use_ada_norm
+                                        )
     # ===============================
 
     if args.enable_npu_flash_attention:
