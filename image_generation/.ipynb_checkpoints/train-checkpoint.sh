@@ -1,7 +1,7 @@
 accelerate launch --main_process_port 29502 --num_processes 8 train_flux_foveation.py \
   --pretrained_model_name_or_path="/scratch/m000051-pm04/brianchc/FLUX.1-dev" \
   --instance_data_dir="/scratch/m000051-pm04/brianchc/Aesthetic-Train-V2" \
-  --output_dir="/scratch/m000051-pm04/brianchc/flux_foveation/model_checkpoints/0119_new_arch" \
+  --output_dir="/scratch/m000051-pm04/brianchc/flux_foveation/model_checkpoints/0119_new_arch_full" \
   --mixed_precision="bf16" \
   --train_batch_size=2 \
   --resolution 1024 \
@@ -19,8 +19,6 @@ accelerate launch --main_process_port 29502 --num_processes 8 train_flux_foveati
   --validation_prompt "A highly detailed photograph of a racecar parked on a road, cinematic composition" \
   --num_validation_images 10 \
   --seed="0" \
-  --debug_mode="single" \
-  --center_crop \
   --tokenAE_feature_channels 64 \
   --use_ada_norm
 

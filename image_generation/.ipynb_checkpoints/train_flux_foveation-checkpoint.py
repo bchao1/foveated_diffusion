@@ -981,7 +981,7 @@ def main(args):
 
     # 0101: tokenAE 
     # ===============================
-    token_upsampler = TokenUpsampler(in_channels=16,
+    token_upsampler = TokenUpsampler(in_channels=16, # VAE channels
                                      feature_channels=args.tokenAE_feature_channels, 
                                      embedding_dim=transformer.inner_dim, 
                                      num_res_blocks=10, 
