@@ -11,6 +11,16 @@ import random
 from torchvision.utils import save_image
 from utils import create_foveation_mask
 import torch.nn.functional as F
+import time
+from matplotlib import pyplot as plt
+
+def timing_plot(time_list, percentage_HR_list, output_dir):
+    plt.plot(time_list, percentage_HR_list)
+    plt.xlabel('Time (seconds)')
+    plt.ylabel('Percentage of High-Res Tokens')
+    plt.title('Timing Plot')
+    plt.savefig(f'{output_dir}/timing_plot.png')
+    plt.close()
 
 def main(args):
     # fix randomness
@@ -59,6 +69,7 @@ def main(args):
 
                 torch.cuda.empty_cache()
 
+                start_time = time.time()
                 image = pipe(
                     prompt,
                     guidance_scale=args.guidance_scale,
@@ -69,13 +80,15 @@ def main(args):
                     foveation_mask=foveation_mask.squeeze(), # [H, W]
                     foveation_start_step=args.foveation_start_step
                     #foveation_mask=None
-                ).images[0]
+                ).images[0] 
+                end_time = time.time()
+                print(f"Time taken: {end_time - start_time} seconds")
                 
                 image.save(f"{output_dir}/img_{x_idx}_{y_idx}.png")
     elif args.experiment == "radius_ablation":
         r_list = np.linspace(0.1, 1.0, 10)
-        #r_list = [0.1]
-        #r_list = [r_list[1]]
+        time_list = []
+        percentage_HR_list = []
         for r_idx, r in enumerate(r_list):
             r_idx = str(r_idx).zfill(2)
             foveation_mask = create_foveation_mask(args.height // 16 // 2, args.width // 16 // 2, center=(0, 0), r = r) # low-res foveation mask then upsample
@@ -84,6 +97,11 @@ def main(args):
             foveation_mask = F.interpolate(foveation_mask, size=(args.height // 16, args.width // 16), mode='nearest')
             save_image(foveation_mask, f"{output_dir}/foveation_mask_high_res_{r_idx}.png")
 
+            # percentage of high-res tokens
+            percentage_HR = foveation_mask.sum() / foveation_mask.numel()
+            print(f"Percentage of high-res tokens: {percentage_HR}")
+            percentage_HR_list.append(percentage_HR)
+            start_time = time.time()
             image = pipe(
                 prompt,
                 guidance_scale=args.guidance_scale,
@@ -95,7 +113,14 @@ def main(args):
                 foveation_start_step=args.foveation_start_step
                 #foveation_mask=None
             ).images[0]
+            end_time = time.time()
+            print(f"Time taken: {end_time - start_time} seconds")
+            time_list.append(end_time - start_time)
             image.save(f"{output_dir}/img_{r_idx}.png")
+        print(f"Time list: {time_list}")
+        print(f"Percentage HR list: {percentage_HR_list}")
+        timing_plot(time_list, percentage_HR_list, output_dir)
+        
     elif args.experiment == "baseline":
         image = pipe(
             prompt,
