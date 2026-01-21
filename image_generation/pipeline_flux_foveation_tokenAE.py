@@ -974,7 +974,6 @@ class FluxPipeline_Foveation(
         # This averages the 4 high-res tokens into 1, so the grid is compatible with the CNN.
         # is here correct?
         # in [32, 32, 4] order --> make sure this is correct. simply sampling [0, 1, 2, 3] in the 2x2 blocks. correct.
-        # this HR downsampling logic is not related to the token downsampling, simply using masks to get valid packing grid.
         noise_pred_low_res = FluxPipeline_Foveation._downsample_remaining_high_res(
             noise_pred, 
             latent_height, 

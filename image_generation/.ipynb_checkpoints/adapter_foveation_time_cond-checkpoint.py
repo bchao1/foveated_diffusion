@@ -47,39 +47,69 @@ class AdaGroupNorm(nn.Module):
         return x
 
 class ResidualBlock(nn.Module):
-    def __init__(self, channels, embedding_dim, num_groups=8):
+    def __init__(self, channels, embedding_dim, num_groups=1, use_ada_norm=True):
+        """
+        Args:
+            channels: Number of input/output channels.
+            embedding_dim: Dimension of the time embedding (temb).
+            num_groups: Number of groups for GroupNorm.
+            use_ada_norm: If True, uses AdaGroupNorm (time-conditioned).
+                          If False, uses standard GroupNorm (ignores time).
+        """
         super().__init__()
+        self.use_ada_norm = use_ada_norm
         
-        # Replace standard GN with AdaGroupNorm
-        self.gn1 = AdaGroupNorm(embedding_dim, channels, num_groups)
+        # 1. Select Normalization Type
+        if self.use_ada_norm:
+            # Your original time-conditioned norm
+            print("ada norm")
+            self.gn1 = AdaGroupNorm(embedding_dim, channels, num_groups)
+            self.gn2 = AdaGroupNorm(embedding_dim, channels, num_groups)
+        else:
+            # Standard GroupNorm (sanity check mode)
+            # affine=True ensures it can learn scale/shift immediately
+            print("standard group norm")
+            self.gn1 = nn.GroupNorm(num_groups, channels, affine=True)
+            self.gn2 = nn.GroupNorm(num_groups, channels, affine=True)
+
+        # 2. Standard Convolutional Layers (Unchanged)
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
         self.act1 = nn.SiLU()
 
-        self.gn2 = AdaGroupNorm(embedding_dim, channels, num_groups)
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
         self.act2 = nn.SiLU()
 
     def forward(self, x, temb):
         residual = x
         
-        # Block 1: Inject temb
-        x = self.gn1(x, temb) 
+        # Block 1
+        if self.use_ada_norm:
+            x = self.gn1(x, temb)
+        else:
+            x = self.gn1(x) # Ignores temb
+            
         x = self.act1(x)
         x = self.conv1(x)
         
-        # Block 2: Inject temb
-        x = self.gn2(x, temb)
+        # Block 2
+        if self.use_ada_norm:
+            x = self.gn2(x, temb)
+        else:
+            x = self.gn2(x) # Ignores temb
+            
         x = self.act2(x)
         x = self.conv2(x)
         
         return residual + x
 
 class TokenDownsampler(nn.Module):
-    def __init__(self, in_channels, out_channels, embedding_dim, num_res_blocks=2, learn_residual=False, variance_correction=False):
+    def __init__(self, in_channels, feature_channels, embedding_dim, num_res_blocks=2, learn_residual=False, variance_correction=False, use_ada_norm=True):
         super().__init__()
 
         self.variance_correction = variance_correction
         self.learn_residual = learn_residual
+
+        self.input_proj = nn.Conv2d(in_channels, feature_channels, kernel_size=3, padding=1)
         
         # 1. Learned Branch (CNN)
         self.res_blocks = []
@@ -87,29 +117,35 @@ class TokenDownsampler(nn.Module):
             # Note: Residual blocks usually keep dim constant. 
             # If in_channels != out_channels, we might need a projection first, 
             # but for this specific "refinement" use-case, usually in==out.
-            self.res_blocks.append(ResidualBlock(in_channels, embedding_dim))
+            self.res_blocks.append(ResidualBlock(feature_channels, embedding_dim, use_ada_norm=use_ada_norm))
         self.res_blocks = nn.ModuleList(self.res_blocks)
             
         # The strided convolution that actually reduces dimension
+        """
         self.downsample = nn.Conv2d(
-            in_channels, 
-            out_channels, 
+            feature_channels,
+            in_channels,
             kernel_size=3, 
             stride=2, 
             padding=1
         )
+        """
 
-        # 2. Projection for Naive Branch (if channels change)
-        self.use_projection = in_channels != out_channels
-        if self.use_projection:
-            self.naive_proj = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        self.downsample = nn.Sequential(
+            # 1. Anti-aliased Downsampling (AvgPool preserves smooth gradients)
+            nn.AvgPool2d(kernel_size=2, stride=2),
+            
+            # 2. Convolution (Stride 1 - pure processing, no shrinking)
+            nn.Conv2d(feature_channels, in_channels, kernel_size=3, padding=1)
+        )
 
         # 3. Initialization
         self.apply(self._init_weights)
+        
         # ZERO-INIT the final layer of the learned branch so it starts as 0 contribution
-        nn.init.zeros_(self.downsample.weight)
-        if self.downsample.bias is not None:
-            nn.init.zeros_(self.downsample.bias)
+        #nn.init.zeros_(self.downsample.weight)
+        #if self.downsample.bias is not None:
+        #    nn.init.zeros_(self.downsample.bias)
 
     def _init_weights(self, m):
         if isinstance(m, (nn.Conv2d, nn.Linear)):
@@ -126,19 +162,17 @@ class TokenDownsampler(nn.Module):
             x_naive = F.avg_pool2d(x, kernel_size=2, stride=2)
             if self.variance_correction:
                 x_naive *= 2 # used in first-step of the training-free results
-            
-            if self.use_projection:
-                x_naive = self.naive_proj(x_naive)
         else:
             x_naive = 0
 
         # Path B: Learned Residual
+        x = self.input_proj(x) # expand channels
         for block in self.res_blocks:
-            x_learned = block(x, temb)
-        x_learned = self.downsample(x_learned)
+            x = block(x, temb)
+        x = self.downsample(x)
 
         # Output = Naive + Residual
-        return x_naive + x_learned
+        return x_naive + x
 
 class UpsampleBilinear(nn.Module):
     def __init__(self, scale_factor=2):
@@ -156,13 +190,14 @@ class UpsampleBilinear(nn.Module):
 class TokenUpsampler(nn.Module):
     def __init__(self, 
         in_channels, 
-        out_channels, 
+        feature_channels,
         embedding_dim, 
         num_res_blocks=2, 
         cnn_upsample_mode="bilinear", 
         naive_upsample_mode="bilinear",
         learn_residual=False,
-        variance_correction=False
+        variance_correction=False,
+        use_ada_norm=True
     ):
         super().__init__()
 
@@ -173,14 +208,17 @@ class TokenUpsampler(nn.Module):
         # 1. Learned Branch (CNN)
         self.res_blocks = []
         for _ in range(num_res_blocks):
-            self.res_blocks.append(ResidualBlock(out_channels, embedding_dim))
+            self.res_blocks.append(ResidualBlock(feature_channels, embedding_dim, use_ada_norm=use_ada_norm))
         self.res_blocks = nn.ModuleList(self.res_blocks)
+
+        self.input_proj = nn.Conv2d(in_channels, feature_channels, kernel_size=3, padding=1)
+        self.output_proj = nn.Conv2d(feature_channels, in_channels, kernel_size=3, padding=1)
         
         # Transposed conv to increase resolution
         if self.cnn_upsample_mode == "conv":
             self.upsample = nn.ConvTranspose2d(
-                in_channels, 
-                out_channels, 
+                feature_channels, 
+                feature_channels,
                 kernel_size=4, 
                 stride=2, 
                 padding=1
@@ -189,11 +227,6 @@ class TokenUpsampler(nn.Module):
             self.upsample = UpsampleBilinear(scale_factor=2)
         else:
             raise ValueError(f"CNN Upsample mode {cnn_upsample_mode} is not supported!")
-
-        # 2. Projection for Naive Branch (if channels change)
-        self.use_projection = in_channels != out_channels
-        if self.use_projection:
-            self.naive_proj = nn.Conv2d(in_channels, out_channels, kernel_size=1)
 
         # 3. Initialization
         self.apply(self._init_weights)
@@ -221,19 +254,18 @@ class TokenUpsampler(nn.Module):
                 x_naive = F.interpolate(x, scale_factor=2, mode="nearest")
             else:
                 raise ValueError(f"Naive Upsample mode {self.naive_upsample_mode} is not supported!")
-
-            if self.use_projection:
-                x_naive = self.naive_proj(x_naive)
         else:
             x_naive = 0
 
         # Path B: Learned Residual
-        x_learned = self.upsample(x)
+        x = self.input_proj(x)
+        x = self.upsample(x)
         for block in self.res_blocks:
-            x_learned = block(x_learned, temb)
+            x = block(x, temb)
+        x = self.output_proj(x)
 
         # Output = Naive + Residual
-        return x_naive + x_learned
+        return x_naive + x
 
 def count_parameters(model):
     total_params = sum(p.numel() for p in model.parameters())
