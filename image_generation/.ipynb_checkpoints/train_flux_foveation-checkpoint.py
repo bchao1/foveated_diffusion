@@ -984,14 +984,14 @@ def main(args):
     token_upsampler = TokenUpsampler(in_channels=16, # VAE channels
                                      feature_channels=args.tokenAE_feature_channels, 
                                      embedding_dim=transformer.inner_dim, 
-                                     num_res_blocks=10, 
+                                     num_res_blocks=2, 
                                      learn_residual=args.upsampler_learn_residual, 
                                      use_ada_norm=args.use_ada_norm
                                     )
     token_downsampler = TokenDownsampler(in_channels=16,
                                          feature_channels=args.tokenAE_feature_channels, 
                                          embedding_dim=transformer.inner_dim, 
-                                         num_res_blocks=10,
+                                         num_res_blocks=2,
                                          learn_residual=args.downsampler_learn_residual,
                                          use_ada_norm=args.use_ada_norm
                                         )

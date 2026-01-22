@@ -129,6 +129,11 @@ class FluxCRPAAttnProcessor:
                 is_hr = (res_mask > 0.5) # Boolean mask for HR spatial regions + text tokens [text_len + img_len]
                 is_lr = ~is_hr
 
+                # create attention mask where all low-res tokens have higher mass
+                #local_attn_mask = torch.ones(is_hr.shape).to(device=key.device, dtype=key.dtype)
+                #local_attn_mask[is_lr] = 4.0
+                #local_attn_mask = torch.log(local_attn_mask)
+
 
                 # HR query ---
                 # Q_HR attends to K using HR grid phases
@@ -153,7 +158,7 @@ class FluxCRPAAttnProcessor:
                     value_sampled = value[:, res_mask_top_left, ...]
                     rope_lr_k = (rope_lr[0][res_mask_top_left], rope_lr[1][res_mask_top_left])
                     k_lr = apply_rotary_emb(key_sampled, rope_lr_k, sequence_dim=1) # subsample
-                    
+
                     out_lr = dispatch_attention_fn(
                         q_lr, k_lr, value_sampled, attn_mask=attention_mask, backend=self._attention_backend
                     )

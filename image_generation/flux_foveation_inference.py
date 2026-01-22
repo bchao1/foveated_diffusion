@@ -13,14 +13,7 @@ from utils import create_foveation_mask
 import torch.nn.functional as F
 import time
 from matplotlib import pyplot as plt
-
-def timing_plot(time_list, percentage_HR_list, output_dir):
-    plt.plot(time_list, percentage_HR_list)
-    plt.xlabel('Time (seconds)')
-    plt.ylabel('Percentage of High-Res Tokens')
-    plt.title('Timing Plot')
-    plt.savefig(f'{output_dir}/timing_plot.png')
-    plt.close()
+import math
 
 def main(args):
     # fix randomness
@@ -38,19 +31,20 @@ def main(args):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     transformer = FluxPhaseAlignedTransformer2DModel.from_pretrained(
-        "black-forest-labs/FLUX.1-dev", 
+        args.pretrained_model_name_or_path, 
         subfolder="transformer",
         torch_dtype=torch.bfloat16
     ).to(device)
 
     pipe = FluxPipeline_Foveation.from_pretrained(
-        "black-forest-labs/FLUX.1-dev",
+        args.pretrained_model_name_or_path, 
         transformer=transformer,
         torch_dtype=torch.bfloat16
     ).to(device)
 
     prompt = args.prompt
     prompt = "A highly detailed photograph of a racecar parked on a road, cinematic composition"
+    prompt = "Documentary-style imagery: a lively little dog stands still on a lush green lawn, filling the entire frame. The dog has brownish-yellow fur, with both ears perked up, and an expression that is focused and cheerful. Sunlight evenly illuminates its body, making the fur appear soft, glossy, and highly detailed. Every part of the scene is in sharp focus, from the dog’s fur to the surrounding grass and distant background elements. The background shows an open grassy field with scattered wildflowers, and faint blue sky with a few white clouds, all rendered clearly and crisply. Strong realism and clarity, emphasizing texture, color, and detail throughout the image. Full-frame composition, static pose, no depth-of-field blur, everything sharp."
 
 
     if args.experiment == "position_ablation":
@@ -85,9 +79,74 @@ def main(args):
                 print(f"Time taken: {end_time - start_time} seconds")
                 
                 image.save(f"{output_dir}/img_{x_idx}_{y_idx}.png")
+    elif args.experiment == "circular":        
+        # --- Configuration -----------------------------------------
+        num_steps = 100          # Number of frames in one full rotation
+        orbit_radius = 0.25     # DISTANCE: How far the mask is from the center (0.0 = center, 0.5 = edge)
+        mask_radius = 0.30      # SIZE: The radius of the foveation bubble itself
+        # -----------------------------------------------------------
+        
+        print(f"Generating {num_steps} frames. Orbit Radius: {orbit_radius}, Mask Radius: {mask_radius}")
+        
+        # Iterate through 360 degrees (0 to 2pi radians)
+        for i in range(num_steps):
+            
+            # 1. Calculate the current Angle
+            angle = 2 * math.pi * (i / num_steps)
+            
+            # 2. Compute Center Position (Polar -> Cartesian)
+            # This determines WHERE the mask is located
+            center_x = orbit_radius * math.cos(angle)
+            center_y = orbit_radius * math.sin(angle)
+            center = (center_x, center_y)
+        
+            # 3. Create the Mask
+            # Note: We pass 'mask_radius' to 'r' here to set the SIZE of the circle
+            foveation_mask = create_foveation_mask(
+                args.height // 16 // 2, 
+                args.width // 16 // 2, 
+                center=center, 
+                r=mask_radius  # <--- This sets the size of the mask bubble
+            )
+            
+            # 4. Process dimensions [1, 1, H, W]
+            foveation_mask = foveation_mask.unsqueeze(0).unsqueeze(0).float() 
+            
+            # Save Debug Visualizations
+            save_image(foveation_mask, f"{output_dir}/foveation_mask_low_res_{i:03d}.png")
+            
+            # Upsample for the pipeline
+            foveation_mask_high = F.interpolate(
+                foveation_mask, 
+                size=(args.height // 16, args.width // 16), 
+                mode='nearest'
+            )
+            save_image(foveation_mask_high, f"{output_dir}/foveation_mask_high_res_{i:03d}.png")
+        
+            # 5. Run Diffusion Pipeline
+            torch.cuda.empty_cache()
+            start_time = time.time()
+            
+            image = pipe(
+                prompt,
+                guidance_scale=args.guidance_scale,
+                max_sequence_length=256,
+                generator=torch.Generator("cpu").manual_seed(args.seed),
+                height=args.height,
+                width=args.width,
+                foveation_mask=foveation_mask_high.squeeze(), 
+                foveation_start_step=args.foveation_start_step
+            ).images[0]
+            
+            end_time = time.time()
+            print(f"Step {i:02d}/{num_steps} | Angle: {math.degrees(angle):.1f}° | Time: {end_time - start_time:.2f}s")
+            
+            # Save final output
+            image.save(f"{output_dir}/img_{i:03d}.png")
     elif args.experiment == "radius_ablation":
-        r_list = np.linspace(0.1, 1.0, 10)
+        r_list = np.linspace(0.1, 1.0, 100)
         time_list = []
+        #r_list = [0.3]
         percentage_HR_list = []
         for r_idx, r in enumerate(r_list):
             r_idx = str(r_idx).zfill(2)
@@ -98,7 +157,7 @@ def main(args):
             save_image(foveation_mask, f"{output_dir}/foveation_mask_high_res_{r_idx}.png")
 
             # percentage of high-res tokens
-            percentage_HR = foveation_mask.sum() / foveation_mask.numel()
+            percentage_HR = int(foveation_mask.sum() / foveation_mask.numel() * 100)
             print(f"Percentage of high-res tokens: {percentage_HR}")
             percentage_HR_list.append(percentage_HR)
             start_time = time.time()
@@ -117,9 +176,13 @@ def main(args):
             print(f"Time taken: {end_time - start_time} seconds")
             time_list.append(end_time - start_time)
             image.save(f"{output_dir}/img_{r_idx}.png")
+
+        # weird first pipeline call always slower --> sth wrong with kernel issues?
+        time_list = time_list[1:-1]
+        percentage_HR_list = percentage_HR_list[1:-1]
         print(f"Time list: {time_list}")
         print(f"Percentage HR list: {percentage_HR_list}")
-        timing_plot(time_list, percentage_HR_list, output_dir)
+        utils.timing_plot(time_list, percentage_HR_list, output_dir)
         
     elif args.experiment == "baseline":
         image = pipe(
@@ -134,12 +197,13 @@ def main(args):
         image.save(f"{output_dir}/img.png")
 
     
-    utils.make_videos(output_dir, f"{output_dir}/combined.mp4", fps=2)
+    utils.make_videos(output_dir, f"{output_dir}/combined.mp4", fps=20)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run FluxPipeline with custom arguments")
 
+    parser.add_argument('--pretrained_model_name_or_path', required=True)
     parser.add_argument('--height', type=int, default=1024, help='Image height')
     parser.add_argument('--width', type=int, default=1024, help='Image width')
     parser.add_argument('--guidance_scale', type=float, default=3.5, help='Guidance scale')

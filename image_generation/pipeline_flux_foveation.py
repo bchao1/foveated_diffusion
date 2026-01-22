@@ -72,7 +72,6 @@ EXAMPLE_DOC_STRING = """
         ```
 """
 
-
 def calculate_shift(
     image_seq_len,
     base_seq_len: int = 256,
@@ -85,6 +84,28 @@ def calculate_shift(
     mu = image_seq_len * m + b
     return mu
 
+def mean_var_preserving_downsample(x, scale=2, eps=1e-6, mode="avg"):
+    # x: [B, C, H, W]
+    if mode == "avg":
+        y = F.avg_pool2d(x, kernel_size=scale, stride=scale)
+    elif mode == "bilinear":
+        y = F.interpolate(x, scale_factor=1/scale, mode="bilinear", align_corners=False)
+    else:
+        raise ValueError("mode must be 'avg' or 'bilinear' (or add your own).")
+
+    # per-sample, per-channel stats over spatial dims
+    mu_x = x.mean(dim=(2, 3), keepdim=True)
+    var_x = x.var(dim=(2, 3), keepdim=True, unbiased=False)
+
+    mu_y = y.mean(dim=(2, 3), keepdim=True)
+    var_y = y.var(dim=(2, 3), keepdim=True, unbiased=False)
+
+    std_x = torch.sqrt(var_x + eps)
+    std_y = torch.sqrt(var_y + eps)
+
+    # moment-match
+    y_hat = (y - mu_y) / std_y * std_x + mu_x
+    return y_hat
 
 # Copied from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion.retrieve_timesteps
 def retrieve_timesteps(
@@ -719,11 +740,13 @@ class FluxPipeline_Foveation(
 
         # make sure downsampling is done here
         #print(latents.shape)
-        sample_mode = "average"
+        sample_mode = "mean_var"
         if sample_mode == "average":
             latents = F.interpolate(latents, scale_factor=0.5, mode="bilinear") * 2 # [B, 16, 64, 64]
         elif sample_mode == "top_left":
             latents = F.interpolate(latents, scale_factor=0.5, mode="nearest")
+        elif sample_mode == "mean_var":
+            latents = mean_var_preserving_downsample(latents, scale=2, mode="avg")
         else:
             raise ValueError(f"Unknown sample_mode '{sample_mode}'. Use 'average' or 'top_left'.")
         latents = latents.reshape(batch_size, channels // (2 * 2), height // 2, 2, width // 2, 2) # [B, 16, 32, 2, 32, 2], (0, 1, 2, 3, 4, 5)
