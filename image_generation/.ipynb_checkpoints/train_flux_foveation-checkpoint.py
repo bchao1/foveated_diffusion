@@ -974,7 +974,7 @@ def main(args):
         args.pretrained_model_name_or_path, subfolder="transformer", revision=args.revision, variant=args.variant
     )
 
-    transformer.requires_grad_(False) # 0101: don't train the transformer
+    transformer.requires_grad_(True) # 0101: don't train the transformer
     vae.requires_grad_(False)
     text_encoder_one.requires_grad_(False)
     text_encoder_two.requires_grad_(False)
@@ -984,14 +984,14 @@ def main(args):
     token_upsampler = TokenUpsampler(in_channels=16, # VAE channels
                                      feature_channels=args.tokenAE_feature_channels, 
                                      embedding_dim=transformer.inner_dim, 
-                                     num_res_blocks=2, 
+                                     num_res_blocks=10, 
                                      learn_residual=args.upsampler_learn_residual, 
                                      use_ada_norm=args.use_ada_norm
                                     )
     token_downsampler = TokenDownsampler(in_channels=16,
                                          feature_channels=args.tokenAE_feature_channels, 
                                          embedding_dim=transformer.inner_dim, 
-                                         num_res_blocks=2,
+                                         num_res_blocks=10,
                                          learn_residual=args.downsampler_learn_residual,
                                          use_ada_norm=args.use_ada_norm
                                         )
@@ -1132,7 +1132,7 @@ def main(args):
         "lr": args.learning_rate
     } # 0101: tokenAE
     # ===============================
-    params_to_optimize = [token_AE_parameters_with_lr]
+    params_to_optimize = [token_AE_parameters_with_lr, transformer_parameters_with_lr]
 
     # Optimizer creation
     if not (args.optimizer.lower() == "prodigy" or args.optimizer.lower() == "adamw"):
@@ -1337,6 +1337,8 @@ def main(args):
     fixed_noise = None
     for epoch in range(first_epoch, args.num_train_epochs):
         transformer.train()
+        token_upsampler.train()
+        token_downsampler.train()
 
         for step, batch in enumerate(train_dataloader):
             # 0101: prepare foveation masks
@@ -1355,8 +1357,8 @@ def main(args):
             # ===============================
 
 
-            #models_to_accumulate = [transformer, token_upsampler, token_downsampler] # 0101: do not learn transformer
-            models_to_accumulate = [token_upsampler, token_downsampler] # 0101: learn tokenAE
+            models_to_accumulate = [transformer, token_upsampler, token_downsampler] # 0101: do not learn transformer
+            #models_to_accumulate = [token_upsampler, token_downsampler] # 0101: learn tokenAE
             
             with accelerator.accumulate(models_to_accumulate):
                 pixel_values = batch["pixel_values"].to(dtype=vae.dtype)
@@ -1423,7 +1425,7 @@ def main(args):
                 # generate time and text embeddings (for token samplers)
                 #print(timesteps.dtype, guidance.dtype, pooled_prompt_embeds.dtype)
                 #exit()
-                temb = transformer.time_text_embed(timesteps.to(dtype=pooled_prompt_embeds.dtype), guidance.to(dtype=pooled_prompt_embeds.dtype), pooled_prompt_embeds)
+                temb = accelerator.unwrap_model(transformer).time_text_embed(timesteps.to(dtype=pooled_prompt_embeds.dtype), guidance.to(dtype=pooled_prompt_embeds.dtype), pooled_prompt_embeds)
                 #temb = None
 
                 # Add noise according to flow matching.
