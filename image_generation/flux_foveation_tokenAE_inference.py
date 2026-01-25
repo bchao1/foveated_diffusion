@@ -11,7 +11,10 @@ import random
 from torchvision.utils import save_image
 from utils import create_foveation_mask
 import torch.nn.functional as F
-from adapter_foveation import TokenDownsampler, TokenUpsampler
+from adapter_foveation_time_cond import TokenDownsampler, TokenUpsampler
+#from adapter_foveation_time_cond_mlp import TokenDownsampler, TokenUpsampler
+import time
+import math
 
 def main(args):
     # fix randomness
@@ -26,6 +29,7 @@ def main(args):
     output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
 
+    
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     transformer = FluxPhaseAlignedTransformer2DModel.from_pretrained(
@@ -40,8 +44,14 @@ def main(args):
         torch_dtype=torch.bfloat16
     ).to(device)
 
-    token_upsampler = TokenUpsampler(in_channels=16, out_channels=16, num_res_blocks=10, naive_upsample_mode="bilinear")
-    token_downsampler = TokenDownsampler(in_channels=16, out_channels=16, num_res_blocks=10)
+    # CNN-based
+    token_upsampler = TokenUpsampler(in_channels=16, feature_channels=64, embedding_dim=3072, num_res_blocks=10, naive_upsample_mode="nearest", learn_residual=True)
+    token_downsampler = TokenDownsampler(in_channels=16, feature_channels=64, embedding_dim=3072, num_res_blocks=10, naive_downsample_mode="nearest", learn_residual=True)
+
+    # MLP-based
+    #token_upsampler = TokenUpsampler(num_layers=2, hidden_dim=64, bias=False, debug=True)
+    #token_downsampler = TokenDownsampler(num_layers=2, hidden_dim=64, bias=False, debug=True)
+
     if args.tokenAE_folder is not None:
         token_upsampler = torch.load(os.path.join(args.tokenAE_folder, "token_upsampler.pt"), map_location='cpu', weights_only=False)
         token_downsampler = torch.load(os.path.join(args.tokenAE_folder, "token_downsampler.pt"), map_location='cpu', weights_only=False)
@@ -51,6 +61,8 @@ def main(args):
 
     prompt = args.prompt
     prompt = "A highly detailed photograph of a racecar parked on a road, cinematic composition"
+    prompt = "Documentary-style imagery: a lively little dog stands still on a lush green lawn, filling the entire frame. The dog has brownish-yellow fur, with both ears perked up, and an expression that is focused and cheerful. Sunlight evenly illuminates its body, making the fur appear soft, glossy, and highly detailed. Every part of the scene is in sharp focus, from the dog’s fur to the surrounding grass and distant background elements. The background shows an open grassy field with scattered wildflowers, and faint blue sky with a few white clouds, all rendered clearly and crisply. Strong realism and clarity, emphasizing texture, color, and detail throughout the image. Full-frame composition, static pose, no depth-of-field blur, everything sharp."
+
 
 
     if args.experiment == "position_ablation":
@@ -82,6 +94,72 @@ def main(args):
                 ).images[0]
                 
                 image.save(f"{output_dir}/img_{x_idx}_{y_idx}.png")
+    elif args.experiment == "circular":        
+        # --- Configuration -----------------------------------------
+        num_steps = 100          # Number of frames in one full rotation
+        orbit_radius = 0.25     # DISTANCE: How far the mask is from the center (0.0 = center, 0.5 = edge)
+        mask_radius = 0.30      # SIZE: The radius of the foveation bubble itself
+        # -----------------------------------------------------------
+        
+        print(f"Generating {num_steps} frames. Orbit Radius: {orbit_radius}, Mask Radius: {mask_radius}")
+        
+        # Iterate through 360 degrees (0 to 2pi radians)
+        for i in range(num_steps):
+            
+            # 1. Calculate the current Angle
+            angle = 2 * math.pi * (i / num_steps)
+            
+            # 2. Compute Center Position (Polar -> Cartesian)
+            # This determines WHERE the mask is located
+            center_x = orbit_radius * math.cos(angle)
+            center_y = orbit_radius * math.sin(angle)
+            center = (center_x, center_y)
+        
+            # 3. Create the Mask
+            # Note: We pass 'mask_radius' to 'r' here to set the SIZE of the circle
+            foveation_mask = create_foveation_mask(
+                args.height // 16 // 2, 
+                args.width // 16 // 2, 
+                center=center, 
+                r=mask_radius  # <--- This sets the size of the mask bubble
+            )
+            
+            # 4. Process dimensions [1, 1, H, W]
+            foveation_mask = foveation_mask.unsqueeze(0).unsqueeze(0).float() 
+            
+            # Save Debug Visualizations
+            save_image(foveation_mask, f"{output_dir}/foveation_mask_low_res_{i:03d}.png")
+            
+            # Upsample for the pipeline
+            foveation_mask_high = F.interpolate(
+                foveation_mask, 
+                size=(args.height // 16, args.width // 16), 
+                mode='nearest'
+            )
+            save_image(foveation_mask_high, f"{output_dir}/foveation_mask_high_res_{i:03d}.png")
+        
+            # 5. Run Diffusion Pipeline
+            torch.cuda.empty_cache()
+            start_time = time.time()
+            
+            image = pipe(
+                prompt,
+                guidance_scale=args.guidance_scale,
+                max_sequence_length=256,
+                generator=torch.Generator("cpu").manual_seed(args.seed),
+                height=args.height,
+                width=args.width,
+                foveation_mask=foveation_mask_high.squeeze(), 
+                foveation_start_step=args.foveation_start_step,
+                token_upsampler=token_upsampler,
+                token_downsampler=token_downsampler
+            ).images[0]
+            
+            end_time = time.time()
+            print(f"Step {i:02d}/{num_steps} | Angle: {math.degrees(angle):.1f}° | Time: {end_time - start_time:.2f}s")
+            
+            # Save final output
+            image.save(f"{output_dir}/img_{i:03d}.png")
     elif args.experiment == "radius_ablation":
         r_list = np.linspace(0.1, 1.0, 10)
         #r_list = [r_list[1]]
@@ -127,7 +205,7 @@ def main(args):
         image.save(f"{output_dir}/img.png")
 
     
-    utils.make_videos(output_dir, f"{output_dir}/combined.mp4", fps=2)
+    utils.make_videos(output_dir, f"{output_dir}/combined.mp4", fps=20)
 
 
 if __name__ == "__main__":

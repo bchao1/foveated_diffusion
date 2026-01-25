@@ -737,7 +737,7 @@ class FluxPipeline_Foveation(
             latents: [Batch, Seq_Len, Channels]
             height: Height of the latent grid (e.g. original_height // 2)
             width: Width of the latent grid (e.g. original_width // 2)
-            foveation_mask: [height, width] Tensor indicating high-res regions.
+            foveation_mask: [height, width] Tensor indicating high-res regions for packed latents
             sample_mode: "average" to mean-pool 2x2 blocks, "top_left" to keep the top-left pixel.
         """
         if foveation_mask is None:
@@ -757,6 +757,11 @@ class FluxPipeline_Foveation(
         latents = latents.view(batch_size, height, width, channels // 4, 2, 2) # [B, 64, 64, 16, 2, 2], 0, 1, 2, 3, 4, 5
         latents = latents.permute(0, 3, 1, 4, 2, 5) # [B, 16, 64, 2, 64, 2]
         latents = latents.reshape(batch_size, channels // (2 * 2), height * 2, width * 2) # [B, 16, 128, 128] # original spatial order
+        
+        #save_image(foveation_mask, "results/foveation_mask.png", debug_visualization=True)
+        #foveation_mask_spatial = F.interpolate(foveation_mask.unsqueeze(0).unsqueeze(0), size=(height * 2, width * 2), mode="nearest").squeeze(0).squeeze(0)
+        #save_image(foveation_mask_spatial, "results/foveation_mask_spatial.png", debug_visualization=True)
+        # use this mask to pick where to downsample latents, which latents to pass into the model
 
 
 
@@ -765,7 +770,7 @@ class FluxPipeline_Foveation(
         sample_mode = "average"
         if token_downsampler is not None:
             #print("using token downsampler")
-            latents = token_downsampler(latents, temb).to(output_latents.dtype)
+            latents = token_downsampler(latents, temb=temb, foveation_mask=foveation_mask).to(output_latents.dtype)
         elif sample_mode == "average":
             latents = F.interpolate(latents, scale_factor=0.5, mode="bilinear") * 2 # [B, 16, 64, 64]
         elif sample_mode == "top_left":
@@ -987,7 +992,7 @@ class FluxPipeline_Foveation(
             width=latent_width * vae_scale_factor, 
             vae_scale_factor=vae_scale_factor) # [B, 16, 64, 64]
         #print(f"noise_pred_low_res_unpacked shape: {noise_pred_low_res_unpacked.shape}")
-        noise_pred_low_res_unpacked_upsampled = token_upsampler(noise_pred_low_res_unpacked, temb)
+        noise_pred_low_res_unpacked_upsampled = token_upsampler(noise_pred_low_res_unpacked, temb=temb, foveation_mask=foveation_mask)
         #print(f"noise_pred_low_res_unpacked_upsampled shape: {noise_pred_low_res_unpacked_upsampled.shape}") # [1, 16, 128, 128]
 
 
