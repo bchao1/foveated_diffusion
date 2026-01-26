@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Literal
 
 class AdaGroupNorm(nn.Module):
     """
@@ -103,12 +104,22 @@ class ResidualBlock(nn.Module):
         return residual + x
 
 class TokenDownsampler(nn.Module):
-    def __init__(self, in_channels, feature_channels, embedding_dim, num_res_blocks=2, learn_residual=False, variance_correction=False, use_ada_norm=True):
+    def __init__(self, 
+        in_channels, 
+        feature_channels, 
+        embedding_dim, 
+        num_res_blocks=2, 
+        learn_residual=False, 
+        variance_correction=False, 
+        use_ada_norm=True,
+        naive_downsample_mode: Literal["nearest", "bilinear"] = "nearest",
+    ):
         super().__init__()
 
         self.variance_correction = variance_correction
         self.learn_residual = learn_residual
-
+        self.naive_downsample_mode = naive_downsample_mode
+        
         self.input_proj = nn.Conv2d(in_channels, feature_channels, kernel_size=3, padding=1)
         
         # 1. Learned Branch (CNN)
@@ -142,10 +153,11 @@ class TokenDownsampler(nn.Module):
         # 3. Initialization
         self.apply(self._init_weights)
         
-        # ZERO-INIT the final layer of the learned branch so it starts as 0 contribution
-        #nn.init.zeros_(self.downsample.weight)
-        #if self.downsample.bias is not None:
-        #    nn.init.zeros_(self.downsample.bias)
+        if self.learn_residual:
+            # ZERO-INIT the final layer of the learned branch so it starts as 0 contribution
+            nn.init.zeros_(self.downsample[-1].weight)
+            if self.downsample[-1].bias is not None:
+                nn.init.zeros_(self.downsample[-1].bias)
 
     def _init_weights(self, m):
         if isinstance(m, (nn.Conv2d, nn.Linear)):
@@ -153,18 +165,23 @@ class TokenDownsampler(nn.Module):
             if m.bias is not None:
                 nn.init.zeros_(m.bias)
 
-    def forward(self, x, temb):
+    def forward(self, x, temb, foveation_mask=None):
         # Path A: Naive (Average Pooling)
         # We assume "variance preserving" average pooling often used in diffusion
         # (Avg * 2) if fitting a specific distribution, but standard Avg is safer as baseline.
         # Check if your specific VAE/DiT expects variance correction. Standard here:
         if self.learn_residual:
-            x_naive = F.avg_pool2d(x, kernel_size=2, stride=2)
-            if self.variance_correction:
-                x_naive *= 2 # used in first-step of the training-free results
+            if self.naive_downsample_mode == "bilinear":
+                x_naive = F.avg_pool2d(x, kernel_size=2, stride=2)
+                if self.variance_correction:
+                    x_naive *= 2 # used in first-step of the training-free results
+            elif self.naive_downsample_mode == "nearest":
+                x_naive = F.interpolate(x, scale_factor=0.5, mode="nearest")
+            else:
+                raise ValueError(f"Naive Downsample mode {self.naive_downsample_mode} is not supported!")
         else:
             x_naive = 0
-
+        
         # Path B: Learned Residual
         x = self.input_proj(x) # expand channels
         for block in self.res_blocks:
@@ -194,7 +211,7 @@ class TokenUpsampler(nn.Module):
         embedding_dim, 
         num_res_blocks=2, 
         cnn_upsample_mode="bilinear", 
-        naive_upsample_mode="bilinear",
+        naive_upsample_mode="nearest",
         learn_residual=False,
         variance_correction=False,
         use_ada_norm=True
@@ -233,10 +250,11 @@ class TokenUpsampler(nn.Module):
 
 
         # TODO: with new model, do not zero-init weights
-        # ZERO-INIT the final layer so it starts as 0 contribution
-        #nn.init.zeros_(self.upsample.weight)
-        #if self.upsample.bias is not None:
-        #     nn.init.zeros_(self.upsample.bias)
+        if self.learn_residual:
+            # ZERO-INIT the final layer so it starts as 0 contribution
+            nn.init.zeros_(self.output_proj.weight)
+            if self.output_proj.bias is not None:
+                 nn.init.zeros_(self.output_proj.bias)
 
     def _init_weights(self, m):
         if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d, nn.Linear)):
@@ -244,12 +262,12 @@ class TokenUpsampler(nn.Module):
             if m.bias is not None:
                 nn.init.zeros_(m.bias)
 
-    def forward(self, x, temb):
+    def forward(self, x, temb, foveation_mask=None):
         
         # Path A: Naive (Bilinear Upsampling or straight-through)
         if self.learn_residual:
             if self.naive_upsample_mode == "bilinear":
-                x_naive = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False) * 0.5
+                x_naive = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
             elif self.naive_upsample_mode == "nearest":
                 x_naive = F.interpolate(x, scale_factor=2, mode="nearest")
             else:
