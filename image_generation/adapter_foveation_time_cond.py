@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Literal
 
 class AdaGroupNorm(nn.Module):
     """
@@ -111,7 +112,7 @@ class TokenDownsampler(nn.Module):
         learn_residual=False, 
         variance_correction=False, 
         use_ada_norm=True,
-        naive_downsample_mode="nearest"
+        naive_downsample_mode: Literal["nearest", "bilinear"] = "nearest",
     ):
         super().__init__()
 
@@ -170,7 +171,7 @@ class TokenDownsampler(nn.Module):
         # (Avg * 2) if fitting a specific distribution, but standard Avg is safer as baseline.
         # Check if your specific VAE/DiT expects variance correction. Standard here:
         if self.learn_residual:
-            if self.naive_downsample_mode == "avg_pool":
+            if self.naive_downsample_mode == "bilinear":
                 x_naive = F.avg_pool2d(x, kernel_size=2, stride=2)
                 if self.variance_correction:
                     x_naive *= 2 # used in first-step of the training-free results
@@ -266,7 +267,7 @@ class TokenUpsampler(nn.Module):
         # Path A: Naive (Bilinear Upsampling or straight-through)
         if self.learn_residual:
             if self.naive_upsample_mode == "bilinear":
-                x_naive = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False) * 0.5
+                x_naive = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
             elif self.naive_upsample_mode == "nearest":
                 x_naive = F.interpolate(x, scale_factor=2, mode="nearest")
             else:

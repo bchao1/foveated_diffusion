@@ -45,8 +45,8 @@ def main(args):
     ).to(device)
 
     # CNN-based
-    token_upsampler = TokenUpsampler(in_channels=16, feature_channels=64, embedding_dim=3072, num_res_blocks=10, naive_upsample_mode="nearest", learn_residual=True)
-    token_downsampler = TokenDownsampler(in_channels=16, feature_channels=64, embedding_dim=3072, num_res_blocks=10, naive_downsample_mode="nearest", learn_residual=True)
+    token_upsampler = TokenUpsampler(in_channels=16, feature_channels=64, embedding_dim=3072, num_res_blocks=10, naive_upsample_mode="bilinear", learn_residual=True)
+    token_downsampler = TokenDownsampler(in_channels=16, feature_channels=64, embedding_dim=3072, num_res_blocks=10, naive_downsample_mode="bilinear", learn_residual=True)
 
     # MLP-based
     #token_upsampler = TokenUpsampler(num_layers=2, hidden_dim=64, bias=False, debug=True)
