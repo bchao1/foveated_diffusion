@@ -2,10 +2,75 @@ import torch
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import matplotlib.ticker as mtick
 import imageio
 import os
 import cv2
 
+def timing_plot(time_list, percentage_HR_list, output_dir):
+    """
+    Generates a publication-quality plot for High-Res token usage.
+    """
+    
+    # 1. Setup the Aesthetic Style (Global settings for consistency)
+    # We use a seaborn-style configuration manually for maximum compatibility
+    plt.rcParams.update({
+        'font.family': 'serif',          # Serif fonts (Times/Computer Modern) look more "academic"
+        'font.size': 12,                 # Base font size
+        'axes.labelsize': 14,            # Axis label size
+        'axes.titlesize': 16,            # Title size
+        'xtick.labelsize': 11,
+        'ytick.labelsize': 11,
+        'figure.figsize': (8, 5),        # Standard width for 2-column papers
+        'lines.linewidth': 2.5           # Thicker lines for visibility
+    })
+
+    # 2. Create Figure and Axis
+    fig, ax = plt.subplots()
+
+    # 3. The Plot
+    # Using a professional hex color (Deep Steel Blue) instead of default blue
+    ax.plot(percentage_HR_list, time_list,
+            color='#2874A6', 
+            alpha=0.9, 
+            label='High-Res Tokens')
+
+    # 4. Academic Formatting
+    # Grid: Essential for reading values, but keep it subtle
+    ax.grid(True, which='major', axis='both', linestyle='--', linewidth=0.5, color='gray', alpha=0.3)
+    
+    # Spines: Remove top and right borders (Tufte style cleanliness)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    # Labels
+    ax.set_ylabel('Time (seconds)', fontweight='medium')
+    ax.set_xlabel('High-Res Token Allocation', fontweight='medium')
+    ax.set_title('Timing Analysis', pad=20) # Pad adds space between title and plot
+
+    # Optional: Format Y-axis as percentage strings (e.g., "50%")
+    # Assumes input data is 0-100. If 0-1, change to decimals=0 and multiply data by 100
+    fmt = '%.0f%%' 
+    xticks = mtick.FormatStrFormatter(fmt)
+    ax.xaxis.set_major_formatter(xticks)
+
+    # 5. Saving
+    # Ensure directory exists
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # tight_layout() prevents labels from being cut off
+    plt.tight_layout()
+    
+    # Save as PNG (High Res) and PDF (Vector - Best for papers/LaTeX)
+    save_path_png = os.path.join(output_dir, 'timing_plot.png')
+    save_path_pdf = os.path.join(output_dir, 'timing_plot.pdf')
+    
+    plt.savefig(save_path_png, dpi=300, bbox_inches='tight') # 300 DPI is standard for print
+    plt.savefig(save_path_pdf, format='pdf', bbox_inches='tight') # Vector graphics
+    
+    plt.close()
+    print(f"Figures saved to {output_dir}")
+          
 def save_image(tensor, path, debug_visualization=False):
     # save tensor of shape [3, H, W] or [H, W] as image
     tensor = tensor.detach().cpu().numpy()
