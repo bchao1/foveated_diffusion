@@ -1,7 +1,7 @@
 accelerate launch --main_process_port 29502 --num_processes 8 train_flux_foveation.py \
   --pretrained_model_name_or_path="/scratch/m000051-pm04/brianchc/FLUX.1-dev" \
   --instance_data_dir="/scratch/m000051-pm04/brianchc/Aesthetic-Train-V2" \
-  --output_dir="/scratch/m000051-pm04/brianchc/flux_foveation/model_checkpoints/0122_new_arch_res_10_full_finetune_v2" \
+  --output_dir="/scratch/m000051-pm04/brianchc/flux_foveation/model_checkpoints/0126_x0_prediction" \
   --mixed_precision="bf16" \
   --train_batch_size=1 \
   --resolution 1024 \
@@ -20,7 +20,11 @@ accelerate launch --main_process_port 29502 --num_processes 8 train_flux_foveati
   --num_validation_images 10 \
   --seed="0" \
   --tokenAE_feature_channels 64 \
-  --use_ada_norm
+  --use_ada_norm \
+  --naive_upsample_mode "nearest" \
+  --naive_downsample_mode "nearest" \
+  --downsampler_learn_residual \
+  --upsampler_learn_residual
 
 # check diffusers version (validation image, offload, number of images with no prompts.... check FLUX finetuning scripts)
 # request more RAM

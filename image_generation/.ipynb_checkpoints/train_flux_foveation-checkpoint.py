@@ -1,4 +1,3 @@
-
 import os
 import sys
 sys.path.append("..")
@@ -87,6 +86,17 @@ if is_torch_npu_available():
     torch.npu.set_compile_mode(jit_compile=False)
 
 
+class ModelWrapper(torch.nn.Module):
+    def __init__(self, transformer, token_upsampler, token_downsampler):
+        super().__init__()
+        self.transformer = transformer
+        self.token_upsampler = token_upsampler
+        self.token_downsampler = token_downsampler
+    
+    # We don't strictly need a forward method if we call sub-modules manually,
+    # but it's good practice for DeepSpeed compatibility.
+    def forward(self, *args, **kwargs):
+       pass
 
 
 def load_text_encoders(class_one, class_two):
@@ -129,11 +139,14 @@ def log_validation(
 
     # generate masks
     foveation_mask_list = []
-    #r_list = np.linspace(0.1, 1.0, args.num_validation_images)
-    r_list = [0.5]
+    r_list = np.linspace(0.1, 1.0, args.num_validation_images)
+    #r_list = [0.5]
     for r in r_list:
-        foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(0, 0), r = r)
-        foveation_mask = foveation_mask.to(accelerator.device, dtype=torch_dtype)
+        if args.debug_mode == "no_fov":
+            foveation_mask = None
+        else:
+            foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(0, 0), r = r)
+            foveation_mask = foveation_mask.to(accelerator.device, dtype=torch_dtype)
         foveation_mask_list.append(foveation_mask)
 
     with autocast_ctx:
@@ -612,8 +625,11 @@ def parse_args(input_args=None):
     parser.add_argument("--upsampler_variance_correction", action="store_true")
     parser.add_argument("--downsampler_learn_residual", action="store_true")
     parser.add_argument("--upsampler_learn_residual", action="store_true")
+    parser.add_argument("--naive_upsample_mode", type=str, choices=["bilnear", "nearest"])
+    parser.add_argument("--naive_downsample_mode", type=str, choices=["bilnear", "nearest"])
     parser.add_argument("--use_ada_norm", action="store_true")
     parser.add_argument("--tokenAE_feature_channels", type=int, default=16)
+    parser.add_argument("--train_transformer", action="store_true")
 
     if input_args is not None:
         args = parser.parse_args(input_args)
@@ -974,7 +990,7 @@ def main(args):
         args.pretrained_model_name_or_path, subfolder="transformer", revision=args.revision, variant=args.variant
     )
 
-    transformer.requires_grad_(True) # 0101: don't train the transformer
+    transformer.requires_grad_(args.train_transformer) # 0101: don't train the transformer
     vae.requires_grad_(False)
     text_encoder_one.requires_grad_(False)
     text_encoder_two.requires_grad_(False)
@@ -986,14 +1002,16 @@ def main(args):
                                      embedding_dim=transformer.inner_dim, 
                                      num_res_blocks=10, 
                                      learn_residual=args.upsampler_learn_residual, 
-                                     use_ada_norm=args.use_ada_norm
+                                     use_ada_norm=args.use_ada_norm,
+                                     naive_upsample_mode=args.naive_upsample_mode
                                     )
     token_downsampler = TokenDownsampler(in_channels=16,
                                          feature_channels=args.tokenAE_feature_channels, 
                                          embedding_dim=transformer.inner_dim, 
                                          num_res_blocks=10,
                                          learn_residual=args.downsampler_learn_residual,
-                                         use_ada_norm=args.use_ada_norm
+                                         use_ada_norm=args.use_ada_norm,
+                                         naive_downsample_mode=args.naive_upsample_mode
                                         )
     # ===============================
 
@@ -1042,7 +1060,20 @@ def main(args):
     def save_model_hook(models, weights, output_dir):
         if accelerator.is_main_process:
             for i, model in enumerate(models):
-                if isinstance(unwrap_model(model), FluxPhaseAlignedTransformer2DModel):
+
+                if isinstance(unwrap_model(model), ModelWrapper):
+                    # Save the components inside the wrapper
+                    
+                    # Save TokenUpsampler
+                    torch.save(unwrap_model(model).token_upsampler.state_dict(), os.path.join(output_dir, "token_upsampler.pt"))
+                    
+                    # Save TokenDownsampler
+                    torch.save(unwrap_model(model).token_downsampler.state_dict(), os.path.join(output_dir, "token_downsampler.pt"))
+                    
+                    # Save Transformer (Optional - usually we rely on DeepSpeed checkpoint for the big model, 
+                    # but if you want a diffusers-compatible copy:)
+                    # model.transformer.save_pretrained(os.path.join(output_dir, "transformer"))
+                elif isinstance(unwrap_model(model), FluxPhaseAlignedTransformer2DModel):
                     #unwrap_model(model).save_pretrained(os.path.join(output_dir, "transformer"))
                     pass
                 elif isinstance(unwrap_model(model), (CLIPTextModelWithProjection, T5EncoderModel)):
@@ -1071,8 +1102,26 @@ def main(args):
             # pop models so that they are not loaded again
             model = models.pop()
 
+            # Handle Wrapper
+            if isinstance(unwrap_model(model), ModelWrapper):
+                # Load TokenUpsampler
+                upsampler_path = os.path.join(input_dir, "token_upsampler.pt")
+                if os.path.exists(upsampler_path):
+                    state_dict = torch.load(upsampler_path, map_location="cpu")
+                    unwrap_model(model).token_upsampler.load_state_dict(state_dict)
+                    print(f"Loaded TokenUpsampler from {upsampler_path}")
+
+                # Load TokenDownsampler
+                downsampler_path = os.path.join(input_dir, "token_downsampler.pt")
+                if os.path.exists(downsampler_path):
+                    state_dict = torch.load(downsampler_path, map_location="cpu")
+                    unwrap_model(model).token_downsampler.load_state_dict(state_dict)
+                    print(f"Loaded TokenDownsampler from {downsampler_path}")
+                
+                # We typically rely on DeepSpeed to load the transformer/optimizer states automatically,
+                # so we don't manually load model.transformer here unless necessary.
             # load diffusers style into model
-            if isinstance(unwrap_model(model), FluxPhaseAlignedTransformer2DModel):
+            elif isinstance(unwrap_model(model), FluxPhaseAlignedTransformer2DModel):
                 #load_model = FluxPhaseAlignedTransformer2DModel.from_pretrained(input_dir, subfolder="transformer")
                 #model.register_to_config(**load_model.config)
 
@@ -1132,7 +1181,10 @@ def main(args):
         "lr": args.learning_rate
     } # 0101: tokenAE
     # ===============================
-    params_to_optimize = [token_AE_parameters_with_lr, transformer_parameters_with_lr]
+    #params_to_optimize = [token_AE_parameters_with_lr, transformer_parameters_with_lr]
+    params_to_optimize = [token_AE_parameters_with_lr]
+    if args.train_transformer:
+        params_to_optimize.append(transformer_parameters_with_lr)
 
     # Optimizer creation
     if not (args.optimizer.lower() == "prodigy" or args.optimizer.lower() == "adamw"):
@@ -1246,10 +1298,13 @@ def main(args):
         power=args.lr_power,
     )
 
+    # create model wrapper for deepspeed
+    model_wrapper = ModelWrapper(transformer, token_upsampler, token_downsampler)
+    
     # Prepare everything with our `accelerator`.
     # 0101: add token_upsampler and token_downsampler to the list of models to prepare
-    transformer, token_upsampler, token_downsampler, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        transformer, token_upsampler, token_downsampler, optimizer, train_dataloader, lr_scheduler
+    model_wrapper, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        model_wrapper, optimizer, train_dataloader, lr_scheduler
     )
 
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
@@ -1336,31 +1391,36 @@ def main(args):
     generator = torch.Generator(device=accelerator.device).manual_seed(args.seed) if args.seed is not None else None
     fixed_noise = None
     for epoch in range(first_epoch, args.num_train_epochs):
-        transformer.train()
-        token_upsampler.train()
-        token_downsampler.train()
+        model_wrapper.transformer.train()
+        model_wrapper.token_upsampler.train()
+        model_wrapper.token_downsampler.train()
 
         for step, batch in enumerate(train_dataloader):
             # 0101: prepare foveation masks
             # ===============================
             r = np.random.choice(np.linspace(0.1, 1.0, 10))
-            r = 0.5
+            #r = 0.5
             
             center_min = -(1 - r) * 0.5
             center_max = (1 - r) * 0.5
             center_x, center_y = np.random.uniform(center_min, center_max, 2)
-            center_x, center_y = 0, 0
+            #center_x, center_y = 0, 0
             
             foveation_mask = create_foveation_mask(args.resolution // 16, args.resolution // 16, center=(center_x, center_y), r = r)
             foveation_mask = foveation_mask.to(accelerator.device, dtype=weight_dtype)
             joint_attention_kwargs = {}
+
+            if args.debug_mode == "no_fov":
+                foveation_mask = None
             # ===============================
 
 
-            models_to_accumulate = [transformer, token_upsampler, token_downsampler] # 0101: do not learn transformer
+            #models_to_accumulate = [transformer, token_upsampler, token_downsampler] # 0101: do not learn transformer
             #models_to_accumulate = [token_upsampler, token_downsampler] # 0101: learn tokenAE
+            #if args.train_transformer:
+            #    models_to_accumulate.append(transformer)
             
-            with accelerator.accumulate(models_to_accumulate):
+            with accelerator.accumulate(model_wrapper):
                 pixel_values = batch["pixel_values"].to(dtype=vae.dtype)
                 prompts = batch["prompts"]
 
@@ -1416,7 +1476,7 @@ def main(args):
                 #    timesteps = torch.full_like(timesteps, 500)
                 
                 # handle guidance
-                if unwrap_model(transformer).config.guidance_embeds:
+                if model_wrapper.transformer.config.guidance_embeds:
                     guidance = torch.tensor([args.guidance_scale], device=accelerator.device)
                     guidance = guidance.expand(model_input.shape[0])
                 else:
@@ -1425,7 +1485,7 @@ def main(args):
                 # generate time and text embeddings (for token samplers)
                 #print(timesteps.dtype, guidance.dtype, pooled_prompt_embeds.dtype)
                 #exit()
-                temb = accelerator.unwrap_model(transformer).time_text_embed(timesteps.to(dtype=pooled_prompt_embeds.dtype), guidance.to(dtype=pooled_prompt_embeds.dtype), pooled_prompt_embeds)
+                temb = model_wrapper.transformer.time_text_embed(timesteps.to(dtype=pooled_prompt_embeds.dtype), guidance.to(dtype=pooled_prompt_embeds.dtype), pooled_prompt_embeds)
                 #temb = None
 
                 # Add noise according to flow matching.
@@ -1442,12 +1502,12 @@ def main(args):
                 )
                 packed_noisy_model_input = FluxPipeline_Foveation._downsample_latents(
                     packed_noisy_model_input, latent_height, latent_width, 
-                    foveation_mask=foveation_mask, token_downsampler=token_downsampler,
+                    foveation_mask=foveation_mask, token_downsampler=model_wrapper.token_downsampler,
                     temb=temb
                 )
 
                 # Predict the noise residual
-                model_pred = transformer(
+                model_pred = model_wrapper.transformer(
                     hidden_states=packed_noisy_model_input,
                     # YiYi notes: divide it by 1000 for now because we scale it by 1000 in the transformer model (we should not keep it but I want to keep the inputs same for the model for testing)
                     timestep=timesteps / 1000,
@@ -1479,9 +1539,10 @@ def main(args):
                     latent_width, 
                     vae_scale_factor=vae_scale_factor,
                     foveation_mask=foveation_mask, 
-                    token_upsampler=token_upsampler, 
+                    token_upsampler=model_wrapper.token_upsampler, 
                     temb=temb
                 ) # Returns [B, 16, 128, 128] directly
+                
 
                 # these weighting schemes use a uniform timestep sampling
                 # and instead post-weight the loss
@@ -1497,10 +1558,12 @@ def main(args):
                     1,
                 )
                 loss = loss.mean()
+                
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    params_to_clip = itertools.chain(transformer.parameters(), token_upsampler.parameters(), token_downsampler.parameters())
+                    #params_to_clip = itertools.chain(transformer.parameters(), token_upsampler.parameters(), token_downsampler.parameters())
+                    params_to_clip = model_wrapper.parameters()
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
 
                 optimizer.step()
@@ -1535,7 +1598,7 @@ def main(args):
                                     shutil.rmtree(removing_checkpoint)
 
                         save_path = os.path.join(args.output_dir, f"checkpoint-{global_step}")
-                        accelerator.save_state(save_path)
+                        #accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
 
                     if global_step % 100 == 0:
@@ -1552,13 +1615,13 @@ def main(args):
                         text_encoder_one, text_encoder_two = load_text_encoders(text_encoder_cls_one, text_encoder_cls_two)
                         text_encoder_one.to(weight_dtype)
                         text_encoder_two.to(weight_dtype)
-                        
+                        unwrapped_model = unwrap_model(model_wrapper)
                         pipeline = FluxPipeline_Foveation.from_pretrained(
                             args.pretrained_model_name_or_path,
                             vae=vae,
                             text_encoder=unwrap_model(text_encoder_one),
                             text_encoder_2=unwrap_model(text_encoder_two),
-                            transformer=unwrap_model(transformer),
+                            transformer=unwrapped_model.transformer,
                             revision=args.revision,
                             variant=args.variant,
                             torch_dtype=weight_dtype,
@@ -1577,8 +1640,8 @@ def main(args):
                         images = log_validation(
                             pipeline=pipeline,
                             foveation_mask=foveation_mask,
-                            token_upsampler=token_upsampler,
-                            token_downsampler=token_downsampler,
+                            token_upsampler=unwrapped_model.token_upsampler,
+                            token_downsampler=unwrapped_model.token_downsampler,
                             args=args,
                             accelerator=accelerator,
                             pipeline_args=pipeline_args,
@@ -1595,6 +1658,7 @@ def main(args):
         
                         images = None
                         del pipeline
+                        del unwrapped_model
 
             logs = {"loss": loss.detach().item(), "lr": lr_scheduler.get_last_lr()[0]}
             progress_bar.set_postfix(**logs)
@@ -1606,7 +1670,10 @@ def main(args):
 
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
-        transformer = unwrap_model(transformer)
+        unwrapped_model = unwrap_model(model_wrapper)
+        transformer = unwrapped_model.transformer
+        token_upsampler = unwrapped_model.token_upsampler
+        token_downsampler = unwrapped_model.token_downsampler
 
         pipeline = FluxPipeline_Foveation.from_pretrained(args.pretrained_model_name_or_path, transformer=transformer)
 
@@ -1652,6 +1719,7 @@ def main(args):
 
         images = None
         del pipeline
+        del unwrapped_model
 
     accelerator.end_training()
 

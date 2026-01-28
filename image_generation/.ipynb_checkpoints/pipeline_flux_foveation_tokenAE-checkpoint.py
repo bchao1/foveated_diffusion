@@ -737,7 +737,7 @@ class FluxPipeline_Foveation(
             latents: [Batch, Seq_Len, Channels]
             height: Height of the latent grid (e.g. original_height // 2)
             width: Width of the latent grid (e.g. original_width // 2)
-            foveation_mask: [height, width] Tensor indicating high-res regions.
+            foveation_mask: [height, width] Tensor indicating high-res regions for packed latents
             sample_mode: "average" to mean-pool 2x2 blocks, "top_left" to keep the top-left pixel.
         """
         if foveation_mask is None:
@@ -757,6 +757,11 @@ class FluxPipeline_Foveation(
         latents = latents.view(batch_size, height, width, channels // 4, 2, 2) # [B, 64, 64, 16, 2, 2], 0, 1, 2, 3, 4, 5
         latents = latents.permute(0, 3, 1, 4, 2, 5) # [B, 16, 64, 2, 64, 2]
         latents = latents.reshape(batch_size, channels // (2 * 2), height * 2, width * 2) # [B, 16, 128, 128] # original spatial order
+        
+        #save_image(foveation_mask, "results/foveation_mask.png", debug_visualization=True)
+        #foveation_mask_spatial = F.interpolate(foveation_mask.unsqueeze(0).unsqueeze(0), size=(height * 2, width * 2), mode="nearest").squeeze(0).squeeze(0)
+        #save_image(foveation_mask_spatial, "results/foveation_mask_spatial.png", debug_visualization=True)
+        # use this mask to pick where to downsample latents, which latents to pass into the model
 
 
 
@@ -765,7 +770,7 @@ class FluxPipeline_Foveation(
         sample_mode = "average"
         if token_downsampler is not None:
             #print("using token downsampler")
-            latents = token_downsampler(latents, temb).to(output_latents.dtype)
+            latents = token_downsampler(latents, temb=temb, foveation_mask=foveation_mask).to(output_latents.dtype)
         elif sample_mode == "average":
             latents = F.interpolate(latents, scale_factor=0.5, mode="bilinear") * 2 # [B, 16, 64, 64]
         elif sample_mode == "top_left":
@@ -963,7 +968,13 @@ class FluxPipeline_Foveation(
         while preserving the exact High-Res tokens from the Transformer.
         """
         if foveation_mask is None:
-            return noise_pred
+            noise_pred_unpacked = FluxPipeline_Foveation._unpack_latents(
+                noise_pred,
+                height=latent_height * 2 * vae_scale_factor, # _unpack divides by scale factor, so we multiply to cancel out
+                width=latent_width * 2 * vae_scale_factor,
+                vae_scale_factor=vae_scale_factor
+            ) # Result: [B, 16, 128, 128]
+            return noise_pred_unpacked
 
         batch_size = noise_pred.shape[0]
         input_dtype = noise_pred.dtype
@@ -987,7 +998,7 @@ class FluxPipeline_Foveation(
             width=latent_width * vae_scale_factor, 
             vae_scale_factor=vae_scale_factor) # [B, 16, 64, 64]
         #print(f"noise_pred_low_res_unpacked shape: {noise_pred_low_res_unpacked.shape}")
-        noise_pred_low_res_unpacked_upsampled = token_upsampler(noise_pred_low_res_unpacked, temb)
+        noise_pred_low_res_unpacked_upsampled = token_upsampler(noise_pred_low_res_unpacked, temb=temb, foveation_mask=foveation_mask)
         #print(f"noise_pred_low_res_unpacked_upsampled shape: {noise_pred_low_res_unpacked_upsampled.shape}") # [1, 16, 128, 128]
 
 
@@ -1046,6 +1057,119 @@ class FluxPipeline_Foveation(
         final_output = torch.where(foveation_mask_upsampled.to(device), noise_pred_high_res_unpacked.to(device), noise_pred_low_res_unpacked_upsampled.to(device))
         #print(f"final_output shape: {final_output.shape}")
         return final_output
+
+    # TODO: from pipeline_flux_foveation.py
+    @staticmethod
+    def _upsample_latents(latents, height, width, foveation_mask=None, upsample_mode="bilinear"):
+        """
+        Upsamples reduced latents back to the original spatial grid size.
+        
+        Args:
+            latents: [Batch, Reduced_Seq_Len, Channels]
+            height: Original grid height.
+            width: Original grid width.
+            foveation_mask: [height, width] Tensor used for downsampling.
+            upsample_mode: "nearest", "bilinear", or "bicubic". 
+                           "nearest" duplicates tokens (original behavior).
+                           "bilinear"/"bicubic" interpolates low-res regions.
+        """
+        if foveation_mask is None:
+            return latents
+
+        batch_size, reduced_len, channels = latents.shape
+        device = latents.device
+        dtype = latents.dtype
+        
+        h_2, w_2 = height // 2, width // 2
+
+        # latents are in [32, 2, 32, 2, 64], ordering
+        
+        
+        # 1. Determine Block Status
+        mask = foveation_mask.to(device)
+        # [H, W] -> [H/2, W/2, 4]
+        mask_blocks = mask.view(h_2, 2, w_2, 2).permute(0, 2, 1, 3).reshape(h_2, w_2, 4)
+        
+        is_high_res_block = (mask_blocks.sum(dim=-1) > 0) # [H/2, W/2]
+        is_low_res_block = ~is_high_res_block
+        
+        # 2. Scatter Reduced Latents into Block Structure
+        # Create Layout Mask (same as downsample logic)
+        layout_mask = torch.ones(h_2, w_2, 4, device=device, dtype=torch.bool)
+        layout_mask[is_low_res_block, 1:] = False
+        # [32, 32, 4] -> [32, 32, 2, 2] -> [32, 2, 32, 2]
+        #layout_mask = layout_mask.view(h_2, w_2, 2, 2).permute(0, 2, 1, 3).reshape(h_2 * 2 * w_2 * 2)
+        
+        # Validation
+        if layout_mask.sum() != reduced_len:
+             raise ValueError(f"Latent length {reduced_len} does not match mask topology {layout_mask.sum()}.")
+
+        # Scatter into sparse buffer: [B, H/2, W/2, 4, C]
+        reconstructed_blocks = torch.zeros(batch_size, h_2 * w_2 * 4, channels, device=device, dtype=dtype)
+        reconstructed_blocks[:, layout_mask.view(-1), :] = latents
+        reconstructed_blocks = reconstructed_blocks.view(batch_size, h_2, w_2, 4, channels)
+        #reconstructed_blocks = reconstructed_blocks.view(batch_size, h_2, 2, w_2, 2, channels).permute(0, 1, 3, 2, 4, 5).reshape(batch_size, h_2, w_2, 4, channels)
+
+        # 3. Handle Upsampling
+        if upsample_mode == "nearest":
+            # Original logic: Duplicate index 0 for low-res blocks
+            if is_low_res_block.any():
+                low_res_vals = reconstructed_blocks[:, is_low_res_block, 0:1, :]
+                reconstructed_blocks[:, is_low_res_block, :, :] = low_res_vals.expand(-1, -1, 4, -1)
+                
+            # Flatten blocks to raster
+            final_output = reconstructed_blocks.view(batch_size, h_2, w_2, 2, 2, channels)
+            final_output = final_output.permute(0, 1, 3, 2, 4, 5).reshape(batch_size, height, width, channels)
+
+        else:
+            # --- Bilinear / Bicubic Path ---
+            
+            # A. Create a Dense Coarse Grid [B, C, H/2, W/2]
+            # Ideally, we want a grid where every pixel represents a smooth H/2 x W/2 view.
+            # - For Low-Res blocks: Take index 0.
+            # - For High-Res blocks: Take average of indices 0..3 (to align frequencies).
+            
+            # Start with values at index 0
+            coarse_grid = reconstructed_blocks[..., 0, :].clone() # [B, H/2, W/2, C]
+            
+            # If block is high-res, replace with mean of all 4 tokens to prevent artifacts
+            if is_high_res_block.any():
+                high_res_means = reconstructed_blocks[:, is_high_res_block, :, :].mean(dim=2)
+                coarse_grid[:, is_high_res_block, :] = high_res_means
+            
+            # Rearrange for interpolation: [B, C, H/2, W/2]
+            coarse_grid = coarse_grid.permute(0, 3, 1, 2)
+            
+            # B. Interpolate to Full Res [B, C, H, W]
+            fine_grid = torch.nn.functional.interpolate(
+                coarse_grid, 
+                size=(height, width), 
+                mode=upsample_mode, 
+                align_corners=False, 
+                antialias=True if upsample_mode != 'nearest' else False
+            )
+            
+            # Back to [B, H, W, C]
+            final_output = fine_grid.permute(0, 2, 3, 1)
+            
+            # C. Paste Original High-Res Details
+            # We now have a smooth upsampled image everywhere. 
+            # We must overwrite the regions that were originally High-Res with their exact tokens.
+            
+            # Reshape reconstructed blocks to standard raster grid [B, H, W, C]
+            high_res_raster = reconstructed_blocks.view(batch_size, h_2, w_2, 2, 2, channels)
+            high_res_raster = high_res_raster.permute(0, 1, 3, 2, 4, 5).reshape(batch_size, height, width, channels)
+            
+            # Expand boolean mask to full pixel resolution [H, W]
+            # is_high_res_block [H/2, W/2] -> repeat to [H, W]
+            pixel_mask = is_high_res_block.repeat_interleave(2, dim=0).repeat_interleave(2, dim=1)
+            
+            # Overwrite high-res pixels
+            final_output[:, pixel_mask, :] = high_res_raster[:, pixel_mask, :]
+
+        # Final flatten to sequence
+        return final_output.reshape(batch_size, height * width, channels)
+
 
     @staticmethod
     def _pack_latents(latents, batch_size, num_channels_latents, height, width):
@@ -1577,9 +1701,30 @@ class FluxPipeline_Foveation(
         if output_type == "latent":
             image = latents
         else:
-            latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
-            latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
-            image = self.vae.decode(latents.to(self.vae.dtype), return_dict=False)[0]
+            mode = "direct"
+            if mode == "direct":
+                latents = self._unpack_latents(latents, height, width, self.vae_scale_factor)
+                latents = (latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
+                image = self.vae.decode(latents.to(self.vae.dtype), return_dict=False)[0]
+            elif mode == "merge":
+                latents = self._downsample_latents(latents, self.latent_height, self.latent_width, foveation_mask=foveation_mask, token_downsampler=token_downsampler, temb=temb)
+                # low-res latents
+                low_res_latents = self._downsample_remaining_high_res(latents, self.latent_height, self.latent_width, foveation_mask=foveation_mask)
+                low_res_latents = self._unpack_latents(low_res_latents, height // 2, width // 2, self.vae_scale_factor)
+                low_res_latents = (low_res_latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
+                low_res_image = self.vae.decode(low_res_latents, return_dict=False)[0]
+                # high-res latents
+                high_res_latents = self._upsample_latents(latents, self.latent_height, self.latent_width, foveation_mask=foveation_mask)
+                high_res_latents = self._unpack_latents(high_res_latents, height, width, self.vae_scale_factor)
+                high_res_latents = (high_res_latents / self.vae.config.scaling_factor) + self.vae.config.shift_factor
+                high_res_image = self.vae.decode(high_res_latents, return_dict=False)[0]
+                # upsample low-res image to high-res size
+                low_res_image = F.interpolate(low_res_image, size=(height, width), mode='bilinear')
+                high_res_foveation_mask = F.interpolate(foveation_mask[None, None, :, :], size=(height, width), mode='bilinear').to(latents.dtype).to(latents.device) # [1, 1, H, W]
+                # merge 
+                image = low_res_image * (1 - high_res_foveation_mask) + high_res_image * high_res_foveation_mask
+            else:
+                raise ValueError(f"Output mode {mode} is not supported!")
             image = self.image_processor.postprocess(image, output_type=output_type)
 
         # Offload all models

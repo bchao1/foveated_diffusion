@@ -968,7 +968,13 @@ class FluxPipeline_Foveation(
         while preserving the exact High-Res tokens from the Transformer.
         """
         if foveation_mask is None:
-            return noise_pred
+            noise_pred_unpacked = FluxPipeline_Foveation._unpack_latents(
+                noise_pred,
+                height=latent_height * 2 * vae_scale_factor, # _unpack divides by scale factor, so we multiply to cancel out
+                width=latent_width * 2 * vae_scale_factor,
+                vae_scale_factor=vae_scale_factor
+            ) # Result: [B, 16, 128, 128]
+            return noise_pred_unpacked
 
         batch_size = noise_pred.shape[0]
         input_dtype = noise_pred.dtype
