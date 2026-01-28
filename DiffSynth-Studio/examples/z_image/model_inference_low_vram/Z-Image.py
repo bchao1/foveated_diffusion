@@ -3,6 +3,8 @@ from diffsynth.pipelines.z_image import ZImagePipeline, ModelConfig
 import torch
 
 model_folder = "/miele/brian/modelscope/Z-Image"
+model_folder = "/scratch/m000051-pm04/brianchc/Z-Image"
+
 vram_config = {
     "offload_dtype": torch.bfloat16,
     "offload_device": "cpu",
@@ -13,6 +15,7 @@ vram_config = {
     "computation_dtype": torch.bfloat16,
     "computation_device": "cuda",
 }
+
 pipe = ZImagePipeline.from_pretrained(
     torch_dtype=torch.bfloat16,
     device="cuda",
@@ -22,9 +25,9 @@ pipe = ZImagePipeline.from_pretrained(
             os.path.join(model_folder, "transformer/diffusion_pytorch_model-00002-of-00002.safetensors"),
         ], **vram_config),
         ModelConfig(path=[
-            os.path.join(model_folder, "text-encoder/model-00001-of-00003.safetensors"),
-            os.path.join(model_folder, "text-encoder/model-00002-of-00003.safetensors"),
-            os.path.join(model_folder, "text-encoder/model-00003-of-00003.safetensors"),
+            os.path.join(model_folder, "text_encoder/model-00001-of-00003.safetensors"),
+            os.path.join(model_folder, "text_encoder/model-00002-of-00003.safetensors"),
+            os.path.join(model_folder, "text_encoder/model-00003-of-00003.safetensors"),
         ], **vram_config),
         ModelConfig(path=os.path.join(model_folder, "vae/diffusion_pytorch_model.safetensors"), **vram_config),
     ],
