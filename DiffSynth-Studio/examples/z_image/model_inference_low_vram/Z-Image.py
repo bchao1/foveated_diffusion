@@ -1,6 +1,8 @@
+import os
 from diffsynth.pipelines.z_image import ZImagePipeline, ModelConfig
 import torch
 
+model_folder = "/miele/brian/modelscope/Z-Image"
 vram_config = {
     "offload_dtype": torch.bfloat16,
     "offload_device": "cpu",
@@ -15,11 +17,18 @@ pipe = ZImagePipeline.from_pretrained(
     torch_dtype=torch.bfloat16,
     device="cuda",
     model_configs=[
-        ModelConfig(model_id="Tongyi-MAI/Z-Image", origin_file_pattern="transformer/*.safetensors", **vram_config),
-        ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="text_encoder/*.safetensors", **vram_config),
-        ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="vae/diffusion_pytorch_model.safetensors", **vram_config),
+        ModelConfig(path=[
+            os.path.join(model_folder, "transformer/diffusion_pytorch_model-00001-of-00002.safetensors"),
+            os.path.join(model_folder, "transformer/diffusion_pytorch_model-00002-of-00002.safetensors"),
+        ], **vram_config),
+        ModelConfig(path=[
+            os.path.join(model_folder, "text-encoder/model-00001-of-00003.safetensors"),
+            os.path.join(model_folder, "text-encoder/model-00002-of-00003.safetensors"),
+            os.path.join(model_folder, "text-encoder/model-00003-of-00003.safetensors"),
+        ], **vram_config),
+        ModelConfig(path=os.path.join(model_folder, "vae/diffusion_pytorch_model.safetensors"), **vram_config),
     ],
-    tokenizer_config=ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="tokenizer/"),
+    tokenizer_config=ModelConfig(path=os.path.join(model_folder, "tokenizer/"), **vram_config),
 )
 prompt = "Young Chinese woman in red Hanfu, intricate embroidery. Impeccable makeup, red floral forehead pattern. Elaborate high bun, golden phoenix headdress, red flowers, beads. Holds round folding fan with lady, trees, bird. Neon lightning-bolt lamp (⚡️), bright yellow glow, above extended left palm. Soft-lit outdoor night background, silhouetted tiered pagoda (西安大雁塔), blurred colorful distant lights."
 image = pipe(prompt=prompt, seed=42, rand_device="cuda", num_inference_steps=50, cfg_scale=4)
