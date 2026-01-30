@@ -542,6 +542,13 @@ z_image_series = [
         "model_class": "diffsynth.models.z_image_dit.ZImageDiT",
     },
     {
+        # Z-Image DiT Foveated (same weights as z_image_dit, but with CRPA attention support)
+        # Example: ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="transformer/*.safetensors")
+        "model_hash": "fc3a8a1247fe185ce116ccbe0e426c28",
+        "model_name": "z_image_dit_foveated",
+        "model_class": "diffsynth.models.z_image_dit_fov.ZImageDiTFoveated",
+    },
+    {
         # Example: ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="text_encoder/*.safetensors")
         "model_hash": "0f050f62a88876fea6eae0a18dac5a2e",
         "model_name": "z_image_text_encoder",
@@ -568,6 +575,14 @@ z_image_series = [
         "model_hash": "aa3563718e5c3ecde3dfbb020ca61180",
         "model_name": "z_image_dit",
         "model_class": "diffsynth.models.z_image_dit.ZImageDiT",
+        "extra_kwargs": {"siglip_feat_dim": 1152},
+    },
+    {
+        # Z-Image DiT Foveated - Omni-Base variant (same weights, with CRPA attention support)
+        # Example: ModelConfig(model_id="Tongyi-MAI/Z-Image-Omni-Base", origin_file_pattern="transformer/*.safetensors")
+        "model_hash": "aa3563718e5c3ecde3dfbb020ca61180",
+        "model_name": "z_image_dit_foveated",
+        "model_class": "diffsynth.models.z_image_dit_fov.ZImageDiTFoveated",
         "extra_kwargs": {"siglip_feat_dim": 1152},
     },
     {
