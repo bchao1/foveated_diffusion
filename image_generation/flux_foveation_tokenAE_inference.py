@@ -3,6 +3,7 @@ import os
 import sys
 sys.path.append("..")
 from pipeline_flux_foveation_tokenAE import FluxPipeline_Foveation
+from pipeline_flux_foveation_x0pred import FluxPipeline_Foveation_X0Pred
 from transformer_flux_crpa import FluxPhaseAlignedTransformer2DModel
 import torch
 import numpy as np
@@ -38,15 +39,15 @@ def main(args):
         torch_dtype=torch.bfloat16
     ).to(device)
 
-    pipe = FluxPipeline_Foveation.from_pretrained(
+    pipe = FluxPipeline_Foveation_X0Pred.from_pretrained(
         args.pretrained_model_name_or_path,
         transformer=transformer,
         torch_dtype=torch.bfloat16
     ).to(device)
 
     # CNN-based
-    token_upsampler = TokenUpsampler(in_channels=16, feature_channels=64, embedding_dim=3072, num_res_blocks=10, naive_upsample_mode="bilinear", learn_residual=True)
-    token_downsampler = TokenDownsampler(in_channels=16, feature_channels=64, embedding_dim=3072, num_res_blocks=10, naive_downsample_mode="bilinear", learn_residual=True)
+    token_upsampler = TokenUpsampler(in_channels=16, feature_channels=64, embedding_dim=3072, num_res_blocks=10, naive_upsample_mode="nearest", learn_residual=True)
+    token_downsampler = TokenDownsampler(in_channels=16, feature_channels=64, embedding_dim=3072, num_res_blocks=10, naive_downsample_mode="nearest", learn_residual=True)
 
     # MLP-based
     #token_upsampler = TokenUpsampler(num_layers=2, hidden_dim=64, bias=False, debug=True)
@@ -152,7 +153,10 @@ def main(args):
                 foveation_mask=foveation_mask_high.squeeze(), 
                 foveation_start_step=args.foveation_start_step,
                 token_upsampler=token_upsampler,
-                token_downsampler=token_downsampler
+                token_downsampler=token_downsampler,
+                save_intermediate_x0=True,
+                intermediate_x0_save_dir=f"{output_dir}/intermediate_x0",
+                intermediate_x0_save_steps=[0, 9, 18, 27]
             ).images[0]
             
             end_time = time.time()
