@@ -1131,15 +1131,44 @@ class FluxPipeline_Foveation_X0Pred(
         width,
     ):
         """
-        Save intermediate x0 (clean image) predictions at a denoising step.
+        Save intermediate x0 (clean image) predictions and velocity maps at a denoising step.
         
         This function computes and saves:
+        
+        X0 (Clean Image) Predictions (decoded through VAE):
         1. x0_low: Low-res clean image prediction (uniform low-res grid)
         2. x0_high_upsampled: High-res clean image from upsampling x0_low
         3. x0_high_original: High-res clean image from DiT's HR predictions (for HR regions)
         4. x0_merged: Final merged x0 (HR regions from DiT, LR regions from upsampler)
         
-        All images are decoded through VAE and saved as PNG files.
+        Velocity Predictions (color-coded maps):
+        For each velocity, saves 3 visualizations:
+        - *_mean: Mean across channels with RdBu diverging colormap (red=positive, blue=negative)
+        - *_magnitude: L2 norm across channels with hot colormap
+        - *_rgb: First 3 channels mapped to RGB
+        
+        Velocity types saved:
+        5. v_low: Low-res velocity from DiT
+        6. v_high_original: High-res velocity from DiT (with NN-filled LR regions)
+        7. v_high_from_upsampler: Velocity computed from upsampled x0
+        8. v_merged: Final merged velocity (HR from DiT, LR from upsampler)
+        
+        X0 Latent Visualizations (color-coded maps, same format as velocity):
+        9. x0_low_latent: Low-res x0 latent visualization
+        10. x0_high_upsampled_latent: Upsampled x0 latent visualization
+        11. x0_high_original_latent: Original high-res x0 latent visualization
+        12. x0_merged_latent: Merged x0 latent visualization
+        
+        Spatial Gradient Maps (shows local noisiness/detail):
+        For each tensor, saves 4 visualizations:
+        - *_grad_mean: Mean gradient magnitude across channels (hot colormap)
+        - *_grad_l2: L2 norm of gradient magnitude (hot colormap)
+        - *_noisiness: Same as grad_l2 with inferno colormap (dark=smooth, bright=noisy)
+        - *_grad_direction: Gradient direction/angle (hsv colormap, shows edge orientation)
+        
+        Saved for: x0_low, x0_high_upsampled, x0_high_original, x0_merged,
+                   v_low, v_high_original, v_high_from_upsampler, v_merged,
+                   z_t_high, z_t_low
         
         Args:
             noise_pred: [B, Reduced_Seq_Len, 64] - Mixed resolution velocity predictions from DiT
@@ -1298,6 +1327,203 @@ class FluxPipeline_Foveation_X0Pred(
             mask_img = (foveation_mask_upsampled.float().cpu().numpy() * 255).astype(np.uint8)
             mask_pil = Image.fromarray(mask_img)
             mask_pil.save(save_dir / f"step_{step_idx:03d}_foveation_mask.png")
+            
+            # =====================================================================
+            # 6. Save velocity predictions as color-coded maps
+            # =====================================================================
+            def velocity_to_colormap(velocity_tensor, name, is_low_res=False):
+                """
+                Convert velocity tensor to color-coded visualization.
+                Uses a diverging colormap (blue-white-red) to show negative/zero/positive values.
+                
+                Args:
+                    velocity_tensor: [B, C, H, W] velocity tensor
+                    name: Name for saving
+                    is_low_res: If True, upsample for visualization
+                """
+                import matplotlib.pyplot as plt
+                import matplotlib.cm as cm
+                
+                for b_idx in range(velocity_tensor.shape[0]):
+                    # Take mean across channels to get a single map
+                    v_mean = velocity_tensor[b_idx].mean(dim=0).float().cpu().numpy()  # [H, W]
+                    
+                    # Also save magnitude (L2 norm across channels)
+                    v_magnitude = velocity_tensor[b_idx].float().pow(2).sum(dim=0).sqrt().cpu().numpy()  # [H, W]
+                    
+                    # Normalize for visualization
+                    # For mean: center at 0, use symmetric range
+                    v_max = max(abs(v_mean.min()), abs(v_mean.max()), 1e-6)
+                    v_mean_normalized = (v_mean / v_max + 1) / 2  # Map to [0, 1]
+                    
+                    # For magnitude: normalize to [0, 1]
+                    mag_max = max(v_magnitude.max(), 1e-6)
+                    v_mag_normalized = v_magnitude / mag_max
+                    
+                    # Apply colormaps
+                    # Mean: use RdBu (red-white-blue diverging colormap)
+                    colormap_diverging = cm.get_cmap('RdBu_r')  # Red for positive, Blue for negative
+                    v_mean_colored = (colormap_diverging(v_mean_normalized)[:, :, :3] * 255).astype(np.uint8)
+                    
+                    # Magnitude: use viridis or hot
+                    colormap_magnitude = cm.get_cmap('hot')
+                    v_mag_colored = (colormap_magnitude(v_mag_normalized)[:, :, :3] * 255).astype(np.uint8)
+                    
+                    # Convert to PIL
+                    mean_img = Image.fromarray(v_mean_colored)
+                    mag_img = Image.fromarray(v_mag_colored)
+                    
+                    if is_low_res:
+                        mean_img = mean_img.resize((width, height), resample=Image.NEAREST)
+                        mag_img = mag_img.resize((width, height), resample=Image.NEAREST)
+                    
+                    # Save
+                    mean_img.save(save_dir / f"step_{step_idx:03d}_{name}_mean_batch_{b_idx}.png")
+                    mag_img.save(save_dir / f"step_{step_idx:03d}_{name}_magnitude_batch_{b_idx}.png")
+                    
+                    # Also save first 3 channels as RGB for direct visualization
+                    v_rgb = velocity_tensor[b_idx, :3].float().cpu()  # [3, H, W]
+                    # Normalize each channel independently
+                    v_rgb_normalized = torch.zeros_like(v_rgb)
+                    for c in range(3):
+                        c_max = max(abs(v_rgb[c].min()), abs(v_rgb[c].max()), 1e-6)
+                        v_rgb_normalized[c] = (v_rgb[c] / c_max + 1) / 2  # Map to [0, 1]
+                    v_rgb_img = (v_rgb_normalized.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+                    rgb_img = Image.fromarray(v_rgb_img)
+                    if is_low_res:
+                        rgb_img = rgb_img.resize((width, height), resample=Image.NEAREST)
+                    rgb_img.save(save_dir / f"step_{step_idx:03d}_{name}_rgb_batch_{b_idx}.png")
+            
+            # Compute v_high_from_upsampler: v = (z_t - x_0) / sigma
+            sigma_clamped = sigma.clamp(min=1e-6)
+            v_high_from_upsampler = (z_t_high_unpacked - x_0_high_upsampled) / sigma_clamped
+            
+            # Compute merged velocity
+            v_merged = torch.where(
+                foveation_mask_upsampled.to(device),
+                v_high_original,
+                v_high_from_upsampler
+            )
+            
+            # Save velocity maps
+            velocity_to_colormap(v_low_unpacked, "v_low", is_low_res=True)
+            velocity_to_colormap(v_high_original, "v_high_original")
+            velocity_to_colormap(v_high_from_upsampler, "v_high_from_upsampler")
+            velocity_to_colormap(v_merged, "v_merged")
+            
+            # =====================================================================
+            # 7. Save x0 latents as color-coded maps (same visualization as velocity)
+            # =====================================================================
+            velocity_to_colormap(x_0_low, "x0_low_latent", is_low_res=True)
+            velocity_to_colormap(x_0_high_upsampled, "x0_high_upsampled_latent")
+            velocity_to_colormap(x_0_high_original, "x0_high_original_latent")
+            velocity_to_colormap(x_0_merged, "x0_merged_latent")
+            
+            # =====================================================================
+            # 8. Save spatial gradient maps (shows local noisiness/detail)
+            # =====================================================================
+            def compute_spatial_gradient(tensor, name, is_low_res=False):
+                """
+                Compute and visualize local spatial gradients to show noisiness.
+                
+                Uses Sobel-like filters to compute gradients in x and y directions,
+                then computes the gradient magnitude. High values indicate high local
+                variation (noise or fine detail), low values indicate smooth regions.
+                
+                Args:
+                    tensor: [B, C, H, W] input tensor
+                    name: Name for saving
+                    is_low_res: If True, upsample for visualization
+                """
+                import matplotlib.cm as cm
+                
+                for b_idx in range(tensor.shape[0]):
+                    # Get the tensor for this batch item [C, H, W]
+                    t = tensor[b_idx].float()
+                    
+                    # Compute gradients using finite differences (Sobel-like)
+                    # Gradient in x direction (horizontal)
+                    gx = torch.zeros_like(t)
+                    gx[:, :, 1:] = t[:, :, 1:] - t[:, :, :-1]  # [C, H, W]
+                    
+                    # Gradient in y direction (vertical)
+                    gy = torch.zeros_like(t)
+                    gy[:, 1:, :] = t[:, 1:, :] - t[:, :-1, :]  # [C, H, W]
+                    
+                    # Gradient magnitude per channel
+                    grad_mag = torch.sqrt(gx.pow(2) + gy.pow(2))  # [C, H, W]
+                    
+                    # Mean gradient magnitude across channels
+                    grad_mag_mean = grad_mag.mean(dim=0).cpu().numpy()  # [H, W]
+                    
+                    # L2 norm of gradient magnitude across channels
+                    grad_mag_l2 = grad_mag.pow(2).sum(dim=0).sqrt().cpu().numpy()  # [H, W]
+                    
+                    # Normalize for visualization
+                    grad_mean_max = max(grad_mag_mean.max(), 1e-6)
+                    grad_mean_normalized = grad_mag_mean / grad_mean_max
+                    
+                    grad_l2_max = max(grad_mag_l2.max(), 1e-6)
+                    grad_l2_normalized = grad_mag_l2 / grad_l2_max
+                    
+                    # Apply colormap (hot: black=smooth, yellow/white=noisy)
+                    colormap = cm.get_cmap('hot')
+                    grad_mean_colored = (colormap(grad_mean_normalized)[:, :, :3] * 255).astype(np.uint8)
+                    grad_l2_colored = (colormap(grad_l2_normalized)[:, :, :3] * 255).astype(np.uint8)
+                    
+                    # Also create a "noisiness" map using inferno colormap
+                    colormap_inferno = cm.get_cmap('inferno')
+                    grad_inferno = (colormap_inferno(grad_l2_normalized)[:, :, :3] * 255).astype(np.uint8)
+                    
+                    # Convert to PIL
+                    grad_mean_img = Image.fromarray(grad_mean_colored)
+                    grad_l2_img = Image.fromarray(grad_l2_colored)
+                    grad_inferno_img = Image.fromarray(grad_inferno)
+                    
+                    if is_low_res:
+                        grad_mean_img = grad_mean_img.resize((width, height), resample=Image.NEAREST)
+                        grad_l2_img = grad_l2_img.resize((width, height), resample=Image.NEAREST)
+                        grad_inferno_img = grad_inferno_img.resize((width, height), resample=Image.NEAREST)
+                    
+                    # Save
+                    grad_mean_img.save(save_dir / f"step_{step_idx:03d}_{name}_grad_mean_batch_{b_idx}.png")
+                    grad_l2_img.save(save_dir / f"step_{step_idx:03d}_{name}_grad_l2_batch_{b_idx}.png")
+                    grad_inferno_img.save(save_dir / f"step_{step_idx:03d}_{name}_noisiness_batch_{b_idx}.png")
+                    
+                    # Also save the raw gradient statistics
+                    stats = {
+                        'mean_grad': float(grad_mag_mean.mean()),
+                        'max_grad': float(grad_mag_mean.max()),
+                        'std_grad': float(grad_mag_mean.std()),
+                    }
+                    
+                    # Save gradient direction visualization (shows edge orientation)
+                    # Angle of gradient
+                    angle = torch.atan2(gy.mean(dim=0), gx.mean(dim=0))  # [H, W]
+                    angle_normalized = ((angle + np.pi) / (2 * np.pi)).cpu().numpy()  # Map to [0, 1]
+                    
+                    colormap_hsv = cm.get_cmap('hsv')
+                    angle_colored = (colormap_hsv(angle_normalized)[:, :, :3] * 255).astype(np.uint8)
+                    angle_img = Image.fromarray(angle_colored)
+                    if is_low_res:
+                        angle_img = angle_img.resize((width, height), resample=Image.NEAREST)
+                    angle_img.save(save_dir / f"step_{step_idx:03d}_{name}_grad_direction_batch_{b_idx}.png")
+            
+            # Save spatial gradients for x0 predictions
+            compute_spatial_gradient(x_0_low, "x0_low", is_low_res=True)
+            compute_spatial_gradient(x_0_high_upsampled, "x0_high_upsampled")
+            compute_spatial_gradient(x_0_high_original, "x0_high_original")
+            compute_spatial_gradient(x_0_merged, "x0_merged")
+            
+            # Save spatial gradients for velocity predictions
+            compute_spatial_gradient(v_low_unpacked, "v_low", is_low_res=True)
+            compute_spatial_gradient(v_high_original, "v_high_original")
+            compute_spatial_gradient(v_high_from_upsampler, "v_high_from_upsampler")
+            compute_spatial_gradient(v_merged, "v_merged")
+            
+            # Save spatial gradients for noisy latents z_t (useful for comparison)
+            compute_spatial_gradient(z_t_high_unpacked, "z_t_high")
+            compute_spatial_gradient(z_t_low_unpacked, "z_t_low", is_low_res=True)
 
     @property
     def guidance_scale(self):

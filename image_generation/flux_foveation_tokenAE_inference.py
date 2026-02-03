@@ -164,6 +164,7 @@ def main(args):
             
             # Save final output
             image.save(f"{output_dir}/img_{i:03d}.png")
+            exit()
     elif args.experiment == "radius_ablation":
         r_list = np.linspace(0.1, 1.0, 10)
         #r_list = [r_list[1]]
