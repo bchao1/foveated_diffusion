@@ -46,8 +46,26 @@ def main(args):
     ).to(device)
 
     # CNN-based
-    token_upsampler = TokenUpsampler(in_channels=16, feature_channels=64, embedding_dim=3072, num_res_blocks=10, naive_upsample_mode="nearest", learn_residual=True)
-    token_downsampler = TokenDownsampler(in_channels=16, feature_channels=64, embedding_dim=3072, num_res_blocks=10, naive_downsample_mode="nearest", learn_residual=True)
+    token_upsampler = TokenUpsampler(
+        in_channels=16, 
+        feature_channels=64, 
+        embedding_dim=3072, 
+        num_res_blocks=10, 
+        naive_upsample_mode="nearest", 
+        learn_residual=True,
+        variance_correction=False,
+        use_ada_norm=False
+    )
+    token_downsampler = TokenDownsampler(
+        in_channels=16, 
+        feature_channels=64, 
+        embedding_dim=3072, 
+        num_res_blocks=10, 
+        naive_downsample_mode="nearest", 
+        learn_residual=True,
+        variance_correction=False,
+        use_ada_norm=False
+    )
 
     # MLP-based
     #token_upsampler = TokenUpsampler(num_layers=2, hidden_dim=64, bias=False, debug=True)
@@ -154,7 +172,7 @@ def main(args):
                 foveation_start_step=args.foveation_start_step,
                 token_upsampler=token_upsampler,
                 token_downsampler=token_downsampler,
-                save_intermediate_x0=True,
+                save_intermediate_x0=False,
                 intermediate_x0_save_dir=f"{output_dir}/intermediate_x0",
                 intermediate_x0_save_steps=[0, 9, 18, 27]
             ).images[0]
@@ -164,7 +182,7 @@ def main(args):
             
             # Save final output
             image.save(f"{output_dir}/img_{i:03d}.png")
-            exit()
+            #exit()
     elif args.experiment == "radius_ablation":
         r_list = np.linspace(0.1, 1.0, 10)
         #r_list = [r_list[1]]
