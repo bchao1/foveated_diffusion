@@ -13,7 +13,7 @@
 # ============================================================================
 
 # Default configuration
-MODEL_FOLDER="/miele/brian/modelscope/Z-Image"
+MODEL_FOLDER="/miele/brian/modelscope/Tongyi-MAI/Z-Image"
 NUM_FRAMES=100
 ORBIT_RADIUS=0.25
 MASK_RADIUS=0.30

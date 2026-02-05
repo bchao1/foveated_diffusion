@@ -61,7 +61,7 @@ class ZImagePipeline(BasePipeline):
         torch_dtype: torch.dtype = torch.bfloat16,
         device: Union[str, torch.device] = get_device_type(),
         model_configs: list[ModelConfig] = [],
-        tokenizer_config: ModelConfig = ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="tokenizer/"),
+        tokenizer_config: ModelConfig = ModelConfig(model_id="Tongyi-MAI/Z-Image", origin_file_pattern="tokenizer/"),
         vram_limit: float = None,
     ):
         # Initialize pipeline

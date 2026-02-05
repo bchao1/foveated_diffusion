@@ -185,6 +185,10 @@ class ZImageFoveatedPipeline(BasePipeline):
         self.load_models_to_device(self.in_iteration_models)
         models = {name: getattr(self, name) for name in self.in_iteration_models}
         
+        # Get latent dimensions for foveation
+        latent_height = height // self.vae_scale_factor
+        latent_width = width // self.vae_scale_factor
+        
         for progress_id, timestep in enumerate(progress_bar_cmd(self.scheduler.timesteps)):
             timestep = timestep.unsqueeze(0).to(dtype=self.torch_dtype, device=self.device)
             
@@ -194,17 +198,54 @@ class ZImageFoveatedPipeline(BasePipeline):
                 progress_id >= foveation_start_step
             )
             
-            # Model forward
-            # For Z-Image, latents stay in spatial format [B, C, H, W] (1, 16, 128, 128)
-            # The foveation_mask is passed to the model for CRPA attention internally
-            noise_pred = self.cfg_guided_model_fn(
-                self.model_fn, cfg_scale,
-                inputs_shared, inputs_posi, inputs_nega,
-                **models,
-                timestep=timestep,
-                progress_id=progress_id,
-                foveation_mask=foveation_mask if use_foveation else None,
-            )
+            if use_foveation:
+                # ============================================================
+                # FOVEATED DIFFUSION PATH
+                # Following FLUX's approach: downsample/upsample in spatial domain
+                # 
+                # Architecture:
+                # 1. DiT's patchify_and_embed_foveated handles spatial downsampling
+                #    - For LR blocks: unpatchify 4 tokens -> downsample -> repatchify to 1 token
+                #    - Uses token_downsampler passed through model_fn
+                # 2. DiT processes reduced token sequence
+                # 3. DiT's expand_foveated_tokens does NN replication
+                # 4. Pipeline's _upsample_noise_pred_spatial does proper spatial upsampling
+                # ============================================================
+                
+                # 1. Run DiT with foveation mask and token_downsampler
+                # DiT handles spatial downsampling internally in patchify_and_embed_foveated
+                noise_pred = self.cfg_guided_model_fn(
+                    self.model_fn, cfg_scale,
+                    inputs_shared, inputs_posi, inputs_nega,
+                    **models,
+                    timestep=timestep,
+                    progress_id=progress_id,
+                    foveation_mask=foveation_mask,
+                    token_downsampler=token_downsampler,
+                )
+                
+                # 2. Upsample noise prediction in spatial domain for LR regions
+                # This replaces the NN-replicated LR content with properly upsampled content
+                noise_pred = self._upsample_noise_pred_spatial(
+                    noise_pred,
+                    latent_height,
+                    latent_width,
+                    foveation_mask,
+                    token_upsampler=token_upsampler,
+                    timestep=timestep,
+                )
+            else:
+                # ============================================================
+                # STANDARD DIFFUSION PATH (no foveation)
+                # ============================================================
+                noise_pred = self.cfg_guided_model_fn(
+                    self.model_fn, cfg_scale,
+                    inputs_shared, inputs_posi, inputs_nega,
+                    **models,
+                    timestep=timestep,
+                    progress_id=progress_id,
+                    foveation_mask=None,
+                )
             
             # Scheduler step
             # Note: noise_pred and latents are both in spatial format [B, C, H, W]
@@ -227,12 +268,14 @@ class ZImageFoveatedPipeline(BasePipeline):
             image = self.vae_output_to_image(image)
         elif vae_decode_mode == "merge":
             # Merge mode: decode LR and HR separately, then merge
+            # Following FLUX's exact merge logic from pipeline_flux_foveation_tokenAE.py
             image = self._decode_merged(
                 latents, 
                 foveation_mask, 
                 height, 
                 width,
-                downsample_mode=vae_merge_downsample_mode
+                downsample_mode=vae_merge_downsample_mode,
+                token_upsampler=token_upsampler,
             )
         else:
             raise ValueError(f"VAE decode mode '{vae_decode_mode}' is not supported. Use 'direct' or 'merge'.")
@@ -248,15 +291,18 @@ class ZImageFoveatedPipeline(BasePipeline):
         height: int,
         width: int,
         downsample_mode: str = "average",
+        token_upsampler: torch.nn.Module = None,
     ) -> Image.Image:
         """
         Decode latents using merge mode: decode LR and HR separately, then merge.
         
-        This approach follows the same 2x2 block downsampling used during foveation:
-        1. Create low-res latents using 2x2 block downsampling (matching foveation patchification)
-        2. Decode low-res latents through VAE
-        3. Decode high-res latents through VAE
-        4. Upsample low-res image and merge using foveation mask
+        This follows the exact FLUX pipeline_flux_foveation_tokenAE.py logic:
+        1. Create uniform low-res latents by downsampling (HR blocks averaged, LR blocks extracted)
+        2. Decode low-res latents through VAE -> low_res_image
+        3. Create full-res latents by upsampling LR regions (interpolation in latent space)
+        4. Decode full-res latents through VAE -> high_res_image  
+        5. Upsample low-res image to match high-res (bilinear in pixel space)
+        6. Merge using bilinear-interpolated foveation mask (soft transitions)
         
         Args:
             latents: [B, C, H, W] full resolution latents (after unpatchify)
@@ -264,6 +310,7 @@ class ZImageFoveatedPipeline(BasePipeline):
             height: Output image height
             width: Output image width
             downsample_mode: "average" (pool 2x2 blocks) or "nearest" (top-left sampling)
+            token_upsampler: Optional module for upsampling LR regions in latent space
             
         Returns:
             Merged PIL Image
@@ -272,8 +319,15 @@ class ZImageFoveatedPipeline(BasePipeline):
         dtype = latents.dtype
         B, C, H_latent, W_latent = latents.shape
         
-        # 1. Create low-res latents by 2x2 block downsampling
-        # This matches how foveation processes LR regions (keeping only 1 token per 2x2 block)
+        # ================================================================
+        # LOW-RES PATH (Following FLUX's _downsample_remaining_high_res)
+        # Create uniform low-res latents, decode, upsample in pixel space
+        # ================================================================
+        
+        # 1. Create uniform low-res latents by downsampling
+        # This creates a uniform [H/2, W/2] grid:
+        # - LR regions: extract the single denoised value (top-left of 2x2 NN-replicated block)
+        # - HR regions: average/subsample the 2x2 block
         low_res_latents = self._downsample_latents_block(
             latents, 
             foveation_mask, 
@@ -281,36 +335,121 @@ class ZImageFoveatedPipeline(BasePipeline):
         )  # [B, C, H/2, W/2]
         
         # 2. Decode low-res latents through VAE
-        low_res_decoded = self.vae_decoder(low_res_latents)  # [B, C, H_pixel/2, W_pixel/2]
+        low_res_decoded = self.vae_decoder(low_res_latents)  # [B, 3, H_pixel/2, W_pixel/2]
         
-        # 3. Upsample low-res decoded image to full resolution
-        low_res_upsampled = F.interpolate(
+        # 3. Upsample low-res decoded image to full resolution (bilinear in pixel space)
+        low_res_image = F.interpolate(
             low_res_decoded, 
             size=(height, width), 
             mode='bilinear', 
             align_corners=False
         )
         
-        # 4. Decode high-res (full) latents through VAE
-        high_res_decoded = self.vae_decoder(latents)  # [B, C, H_pixel, W_pixel]
+        # ================================================================
+        # HIGH-RES PATH (Following FLUX's _upsample_latents)
+        # Upsample LR regions in latent space, then decode
+        # ================================================================
         
-        # 5. Create pixel-space foveation mask
-        # First expand to block level, then to pixel space
-        # foveation_mask [H_latent, W_latent] -> pixel space [height, width]
+        # 4. Create full-res latents by upsampling LR regions
+        # The input latents have NN-replicated content in LR regions (from expand_foveated_tokens)
+        # We replace this with properly interpolated content for better VAE decoding
+        high_res_latents = self._upsample_latents_for_decode(
+            latents,
+            foveation_mask,
+            token_upsampler=token_upsampler,
+        )  # [B, C, H, W]
+        
+        # 5. Decode high-res latents through VAE
+        high_res_image = self.vae_decoder(high_res_latents)  # [B, 3, H_pixel, W_pixel]
+        
+        # ================================================================
+        # MERGE (Following FLUX's merge logic exactly)
+        # Use bilinear-interpolated mask for soft transitions
+        # ================================================================
+        
+        # 6. Create pixel-space foveation mask with bilinear interpolation (soft transitions)
+        # FLUX uses bilinear for smooth blending at HR/LR boundaries
         foveation_mask_pixel = F.interpolate(
             foveation_mask.float().unsqueeze(0).unsqueeze(0),
             size=(height, width),
-            mode='nearest'  # Use nearest to keep sharp mask boundaries
+            mode='bilinear',  # Soft transitions like FLUX
+            align_corners=False
         ).to(dtype=dtype, device=device)  # [1, 1, H, W]
         
-        # 6. Merge: HR regions from high_res_decoded, LR regions from low_res_upsampled
+        # 7. Merge: HR regions from high_res_image, LR regions from low_res_image
         # image = low_res * (1 - mask) + high_res * mask
-        merged = low_res_upsampled * (1 - foveation_mask_pixel) + high_res_decoded * foveation_mask_pixel
+        merged = low_res_image * (1 - foveation_mask_pixel) + high_res_image * foveation_mask_pixel
         
-        # 7. Convert to PIL Image
+        # 8. Convert to PIL Image
         image = self.vae_output_to_image(merged)
         
         return image
+    
+    def _upsample_latents_for_decode(
+        self,
+        latents: torch.Tensor,
+        foveation_mask: torch.Tensor,
+        token_upsampler: torch.nn.Module = None,
+        upsample_mode: str = "bilinear",
+    ) -> torch.Tensor:
+        """
+        Upsample LR regions in latent space for VAE decoding.
+        
+        Following FLUX's _upsample_latents logic:
+        - HR regions: keep original full-res content
+        - LR regions: properly interpolate (bilinear/nearest) instead of NN replication
+        
+        Args:
+            latents: [B, C, H, W] full resolution latents (with NN-replicated LR content)
+            foveation_mask: [H_latent, W_latent] foveation mask (1=HR, 0=LR)
+            token_upsampler: Optional learned upsampler module
+            upsample_mode: "bilinear", "bicubic", or "nearest" for interpolation
+            
+        Returns:
+            latents: [B, C, H, W] with properly upsampled LR regions
+        """
+        B, C, H, W = latents.shape
+        device = latents.device
+        dtype = latents.dtype
+        
+        # Process foveation mask to latent dimensions if needed
+        mask = foveation_mask.to(device)
+        if mask.shape != (H, W):
+            mask = F.interpolate(
+                mask.float().unsqueeze(0).unsqueeze(0),
+                size=(H, W),
+                mode='nearest'
+            ).squeeze()
+        
+        # Create 4D mask for spatial operations
+        mask_4d = mask.view(1, 1, H, W).expand(B, C, H, W)
+        
+        # Create uniform low-res grid by downsampling
+        # This averages/subsamples both HR and LR regions to half resolution
+        low_res_latents = self._downsample_latents_block(
+            latents,
+            foveation_mask,
+            downsample_mode="average"
+        )  # [B, C, H/2, W/2]
+        
+        # Upsample to full resolution
+        if token_upsampler is not None:
+            # Use learned upsampler
+            upsampled_latents = token_upsampler(low_res_latents, temb=None, foveation_mask=foveation_mask)
+        else:
+            # Use interpolation
+            upsampled_latents = F.interpolate(
+                low_res_latents,
+                size=(H, W),
+                mode=upsample_mode,
+                align_corners=False if upsample_mode != 'nearest' else None
+            )
+        
+        # Merge: HR regions keep original, LR regions use upsampled
+        # mask: 1 = HR (keep original), 0 = LR (use upsampled)
+        output_latents = torch.where(mask_4d > 0, latents, upsampled_latents)
+        
+        return output_latents
 
     @staticmethod
     def _downsample_latents_block(
@@ -418,6 +557,167 @@ class ZImageFoveatedPipeline(BasePipeline):
         low_res_latents = output_blocked.contiguous().view(B, C, H_t, W_t)
         
         return low_res_latents
+
+    def _downsample_latents_spatial(
+        self,
+        latents: torch.Tensor,
+        latent_height: int,
+        latent_width: int,
+        foveation_mask: torch.Tensor,
+        token_downsampler: torch.nn.Module = None,
+        timestep: torch.Tensor = None,
+    ) -> torch.Tensor:
+        """
+        Downsample latents in spatial domain for foveation, following FLUX approach.
+        
+        This performs downsampling BEFORE patchification to ensure the downsampler
+        operates on pure spatial features [B, C, H, W] rather than mixed channel/spatial
+        patchified tokens.
+        
+        Flow:
+        1. Apply token_downsampler in spatial domain [B, C, H, W] -> [B, C, H/2, W/2]
+        2. For LR blocks: replace original latents with upsampled downsampled content
+        3. For HR blocks: keep original latents
+        4. Return modified latents that the DiT will patchify
+        
+        Args:
+            latents: [B, C, H, W] spatial latents (VAE latent space)
+            latent_height: Height of latent space
+            latent_width: Width of latent space  
+            foveation_mask: [H, W] mask where 1=HR, 0=LR
+            token_downsampler: Module that downsamples [B, C, H, W] -> [B, C, H/2, W/2]
+            timestep: Current timestep (for conditioned downsamplers)
+            
+        Returns:
+            Modified latents [B, C, H, W] where LR regions have downsampled content
+        """
+        if foveation_mask is None:
+            return latents
+            
+        B, C, H, W = latents.shape
+        device = latents.device
+        dtype = latents.dtype
+        
+        # Step 1: Downsample the entire latent in spatial domain
+        # [B, C, H, W] -> [B, C, H/2, W/2]
+        if token_downsampler is not None:
+            latents_downsampled = token_downsampler(latents, temb=timestep, foveation_mask=foveation_mask)
+        else:
+            # Default: bilinear interpolation (scale factor 0.5)
+            # Note: multiply by 2 to preserve energy for bilinear
+            latents_downsampled = F.interpolate(latents, scale_factor=0.5, mode='bilinear', align_corners=False) * 2
+        
+        # Step 2: Upsample back to original size (nearest neighbor to match structure)
+        # [B, C, H/2, W/2] -> [B, C, H, W]
+        latents_downsampled_upsampled = F.interpolate(
+            latents_downsampled, 
+            size=(H, W), 
+            mode='nearest'
+        )
+        
+        # Step 3: Create mask for LR regions in spatial domain
+        # Foveation mask: [H_latent, W_latent], resize if needed
+        mask = foveation_mask.to(device)
+        if mask.shape != (H, W):
+            mask = F.interpolate(
+                mask.float().unsqueeze(0).unsqueeze(0),
+                size=(H, W),
+                mode='nearest'
+            ).squeeze()
+        
+        # Step 4: Merge - LR regions use downsampled content, HR regions keep original
+        # mask: 1 = HR (keep original), 0 = LR (use downsampled)
+        mask_4d = mask.view(1, 1, H, W).expand(B, C, H, W)
+        output_latents = torch.where(mask_4d > 0, latents, latents_downsampled_upsampled)
+        
+        return output_latents
+
+    def _upsample_noise_pred_spatial(
+        self,
+        noise_pred: torch.Tensor,
+        latent_height: int,
+        latent_width: int,
+        foveation_mask: torch.Tensor,
+        token_upsampler: torch.nn.Module = None,
+        timestep: torch.Tensor = None,
+    ) -> torch.Tensor:
+        """
+        Upsample noise prediction in spatial domain after DiT, following FLUX approach.
+        
+        This performs upsampling AFTER the DiT has returned its output, ensuring the
+        upsampler operates on pure spatial features [B, C, H, W].
+        
+        The DiT returns mixed-resolution content:
+        - HR regions: properly denoised at full resolution
+        - LR regions: denoised at reduced resolution, then expanded by NN replication
+        
+        We replace the NN-replicated LR regions with properly upsampled content.
+        
+        Flow:
+        1. Create uniform low-res grid by downsampling HR regions to match LR
+        2. Apply token_upsampler in spatial domain [B, C, H/2, W/2] -> [B, C, H, W]
+        3. Merge: HR regions keep original, LR regions use upsampled
+        
+        Args:
+            noise_pred: [B, C, H, W] DiT output (mixed-resolution expanded to full size)
+            latent_height: Height of latent space
+            latent_width: Width of latent space
+            foveation_mask: [H, W] mask where 1=HR, 0=LR
+            token_upsampler: Module that upsamples [B, C, H/2, W/2] -> [B, C, H, W]
+            timestep: Current timestep (for conditioned upsamplers)
+            
+        Returns:
+            Upsampled noise prediction [B, C, H, W]
+        """
+        if foveation_mask is None:
+            return noise_pred
+            
+        B, C, H, W = noise_pred.shape
+        device = noise_pred.device
+        dtype = noise_pred.dtype
+        
+        # Step 1: Create uniform low-res grid
+        # First, downsample the entire output (this averages HR regions)
+        # The LR regions already have low-res content (from NN expansion)
+        # For consistency, we create a proper low-res version of everything
+        noise_pred_low_res = self._downsample_latents_block(
+            noise_pred,
+            foveation_mask,
+            downsample_mode="average"  # Average to combine NN-replicated LR patches
+        )  # [B, C, H/2, W/2]
+        
+        # Step 2: Apply token_upsampler in spatial domain
+        # [B, C, H/2, W/2] -> [B, C, H, W]
+        if token_upsampler is not None:
+            noise_pred_low_res_upsampled = token_upsampler(
+                noise_pred_low_res, 
+                temb=timestep, 
+                foveation_mask=foveation_mask
+            )
+        else:
+            # Default: bilinear interpolation
+            noise_pred_low_res_upsampled = F.interpolate(
+                noise_pred_low_res, 
+                size=(H, W), 
+                mode='bilinear', 
+                align_corners=False
+            )
+        
+        # Step 3: Create mask for merging in spatial domain
+        mask = foveation_mask.to(device)
+        if mask.shape != (H, W):
+            mask = F.interpolate(
+                mask.float().unsqueeze(0).unsqueeze(0),
+                size=(H, W),
+                mode='nearest'
+            ).squeeze()
+        
+        # Step 4: Merge - HR regions keep original, LR regions use upsampled
+        # mask: 1 = HR (keep original), 0 = LR (use upsampled)
+        mask_4d = mask.view(1, 1, H, W).expand(B, C, H, W)
+        final_output = torch.where(mask_4d > 0, noise_pred, noise_pred_low_res_upsampled)
+        
+        return final_output
 
 
 # ========================================================================
@@ -534,6 +834,7 @@ def model_fn_z_image_foveated(
     timestep=None,
     prompt_embeds=None,
     foveation_mask=None,
+    token_downsampler=None,
     use_gradient_checkpointing=False,
     use_gradient_checkpointing_offload=False,
     **kwargs,
@@ -547,6 +848,7 @@ def model_fn_z_image_foveated(
         timestep: Current timestep (scheduler timestep, not scaled)
         prompt_embeds: Text embeddings
         foveation_mask: Foveation mask for mixed-resolution [H, W]
+        token_downsampler: Module for spatial downsampling in foveated regions
         use_gradient_checkpointing: Enable gradient checkpointing
         use_gradient_checkpointing_offload: Enable with offload
         
@@ -571,6 +873,7 @@ def model_fn_z_image_foveated(
 
     # Forward through DiT
     # The DiT handles patchification and foveation internally
+    # token_downsampler is used for spatial-domain downsampling of LR regions
     model_output = dit(
         [latents],  # List of image tensors [C, B, H, W]
         timestep_converted / dit.t_scale,  # Normalized timestep
@@ -578,6 +881,7 @@ def model_fn_z_image_foveated(
         use_gradient_checkpointing=use_gradient_checkpointing,
         use_gradient_checkpointing_offload=use_gradient_checkpointing_offload,
         foveation_mask=foveation_mask,
+        token_downsampler=token_downsampler,
     )[0]
 
     # Negate output (Z-Image convention)

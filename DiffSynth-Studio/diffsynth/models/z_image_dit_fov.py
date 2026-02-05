@@ -709,13 +709,17 @@ class ZImageDiTFoveated(nn.Module):
         foveation_mask: torch.Tensor,
         patch_size: int = 2,
         f_patch_size: int = 1,
+        token_downsampler: nn.Module = None,
+        timestep: torch.Tensor = None,
     ):
         """
-        Patchify images with foveation mask support.
+        Patchify images with foveation mask support and spatial-domain downsampling.
         
         Creates mixed-resolution token sequences where:
         - HR regions keep all 4 tokens per 2x2 block
-        - LR regions keep only 1 token per 2x2 block (top-left)
+        - LR regions: 4 tokens are unpatchified to 4x4 spatial, downsampled to 2x2,
+          then repatchified to 1 token. This ensures the token contains properly
+          downsampled content (not just the top-left corner).
         
         Args:
             all_image: List of image tensors [C, F, H, W]
@@ -723,6 +727,8 @@ class ZImageDiTFoveated(nn.Module):
             foveation_mask: Mask tensor [H_latent, W_latent] where 1=HR, 0=LR
             patch_size: Spatial patch size
             f_patch_size: Temporal patch size
+            token_downsampler: Module to downsample 4x4 -> 2x2 in spatial domain
+            timestep: Current timestep (for conditioned downsamplers)
             
         Returns:
             Patchified outputs with resolution masks
@@ -827,6 +833,79 @@ class ZImageDiTFoveated(nn.Module):
             valid_tokens = valid_tokens.view(h_2, w_2, 2, 2).permute(0, 2, 1, 3).reshape(H_tokens * W_tokens)
             res_mask = res_mask.view(h_2, w_2, 2, 2).permute(0, 2, 1, 3).reshape(H_tokens * W_tokens)
             tl_mask = tl_mask.view(h_2, w_2, 2, 2).permute(0, 2, 1, 3).reshape(H_tokens * W_tokens)
+
+            # ================================================================
+            # SPATIAL DOMAIN DOWNSAMPLING FOR LR BLOCKS
+            # For LR 2x2 token blocks:
+            # 1. Unpatchify 4 tokens to 4x4 spatial [4, 4, C]
+            # 2. Downsample to 2x2 spatial [2, 2, C] 
+            # 3. Repatchify to 1 token [64] (2*2*C)
+            # This ensures LR tokens contain properly downsampled content
+            # ================================================================
+            
+            # Reshape image_patched to block format: [h_2, 2, w_2, 2, token_dim]
+            token_dim = pF * pH * pW * C  # 64 for typical Z-Image (1*2*2*16)
+            image_blocks = image_patched.view(H_tokens, W_tokens, token_dim)
+            image_blocks = image_blocks.view(h_2, 2, w_2, 2, token_dim)
+            image_blocks = image_blocks.permute(0, 2, 1, 3, 4)  # [h_2, w_2, 2, 2, token_dim]
+            
+            # For spatial downsampling, we need to unpatchify each 2x2 block to 4x4 spatial
+            # Each token [token_dim=64] represents a 2x2 spatial patch of C channels
+            # 4 tokens = 4 x (2x2 patch) = 4x4 spatial region
+            
+            if token_downsampler is not None:
+                # Create properly downsampled tokens for LR blocks
+                # image_blocks: [h_2, w_2, 2, 2, token_dim]
+                # For each LR block, unpatchify 4 tokens to 4x4 spatial, downsample, repatchify
+                
+                # Get LR block indices
+                lr_indices = torch.where(is_low_res_block)  # (lr_h_indices, lr_w_indices)
+                
+                if len(lr_indices[0]) > 0:
+                    # Extract LR blocks: [num_lr, 2, 2, token_dim]
+                    lr_blocks_tokens = image_blocks[lr_indices[0], lr_indices[1]]  # [num_lr, 2, 2, token_dim]
+                    num_lr = lr_blocks_tokens.shape[0]
+                    
+                    # Unpatchify each LR block's 4 tokens to 4x4 spatial
+                    # Each token: [token_dim] = [pF*pH*pW*C] = [1*2*2*16] = [64]
+                    # Represents a 2x2 patch of 16 channels
+                    lr_blocks_tokens = lr_blocks_tokens.view(num_lr, 4, token_dim)  # [num_lr, 4, 64]
+                    
+                    # Reshape token to patch format: [num_lr, 4, pF, pH, pW, C]
+                    lr_patches = lr_blocks_tokens.view(num_lr, 4, pF, pH, pW, C)
+                    
+                    # Arrange 4 patches into 2x2 grid for each LR block
+                    # patches 0,1,2,3 -> positions (0,0), (0,1), (1,0), (1,1) in the 2x2 token grid
+                    lr_patches = lr_patches.view(num_lr, 2, 2, pF, pH, pW, C)
+                    
+                    # Unpatchify to spatial: [num_lr, pF, 2*pH, 2*pW, C] = [num_lr, 1, 4, 4, 16]
+                    lr_spatial = lr_patches.permute(0, 3, 1, 4, 2, 5, 6)  # [num_lr, pF, 2, pH, 2, pW, C]
+                    lr_spatial = lr_spatial.reshape(num_lr, pF, 2*pH, 2*pW, C)  # [num_lr, 1, 4, 4, 16]
+                    
+                    # Convert to [num_lr, C, H, W] format for downsampler: [num_lr, 16, 4, 4]
+                    lr_spatial = lr_spatial.squeeze(1).permute(0, 3, 1, 2)  # [num_lr, 16, 4, 4]
+                    
+                    # Apply token_downsampler: [num_lr, 16, 4, 4] -> [num_lr, 16, 2, 2]
+                    lr_downsampled = token_downsampler(
+                        lr_spatial, 
+                        temb=timestep,
+                        foveation_mask=None  # Already processing only LR blocks
+                    )
+                    
+                    # Repatchify to single token: [num_lr, 16, 2, 2] -> [num_lr, 64]
+                    # [num_lr, C, 2, 2] -> [num_lr, pF, pH, pW, C] -> [num_lr, token_dim]
+                    lr_downsampled = lr_downsampled.permute(0, 2, 3, 1)  # [num_lr, 2, 2, 16]
+                    lr_downsampled = lr_downsampled.unsqueeze(1)  # [num_lr, 1(pF), 2, 2, 16]
+                    lr_new_tokens = lr_downsampled.reshape(num_lr, token_dim)  # [num_lr, 64]
+                    
+                    # Replace top-left token (index 0) of each LR block with downsampled token
+                    # image_blocks: [h_2, w_2, 2, 2, token_dim]
+                    # We need to update position [0, 0] of each LR block
+                    image_blocks_updated = image_blocks.clone()
+                    image_blocks_updated[lr_indices[0], lr_indices[1], 0, 0, :] = lr_new_tokens
+                    
+                    # Reshape back to flat token sequence
+                    image_patched = image_blocks_updated.permute(0, 2, 1, 3, 4).reshape(H_tokens * W_tokens, token_dim)
 
             # Expand for temporal dimension if needed
             if F_tokens > 1:
@@ -1108,6 +1187,7 @@ class ZImageDiTFoveated(nn.Module):
         use_gradient_checkpointing_offload=False,
         # Foveation parameters
         foveation_mask: torch.Tensor = None,
+        token_downsampler: nn.Module = None,
     ):
         """
         Forward pass with optional foveation support.
@@ -1123,6 +1203,7 @@ class ZImageDiTFoveated(nn.Module):
             use_gradient_checkpointing: Enable gradient checkpointing
             use_gradient_checkpointing_offload: Enable gradient checkpointing with offload
             foveation_mask: Optional foveation mask [H, W] where 1=HR, 0=LR
+            token_downsampler: Optional module for spatial downsampling of LR regions
         """
         assert patch_size in self.all_patch_size and f_patch_size in self.all_f_patch_size
         omni_mode = isinstance(x[0], list)
@@ -1144,7 +1225,9 @@ class ZImageDiTFoveated(nn.Module):
         if use_foveation:
             # foveation_mask: [128, 128]
             (x, cap_feats, patch_metadata) = self.patchify_and_embed_foveated(
-                x, cap_feats, foveation_mask, patch_size, f_patch_size
+                x, cap_feats, foveation_mask, patch_size, f_patch_size,
+                token_downsampler=token_downsampler,
+                timestep=t,
             )
             x_pos_ids_hr = patch_metadata["x_pos_ids_hr"]
             x_pos_ids_lr = patch_metadata["x_pos_ids_lr"]

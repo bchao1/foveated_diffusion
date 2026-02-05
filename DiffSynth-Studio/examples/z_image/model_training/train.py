@@ -4,6 +4,12 @@ from diffsynth.pipelines.z_image import ZImagePipeline, ModelConfig
 from diffsynth.diffusion import *
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+# handling load large images
+from PIL import Image, ImageFile, PngImagePlugin
+PngImagePlugin.MAX_TEXT_CHUNK = 1000 * (1024**2)
+Image.MAX_IMAGE_PIXELS = None
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
 
 class ZImageTrainingModule(DiffusionTrainingModule):
     def __init__(
@@ -24,7 +30,7 @@ class ZImageTrainingModule(DiffusionTrainingModule):
         super().__init__()
         # Load models
         model_configs = self.parse_model_configs(model_paths, model_id_with_origin_paths, fp8_models=fp8_models, offload_models=offload_models, device=device)
-        tokenizer_config = ModelConfig(model_id="Tongyi-MAI/Z-Image-Turbo", origin_file_pattern="tokenizer/") if tokenizer_path is None else ModelConfig(tokenizer_path)
+        tokenizer_config = ModelConfig(model_id="Tongyi-MAI/Z-Image", origin_file_pattern="tokenizer/") if tokenizer_path is None else ModelConfig(tokenizer_path)
         self.pipe = ZImagePipeline.from_pretrained(torch_dtype=torch.bfloat16, device=device, model_configs=model_configs, tokenizer_config=tokenizer_config)
         self.pipe = self.split_pipeline_units(task, self.pipe, trainable_models, lora_base_model)
 
@@ -94,6 +100,20 @@ def z_image_parser():
     parser = add_general_config(parser)
     parser = add_image_size_config(parser)
     parser.add_argument("--tokenizer_path", type=str, default=None, help="Path to tokenizer.")
+    
+    # WandB logging arguments
+    parser.add_argument("--use_wandb", action="store_true", help="Use WandB for logging.")
+    parser.add_argument("--wandb_project", type=str, default="z-image-training", help="WandB project name.")
+    parser.add_argument("--wandb_run_name", type=str, default=None, help="WandB run name.")
+    parser.add_argument("--validation_prompts", type=str, nargs="+", default=None, help="List of validation prompts.")
+    parser.add_argument("--validation_steps", type=int, default=500, help="Generate validation images every N steps.")
+    parser.add_argument("--validation_height", type=int, default=1024, help="Height of validation images.")
+    parser.add_argument("--validation_width", type=int, default=1024, help="Width of validation images.")
+    parser.add_argument("--num_validation_images", type=int, default=1, help="Number of validation images per prompt.")
+    parser.add_argument("--cfg_scale", type=float, default=4.0, help="CFG guidance scale")
+    parser.add_argument('--num_inference_steps', type=int, default=50, help='Number of inference steps')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed')
+    
     return parser
 
 
@@ -137,10 +157,32 @@ if __name__ == "__main__":
         task=args.task,
         device=accelerator.device,
     )
-    model_logger = ModelLogger(
-        args.output_path,
-        remove_prefix_in_ckpt=args.remove_prefix_in_ckpt,
-    )
+    # Create logger (WandB or standard)
+    if args.use_wandb:
+        validation_prompts = args.validation_prompts if args.validation_prompts else []
+        model_logger = WandbModelLogger(
+            output_path=args.output_path,
+            project_name=args.wandb_project,
+            run_name=args.wandb_run_name,
+            config=vars(args),
+            remove_prefix_in_ckpt=args.remove_prefix_in_ckpt,
+            validation_prompts=validation_prompts,
+            validation_steps=args.validation_steps,
+            num_validation_images=args.num_validation_images,
+            validation_kwargs={
+                "height": args.validation_height,
+                "width": args.validation_width,
+                "rand_device": "cuda",
+                "num_inference_steps": args.num_inference_steps,
+                "cfg_scale": args.cfg_scale,
+                "seed": args.seed,
+            },
+        )
+    else:
+        model_logger = ModelLogger(
+            args.output_path,
+            remove_prefix_in_ckpt=args.remove_prefix_in_ckpt,
+        )
     launcher_map = {
         "sft:data_process": launch_data_process_task,
         "direct_distill:data_process": launch_data_process_task,

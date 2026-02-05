@@ -30,6 +30,9 @@ def launch_training_task(
     
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
     
+    # Generate baseline validation images at step 0 (before any training)
+    model_logger.on_training_start(accelerator, model)
+    
     for epoch_id in range(num_epochs):
         for data in tqdm(dataloader):
             with accelerator.accumulate(model):
