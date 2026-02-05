@@ -12,6 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""
+FLUX2 Klein Pipeline for text-to-image generation (vanilla, no foveation).
+
+Uses same model loading and infrastructure as pipeline_flux2_klein_foveation.
+"""
+
 import inspect
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -20,14 +26,14 @@ import PIL
 import torch
 from transformers import Qwen2TokenizerFast, Qwen3ForCausalLM
 
-from ...loaders import Flux2LoraLoaderMixin
-from ...models import AutoencoderKLFlux2, Flux2Transformer2DModel
-from ...schedulers import FlowMatchEulerDiscreteScheduler
-from ...utils import is_torch_xla_available, logging, replace_example_docstring
-from ...utils.torch_utils import randn_tensor
-from ..pipeline_utils import DiffusionPipeline
-from .image_processor import Flux2ImageProcessor
-from .pipeline_output import Flux2PipelineOutput
+from diffusers.loaders import Flux2LoraLoaderMixin
+from diffusers.models import AutoencoderKLFlux2, Flux2Transformer2DModel
+from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
+from diffusers.utils import is_torch_xla_available, logging, replace_example_docstring
+from diffusers.utils.torch_utils import randn_tensor
+from diffusers.pipelines.pipeline_utils import DiffusionPipeline
+from diffusers.pipelines.flux2.image_processor import Flux2ImageProcessor
+from diffusers.pipelines.flux2.pipeline_output import Flux2PipelineOutput
 
 
 if is_torch_xla_available():
@@ -44,7 +50,7 @@ EXAMPLE_DOC_STRING = """
     Examples:
         ```py
         >>> import torch
-        >>> from diffusers import Flux2KleinPipeline
+        >>> from pipeline_flux2_klein import Flux2KleinPipeline
 
         >>> pipe = Flux2KleinPipeline.from_pretrained(
         ...     "black-forest-labs/FLUX.2-klein-base-9B", torch_dtype=torch.bfloat16
@@ -715,7 +721,7 @@ class Flux2KleinPipeline(DiffusionPipeline, Flux2LoraLoaderMixin):
         )
 
         self._guidance_scale = guidance_scale
-        self._attention_kwargs = attention_kwargs
+        self._attention_kwargs = attention_kwargs or {}
         self._current_timestep = None
         self._interrupt = False
 

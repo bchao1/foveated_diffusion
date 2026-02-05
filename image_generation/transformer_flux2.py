@@ -19,22 +19,21 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ...configuration_utils import ConfigMixin, register_to_config
-from ...loaders import FluxTransformer2DLoadersMixin, FromOriginalModelMixin, PeftAdapterMixin
-from ...utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscale_lora_layers
-from .._modeling_parallel import ContextParallelInput, ContextParallelOutput
-from ..attention import AttentionMixin, AttentionModuleMixin
-from ..attention_dispatch import dispatch_attention_fn
-from ..cache_utils import CacheMixin
-from ..embeddings import (
+from diffusers.configuration_utils import ConfigMixin, register_to_config
+from diffusers.loaders import FluxTransformer2DLoadersMixin, FromOriginalModelMixin, PeftAdapterMixin
+from diffusers.utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscale_lora_layers
+from diffusers.models.attention import AttentionMixin, AttentionModuleMixin
+from diffusers.models.attention_dispatch import dispatch_attention_fn
+from diffusers.models.cache_utils import CacheMixin
+from diffusers.models.embeddings import (
     TimestepEmbedding,
     Timesteps,
     apply_rotary_emb,
-    get_1d_rotary_pos_embed,
+    get_1d_rotary_pos_embed
 )
-from ..modeling_outputs import Transformer2DModelOutput
-from ..modeling_utils import ModelMixin
-from ..normalization import AdaLayerNormContinuous
+from diffusers.models.modeling_outputs import Transformer2DModelOutput
+from diffusers.models.modeling_utils import ModelMixin
+from diffusers.models.normalization import AdaLayerNormContinuous
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
@@ -682,15 +681,6 @@ class Flux2Transformer2DModel(
     _no_split_modules = ["Flux2TransformerBlock", "Flux2SingleTransformerBlock"]
     _skip_layerwise_casting_patterns = ["pos_embed", "norm"]
     _repeated_blocks = ["Flux2TransformerBlock", "Flux2SingleTransformerBlock"]
-    _cp_plan = {
-        "": {
-            "hidden_states": ContextParallelInput(split_dim=1, expected_dims=3, split_output=False),
-            "encoder_hidden_states": ContextParallelInput(split_dim=1, expected_dims=3, split_output=False),
-            "img_ids": ContextParallelInput(split_dim=1, expected_dims=3, split_output=False),
-            "txt_ids": ContextParallelInput(split_dim=1, expected_dims=3, split_output=False),
-        },
-        "proj_out": ContextParallelOutput(gather_dim=1, expected_dims=3),
-    }
 
     @register_to_config
     def __init__(

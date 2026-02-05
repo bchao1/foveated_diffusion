@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../.."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../image_generation"))
 
 from diffsynth.pipelines.flux2_image_foveated import Flux2FoveatedImagePipeline
-from diffsynth.core import ModelConfig
+from diffsynth.pipelines.flux2_image import Flux2ImagePipeline, ModelConfig
 
 # Import Token Upsampler/Downsampler from image_generation
 try:
@@ -115,11 +115,11 @@ def make_videos(folder, output_file, fps=5):
     print(f"Video saved to {output_file}")
 
 
-def load_pipeline(args):
+def load_pipeline(args, use_foveated_pipeline=True):
     """Load the FLUX2 Foveated Pipeline."""
     print("Loading FLUX2 Foveated Pipeline...")
-    
-    pipe = Flux2FoveatedImagePipeline.from_pretrained(
+    pipeline_class = Flux2FoveatedImagePipeline if use_foveated_pipeline else Flux2ImagePipeline
+    pipe = pipeline_class.from_pretrained(
         torch_dtype=torch.bfloat16,
         device="cuda" if torch.cuda.is_available() else "cpu",
         model_configs=[
@@ -251,7 +251,7 @@ def run_circular_experiment(pipe, args, output_dir, token_upsampler, token_downs
             seed=args.seed,
             rand_device="cuda",
             num_inference_steps=args.num_inference_steps,
-            embedded_guidance=args.guidance_scale,
+            cfg_scale=args.guidance_scale,
             foveation_mask=foveation_mask_high.squeeze().to(pipe.device),
             token_upsampler=token_upsampler,
             token_downsampler=token_downsampler,
@@ -303,7 +303,7 @@ def run_radius_ablation(pipe, args, output_dir, token_upsampler, token_downsampl
             seed=args.seed,
             rand_device="cuda",
             num_inference_steps=args.num_inference_steps,
-            embedded_guidance=args.guidance_scale,
+            cfg_scale=args.guidance_scale,
             foveation_mask=foveation_mask_high.squeeze().to(pipe.device),
             token_upsampler=token_upsampler,
             token_downsampler=token_downsampler,
@@ -351,7 +351,7 @@ def run_position_ablation(pipe, args, output_dir, token_upsampler, token_downsam
                 seed=args.seed,
                 rand_device="cuda",
                 num_inference_steps=args.num_inference_steps,
-                embedded_guidance=args.guidance_scale,
+                cfg_scale=args.guidance_scale,
                 foveation_mask=foveation_mask_high.squeeze().to(pipe.device),
                 token_upsampler=token_upsampler,
                 token_downsampler=token_downsampler,
@@ -417,7 +417,7 @@ if __name__ == "__main__":
     parser.add_argument('--height', type=int, default=1024, help='Image height')
     parser.add_argument('--width', type=int, default=1024, help='Image width')
     parser.add_argument('--num_inference_steps', type=int, default=50, help='Number of inference steps')
-    parser.add_argument('--guidance_scale', type=float, default=4.0, help='Guidance scale (embedded guidance for FLUX2)')
+    parser.add_argument('--guidance_scale', type=float, default=4.0, help='Guidance scale (cfg_scale for FLUX2)')
     parser.add_argument('--prompt', type=str, 
                         default="Documentary-style imagery: a lively little dog stands still on a lush green lawn, filling the entire frame. The dog has brownish-yellow fur, with both ears perked up, and an expression that is focused and cheerful. Sunlight evenly illuminates its body, making the fur appear soft, glossy, and highly detailed. Every part of the scene is in sharp focus, from the dog's fur to the surrounding grass and distant background elements. The background shows an open grassy field with scattered wildflowers, and faint blue sky with a few white clouds, all rendered clearly and crisply. Strong realism and clarity, emphasizing texture, color, and detail throughout the image. Full-frame composition, static pose, no depth-of-field blur, everything sharp.",
                         help='Prompt for image generation')

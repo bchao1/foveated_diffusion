@@ -1,6 +1,8 @@
 from diffsynth.pipelines.flux2_image import Flux2ImagePipeline, ModelConfig
 import torch
+import os
 
+os.environ["DIFFSYNTH_MODEL_BASE_PATH"] = "/miele/brian/modelscope"
 
 pipe = Flux2ImagePipeline.from_pretrained(
     torch_dtype=torch.bfloat16,
