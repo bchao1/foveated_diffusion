@@ -63,7 +63,13 @@ class Flux2FoveatedImagePipeline(BasePipeline):
             Flux2FoveatedUnit_InputImageEmbedder(),
             Flux2FoveatedUnit_ImageIDs(),
         ]
+        
+        # token upsampler and downsampler for foveation
+        self.token_upsampler = None
+        self.token_downsampler = None
+
         self.model_fn = model_fn_flux2_foveated
+        
     
     
     @staticmethod
@@ -361,7 +367,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         height: int,
         width: int,
         foveation_mask: torch.Tensor,
-        downsample_mode: str = "average",
+        downsample_mode: str = "nearest",
     ):
         """
         Downsample all blocks to uniform low-res (single token per 2x2 block).
@@ -404,7 +410,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         height: int,
         width: int,
         foveation_mask: Optional[torch.Tensor] = None,
-        upsample_mode: str = "bilinear",
+        upsample_mode: str = "nearest",
     ):
         """
         Upsamples reduced latents back to the original spatial grid size.

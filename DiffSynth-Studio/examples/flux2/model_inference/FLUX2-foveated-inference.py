@@ -191,7 +191,7 @@ def run_baseline(pipe, args, output_dir):
         seed=args.seed,
         rand_device="cuda",
         num_inference_steps=args.num_inference_steps,
-        embedded_guidance=args.guidance_scale,
+        cfg_scale=args.guidance_scale,
         foveation_mask=None,
     )
     

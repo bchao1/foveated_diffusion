@@ -24,6 +24,7 @@ def launch_training_task(
         save_steps = args.save_steps
         num_epochs = args.num_epochs
     
+
     optimizer = torch.optim.AdamW(model.trainable_modules(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     dataloader = torch.utils.data.DataLoader(dataset, shuffle=True, collate_fn=lambda x: x[0], num_workers=num_workers)
@@ -31,7 +32,7 @@ def launch_training_task(
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
     
     # Generate baseline validation images at step 0 (before any training)
-    model_logger.on_training_start(accelerator, model)
+    #model_logger.on_training_start(accelerator, model)
     
     for epoch_id in range(num_epochs):
         for data in tqdm(dataloader):
