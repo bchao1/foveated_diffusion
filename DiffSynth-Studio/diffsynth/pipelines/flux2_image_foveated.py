@@ -584,12 +584,21 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         Downsamples latents with foveation, runs DiT, upsamples output to full resolution.
         Returns full-res noise prediction [B, H*W, C] matching training target shape.
         """
+        
         foveation_mask = inputs.get("foveation_mask")
         token_upsampler = getattr(self, "token_upsampler", None)
         token_downsampler = getattr(self, "token_downsampler", None)
         if foveation_mask is None or token_upsampler is None or token_downsampler is None:
             models = {name: getattr(self, name) for name in self.in_iteration_models}
             return self.model_fn(**models, **inputs, timestep=timestep)
+        
+        # print some weights of the token_upsampler
+        #if token_upsampler is not None:
+        #    print("<Flux2FoveatedImagePipeline> ===> Token upsampler weights:")
+        #    for name, param in token_upsampler.named_parameters():
+        #        if name == "output_proj.weight":
+        #            print(param)
+                
         
         # fixed clean latent for tracking validation
         if self.fixed_clean_latent is None:

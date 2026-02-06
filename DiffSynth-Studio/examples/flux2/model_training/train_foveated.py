@@ -83,6 +83,7 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
             "sft:data_process": lambda pipe, *args: args,
             "direct_distill:data_process": lambda pipe, *args: args,
             "sft": lambda pipe, inputs_shared, inputs_posi, inputs_nega: FoveatedFlowMatchSFTLoss(pipe, **inputs_shared, **inputs_posi), # use foveated flow match sft loss
+            "distill": lambda pipe, inputs_shared, inputs_posi, inputs_nega: FoveatedDistillLoss(pipe, **inputs_shared, **inputs_posi), # use foveated distillation loss
             "sft:train": lambda pipe, inputs_shared, inputs_posi, inputs_nega: FoveatedFlowMatchSFTLoss(pipe, **inputs_shared, **inputs_posi), # use foveated flow match sft loss
             "direct_distill": lambda pipe, inputs_shared, inputs_posi, inputs_nega: DirectDistillLoss(pipe, **inputs_shared, **inputs_posi),
             "direct_distill:train": lambda pipe, inputs_shared, inputs_posi, inputs_nega: DirectDistillLoss(pipe, **inputs_shared, **inputs_posi),
@@ -315,6 +316,7 @@ if __name__ == "__main__":
         "direct_distill:data_process": launch_data_process_task,
         "sft": launch_training_task,
         "sft:train": launch_training_task,
+        "distill": launch_training_task, # added foveation distillation loss task
         "direct_distill": launch_training_task,
         "direct_distill:train": launch_training_task,
     }

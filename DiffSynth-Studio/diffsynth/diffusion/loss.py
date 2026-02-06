@@ -81,6 +81,55 @@ def FoveatedFlowMatchSFTLoss(pipe: BasePipeline, **inputs):
     loss = loss * pipe.scheduler.training_weight(timestep)
     return loss
 
+def FoveatedDistillLoss(pipe: BasePipeline, **inputs):
+    """
+    Foveated Distillation training objective.
+    Combines Flow Matching with foveation: for each step, a random foveation mask
+    is generated and used for token upsampling/downsampling. The final noise
+    prediction is high-resolution (same shape as training target). Distill the token AE weights to the main model.
+    """
+    max_timestep_boundary = int(inputs.get("max_timestep_boundary", 1) * len(pipe.scheduler.timesteps))
+    min_timestep_boundary = int(inputs.get("min_timestep_boundary", 0) * len(pipe.scheduler.timesteps))
+
+    timestep_id = torch.randint(min_timestep_boundary, max_timestep_boundary, (1,))
+    timestep = pipe.scheduler.timesteps[timestep_id].to(dtype=pipe.torch_dtype, device=pipe.device)
+
+    noise = torch.randn_like(inputs["input_latents"])
+    inputs["latents"] = pipe.scheduler.add_noise(inputs["input_latents"], noise, timestep)
+    training_target = pipe.scheduler.training_target(inputs["input_latents"], noise, timestep)
+
+    # Use foveated forward if pipe supports it and has token AE
+    has_foveated_forward = hasattr(pipe, "foveated_training_forward") and callable(
+        getattr(pipe, "foveated_training_forward", None)
+    )
+    has_token_ae = (
+        getattr(pipe, "token_upsampler", None) is not None
+        and getattr(pipe, "token_downsampler", None) is not None
+    )
+
+    if has_foveated_forward and has_token_ae:
+        # Generate random foveation mask for this step (latent resolution)
+        height = inputs["height"]
+        width = inputs["width"]
+        h, w = height // 16, width // 16
+        foveation_mask = _create_random_foveation_mask(h, w, pipe.device, pipe.torch_dtype)
+
+        # unfoveated training target
+        inputs["foveation_mask"] = None
+        training_target = pipe.foveated_training_forward(inputs, timestep, timestep_id)
+
+        # foveated prediction
+        inputs["foveation_mask"] = foveation_mask
+        noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id)
+    else:
+        # Fallback to standard Flow Matching
+        models = {name: getattr(pipe, name) for name in pipe.in_iteration_models}
+        noise_pred = pipe.model_fn(**models, **inputs, timestep=timestep)
+
+    loss = torch.nn.functional.mse_loss(noise_pred.float(), training_target.float())
+    loss = loss * pipe.scheduler.training_weight(timestep)
+    return loss
+
 
 def DirectDistillLoss(pipe: BasePipeline, **inputs):
     pipe.scheduler.set_timesteps(inputs["num_inference_steps"])
