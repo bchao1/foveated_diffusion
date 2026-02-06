@@ -53,9 +53,19 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         self.pipe.token_upsampler = token_upsampler
         self.pipe.token_downsampler = token_downsampler
 
+        # Build effective trainable models: trainable_models + lora_base_model + token AE (if present)
+        parts = []
+        if trainable_models:
+            parts.extend(trainable_models.split(","))
+        if lora_base_model is not None:
+            parts.append(lora_base_model)
+        if token_upsampler is not None and token_downsampler is not None:
+            parts.extend(["token_upsampler", "token_downsampler"])
+        effective_trainable = ",".join(parts) if parts else None
+
         # Training mode
         self.switch_pipe_to_training_mode(
-            self.pipe, trainable_models,
+            self.pipe, effective_trainable,
             lora_base_model, lora_target_modules, lora_rank, lora_checkpoint,
             preset_lora_path, preset_lora_model,
             task=task,
@@ -95,6 +105,23 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         }
         inputs_shared = self.parse_extra_inputs(data, self.extra_inputs, inputs_shared)
         return inputs_shared, inputs_posi, inputs_nega
+
+    def export_trainable_state_dict(self, state_dict, remove_prefix=None):
+        """Export trainable state dict, excluding token upsampler/downsampler (saved separately)."""
+        state_dict = super().export_trainable_state_dict(state_dict, remove_prefix)
+        # Exclude token AE params from main checkpoint; they are saved to tokenAE subdirectory
+        excluded_prefixes = ("pipe.token_upsampler.", "pipe.token_downsampler.")
+        return {k: v for k, v in state_dict.items() if not any(k.startswith(p) for p in excluded_prefixes)}
+
+    def save_token_ae(self, path, step=None):
+        """Save token upsampler and downsampler to a separate folder. If step is provided, save to path/step-{step}/."""
+        if self.pipe.token_upsampler is None or self.pipe.token_downsampler is None:
+            return
+        if step is not None:
+            path = os.path.join(path, f"step-{step}")
+        os.makedirs(path, exist_ok=True)
+        torch.save(self.pipe.token_upsampler.state_dict(), os.path.join(path, "token_upsampler.pt"))
+        torch.save(self.pipe.token_downsampler.state_dict(), os.path.join(path, "token_downsampler.pt"))
     
     def forward(self, data, inputs=None):
         if inputs is None: inputs = self.get_pipeline_inputs(data)
@@ -135,9 +162,9 @@ def load_token_ae(args, device):
         token_upsampler = None
         token_downsampler = None
     
-    if args.tokenAE_folder is not None:
-        token_upsampler.load_state_dict(torch.load(os.path.join(args.tokenAE_folder, "token_upsampler.pt"), map_location='cpu'))
-        token_downsampler.load_state_dict(torch.load(os.path.join(args.tokenAE_folder, "token_downsampler.pt"), map_location='cpu'))
+    if args.tokenAE_folder is not None and token_upsampler is not None:
+        token_upsampler.load_state_dict(torch.load(os.path.join(args.tokenAE_folder, "token_upsampler.pt"), map_location="cpu"))
+        token_downsampler.load_state_dict(torch.load(os.path.join(args.tokenAE_folder, "token_downsampler.pt"), map_location="cpu"))
     
     token_upsampler = token_upsampler.to(device).to(torch.bfloat16)
     token_downsampler = token_downsampler.to(device).to(torch.bfloat16)

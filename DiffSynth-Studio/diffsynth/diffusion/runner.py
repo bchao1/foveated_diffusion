@@ -23,9 +23,25 @@ def launch_training_task(
         num_workers = args.dataset_num_workers
         save_steps = args.save_steps
         num_epochs = args.num_epochs
-    
 
-    optimizer = torch.optim.AdamW(model.trainable_modules(), lr=learning_rate, weight_decay=weight_decay)
+    # Build optimizer with optional separate learning rate for token AE
+    tokenAE_lr = getattr(args, "tokenAE_learning_rate", None) if args is not None else None
+    has_token_ae = (
+        hasattr(model, "pipe")
+        and getattr(model.pipe, "token_upsampler", None) is not None
+        and getattr(model.pipe, "token_downsampler", None) is not None
+    )
+
+    if has_token_ae and tokenAE_lr is not None:
+        token_ae_params = list(model.pipe.token_upsampler.parameters()) + list(model.pipe.token_downsampler.parameters())
+        token_ae_param_set = set(id(p) for p in token_ae_params)
+        main_params = [p for p in model.trainable_modules() if id(p) not in token_ae_param_set]
+        param_groups = [{"params": main_params, "lr": learning_rate, "weight_decay": weight_decay}]
+        if token_ae_params:
+            param_groups.append({"params": token_ae_params, "lr": tokenAE_lr, "weight_decay": weight_decay})
+        optimizer = torch.optim.AdamW(param_groups)
+    else:
+        optimizer = torch.optim.AdamW(model.trainable_modules(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer)
     dataloader = torch.utils.data.DataLoader(dataset, shuffle=True, collate_fn=lambda x: x[0], num_workers=num_workers)
     

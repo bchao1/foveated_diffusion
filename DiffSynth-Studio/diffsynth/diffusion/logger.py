@@ -31,12 +31,16 @@ class ModelLogger:
     def on_epoch_end(self, accelerator: Accelerator, model: torch.nn.Module, epoch_id):
         accelerator.wait_for_everyone()
         if accelerator.is_main_process:
+            unwrapped = accelerator.unwrap_model(model)
             state_dict = accelerator.get_state_dict(model)
-            state_dict = accelerator.unwrap_model(model).export_trainable_state_dict(state_dict, remove_prefix=self.remove_prefix_in_ckpt)
+            state_dict = unwrapped.export_trainable_state_dict(state_dict, remove_prefix=self.remove_prefix_in_ckpt)
             state_dict = self.state_dict_converter(state_dict)
             os.makedirs(self.output_path, exist_ok=True)
             path = os.path.join(self.output_path, f"epoch-{epoch_id}.safetensors")
             accelerator.save(state_dict, path, safe_serialization=True)
+            if hasattr(unwrapped, "save_token_ae") and callable(getattr(unwrapped, "save_token_ae")):
+                token_ae_path = os.path.join(self.output_path, "tokenAE")
+                unwrapped.save_token_ae(token_ae_path, step=self.num_steps)
 
 
     def on_training_end(self, accelerator: Accelerator, model: torch.nn.Module, save_steps=None):
@@ -47,12 +51,17 @@ class ModelLogger:
     def save_model(self, accelerator: Accelerator, model: torch.nn.Module, file_name):
         accelerator.wait_for_everyone()
         if accelerator.is_main_process:
+            unwrapped = accelerator.unwrap_model(model)
             state_dict = accelerator.get_state_dict(model)
-            state_dict = accelerator.unwrap_model(model).export_trainable_state_dict(state_dict, remove_prefix=self.remove_prefix_in_ckpt)
+            state_dict = unwrapped.export_trainable_state_dict(state_dict, remove_prefix=self.remove_prefix_in_ckpt)
             state_dict = self.state_dict_converter(state_dict)
             os.makedirs(self.output_path, exist_ok=True)
             path = os.path.join(self.output_path, file_name)
             accelerator.save(state_dict, path, safe_serialization=True)
+            # Save token upsampler/downsampler to tokenAE subdirectory if applicable
+            if hasattr(unwrapped, "save_token_ae") and callable(getattr(unwrapped, "save_token_ae")):
+                token_ae_path = os.path.join(self.output_path, "tokenAE")
+                unwrapped.save_token_ae(token_ae_path, step=self.num_steps)
 
 
 class WandbModelLogger(ModelLogger):

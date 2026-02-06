@@ -10,6 +10,7 @@ accelerate launch --gpu_ids $1 train_foveated.py \
   --model_id_with_origin_paths "black-forest-labs/FLUX.2-klein-base-4B:text_encoder/*.safetensors,black-forest-labs/FLUX.2-klein-base-4B:transformer/*.safetensors,black-forest-labs/FLUX.2-klein-base-4B:vae/diffusion_pytorch_model.safetensors" \
   --tokenizer_path "black-forest-labs/FLUX.2-klein-base-4B:tokenizer/" \
   --learning_rate 1e-4 \
+  --tokenAE_learning_rate 1e-4 \
   --num_epochs 5 \
   --remove_prefix_in_ckpt "pipe.dit." \
   --output_path "./models/train/FLUX.2-foveation" \
@@ -28,5 +29,6 @@ accelerate launch --gpu_ids $1 train_foveated.py \
   --validation_steps 100 \
   --validation_height 1024 \
   --validation_width 1024 \
-  --num_validation_images 1
+  --num_validation_images 1 \
+  --save_steps 10
 cd lora
