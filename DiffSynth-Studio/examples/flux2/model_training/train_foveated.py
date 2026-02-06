@@ -62,6 +62,8 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         if token_upsampler is not None and token_downsampler is not None:
             parts.extend(["token_upsampler", "token_downsampler"])
         effective_trainable = ",".join(parts) if parts else None
+        self._main_trainable = [p for p in (trainable_models.split(",") if trainable_models else []) + ([lora_base_model] if lora_base_model else [])]
+        self._token_ae_trainable = ["token_upsampler", "token_downsampler"] if (token_upsampler is not None and token_downsampler is not None) else []
 
         # Training mode
         self.switch_pipe_to_training_mode(
@@ -85,6 +87,33 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
             "direct_distill": lambda pipe, inputs_shared, inputs_posi, inputs_nega: DirectDistillLoss(pipe, **inputs_shared, **inputs_posi),
             "direct_distill:train": lambda pipe, inputs_shared, inputs_posi, inputs_nega: DirectDistillLoss(pipe, **inputs_shared, **inputs_posi),
         }
+        self._last_phase = None
+
+    def set_training_phase(self, step: int, tokenAE_train_steps=None):
+        """Switch from tokenAE-only to joint training. tokenAE_train_steps: train token AE for first N steps, then train both jointly."""
+        if tokenAE_train_steps is None or not self._token_ae_trainable:
+            return
+        if step < tokenAE_train_steps:
+            phase = "tokenAE"
+        else:
+            phase = "joint"
+        if self._last_phase == phase:
+            return
+        self._last_phase = phase
+        self.pipe.eval()
+        self.pipe.requires_grad_(False)
+        if phase == "tokenAE":
+            for name in self._token_ae_trainable:
+                module = self.pipe.get_module(self.pipe, name)
+                if module is not None:
+                    module.train()
+                    module.requires_grad_(True)
+        else:
+            for name in self._main_trainable + self._token_ae_trainable:
+                module = self.pipe.get_module(self.pipe, name)
+                if module is not None:
+                    module.train()
+                    module.requires_grad_(True)
         
     def get_pipeline_inputs(self, data):
         inputs_posi = {"prompt": data["prompt"]}
@@ -195,6 +224,7 @@ def flux2_parser():
     parser.add_argument("--upsampler_num_res_blocks", type=int, default=10, help="Number of residual blocks for token upsampler.")
     parser.add_argument("--downsampler_num_res_blocks", type=int, default=10, help="Number of residual blocks for token downsampler.")
     parser.add_argument("--tokenAE_learning_rate", type=float, default=1e-4, help="Learning rate for token AE.")
+    parser.add_argument("--tokenAE_train_steps", type=int, default=None, help="Train only token AE for the first N steps, then switch to LoRA/DiT. None = train both throughout.")
     
     return parser
 

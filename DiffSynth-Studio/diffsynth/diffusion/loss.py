@@ -2,6 +2,24 @@ from .base_pipeline import BasePipeline
 import torch
 
 
+def _create_random_foveation_mask(h: int, w: int, device, dtype=torch.float32, center_range=(-0.3, 0.3), r_range=(0.2, 0.5)):
+    """
+    Create a random circular foveation mask for training.
+    Mask shape [h, w], 1=high-res, 0=low-res.
+    center in normalized coords (-0.5, 0.5), r relative to half-diagonal.
+    """
+    cx = (torch.rand(1, device=device).item() * (center_range[1] - center_range[0]) + center_range[0] + 0.5) * w
+    cy = (torch.rand(1, device=device).item() * (center_range[1] - center_range[0]) + center_range[0] + 0.5) * h
+    r = torch.rand(1, device=device).item() * (r_range[1] - r_range[0]) + r_range[0]
+    diagonal = (h**2 + w**2) ** 0.5
+    radius_px = r * (diagonal / 2.0)
+    y = torch.arange(h, device=device, dtype=dtype)
+    x = torch.arange(w, device=device, dtype=dtype)
+    yy, xx = torch.meshgrid(y, x, indexing="ij")
+    dist_sq = (xx - cx) ** 2 + (yy - cy) ** 2
+    return (dist_sq <= radius_px**2).to(device)
+
+
 def FlowMatchSFTLoss(pipe: BasePipeline, **inputs):
     max_timestep_boundary = int(inputs.get("max_timestep_boundary", 1) * len(pipe.scheduler.timesteps))
     min_timestep_boundary = int(inputs.get("min_timestep_boundary", 0) * len(pipe.scheduler.timesteps))
@@ -21,19 +39,44 @@ def FlowMatchSFTLoss(pipe: BasePipeline, **inputs):
     return loss
 
 def FoveatedFlowMatchSFTLoss(pipe: BasePipeline, **inputs):
+    """
+    Foveated Flow Matching (FFM) training objective.
+    Combines Flow Matching with foveation: for each step, a random foveation mask
+    is generated and used for token upsampling/downsampling. The final noise
+    prediction is high-resolution (same shape as training target).
+    """
     max_timestep_boundary = int(inputs.get("max_timestep_boundary", 1) * len(pipe.scheduler.timesteps))
     min_timestep_boundary = int(inputs.get("min_timestep_boundary", 0) * len(pipe.scheduler.timesteps))
 
     timestep_id = torch.randint(min_timestep_boundary, max_timestep_boundary, (1,))
     timestep = pipe.scheduler.timesteps[timestep_id].to(dtype=pipe.torch_dtype, device=pipe.device)
-    
+
     noise = torch.randn_like(inputs["input_latents"])
     inputs["latents"] = pipe.scheduler.add_noise(inputs["input_latents"], noise, timestep)
     training_target = pipe.scheduler.training_target(inputs["input_latents"], noise, timestep)
-    
-    models = {name: getattr(pipe, name) for name in pipe.in_iteration_models}
-    noise_pred = pipe.model_fn(**models, **inputs, timestep=timestep)
-    
+
+    # Use foveated forward if pipe supports it and has token AE
+    has_foveated_forward = hasattr(pipe, "foveated_training_forward") and callable(
+        getattr(pipe, "foveated_training_forward", None)
+    )
+    has_token_ae = (
+        getattr(pipe, "token_upsampler", None) is not None
+        and getattr(pipe, "token_downsampler", None) is not None
+    )
+
+    if has_foveated_forward and has_token_ae:
+        # Generate random foveation mask for this step (latent resolution)
+        height = inputs["height"]
+        width = inputs["width"]
+        h, w = height // 16, width // 16
+        foveation_mask = _create_random_foveation_mask(h, w, pipe.device, pipe.torch_dtype)
+        inputs["foveation_mask"] = foveation_mask
+        noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id)
+    else:
+        # Fallback to standard Flow Matching
+        models = {name: getattr(pipe, name) for name in pipe.in_iteration_models}
+        noise_pred = pipe.model_fn(**models, **inputs, timestep=timestep)
+
     loss = torch.nn.functional.mse_loss(noise_pred.float(), training_target.float())
     loss = loss * pipe.scheduler.training_weight(timestep)
     return loss

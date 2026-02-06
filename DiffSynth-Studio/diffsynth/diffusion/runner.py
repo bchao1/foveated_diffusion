@@ -46,13 +46,14 @@ def launch_training_task(
     dataloader = torch.utils.data.DataLoader(dataset, shuffle=True, collate_fn=lambda x: x[0], num_workers=num_workers)
     
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
-    
-    # Generate baseline validation images at step 0 (before any training)
-    #model_logger.on_training_start(accelerator, model)
-    
+    tokenAE_train_steps = getattr(args, "tokenAE_train_steps", None) if args is not None else None
+    global_step = 0
+
     for epoch_id in range(num_epochs):
         for data in tqdm(dataloader):
             with accelerator.accumulate(model):
+                if hasattr(accelerator.unwrap_model(model), "set_training_phase"):
+                    accelerator.unwrap_model(model).set_training_phase(global_step, tokenAE_train_steps)
                 optimizer.zero_grad()
                 if dataset.load_from_cache:
                     loss = model({}, inputs=data)
@@ -62,6 +63,7 @@ def launch_training_task(
                 optimizer.step()
                 model_logger.on_step_end(accelerator, model, save_steps, loss=loss)
                 scheduler.step()
+                global_step += 1
         if save_steps is None:
             model_logger.on_epoch_end(accelerator, model, epoch_id)
     model_logger.on_training_end(accelerator, model, save_steps)

@@ -24,8 +24,8 @@ with open(input_jsonl_path, 'r') as jsonl_file, open(output_csv_path, 'w', newli
         filename = data.get('filename', data.get('file_name', ''))  # handle both "filename" and "file_name"
         
         # Only include images with "0000" in the filename
-        if 'images/0000/' not in filename:
-            continue
+        #if 'images/0000/' not in filename:
+        #    continue
             
         text = data.get('text', '')
         writer.writerow([filename, text])

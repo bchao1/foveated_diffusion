@@ -11,7 +11,8 @@ accelerate launch --gpu_ids $1 train_foveated.py \
   --tokenizer_path "black-forest-labs/FLUX.2-klein-base-4B:tokenizer/" \
   --learning_rate 1e-4 \
   --tokenAE_learning_rate 1e-4 \
-  --num_epochs 5 \
+  --tokenAE_train_steps 5000 \
+  --num_epochs 10 \
   --remove_prefix_in_ckpt "pipe.dit." \
   --output_path "./models/train/FLUX.2-foveation" \
   --lora_base_model "dit" \
@@ -21,14 +22,12 @@ accelerate launch --gpu_ids $1 train_foveated.py \
   --dataset_num_workers 8 \
   --use_wandb \
   --wandb_project "flux2-training" \
-  --wandb_run_name "FLUX.2-klein-base-4B-lora-v1" \
+  --wandb_run_name "FLUX.2-klein-base-4B-lora-tokenAE-warmup" \
   --validation_prompts \
-  "Young Chinese woman in red Hanfu, intricate embroidery. Impeccable makeup, red floral forehead pattern. Elaborate high bun, golden phoenix headdress, red flowers, beads. Holds round folding fan with lady, trees, bird. Neon lightning-bolt lamp, bright yellow glow, above extended left palm. Soft-lit outdoor night background, silhouetted tiered pagoda, blurred colorful distant lights." \
-  "Golden retriever on a grassy meadow. Thick sun-kissed fur, clean and glossy, subtle lighter ruff around the neck. Alert amber eyes, black moist nose, relaxed open mouth with pink tongue. Perky ears tilted forward, sturdy athletic stance, tail held in a gentle arc. Clutches a slightly chewed tennis ball, lime green with faded white curve. Tiny firefly-like orbs drifting above the dog's outstretched paw, soft flickering glow. Warm late-afternoon backdrop, rolling wild grass bending in the breeze, blurred tree line and distant hills under a pastel sky." \
-  "Sleek black sports car on a neon city street. Polished body reflecting streaks of colored light, chrome rims gleaming. Low aerodynamic profile, tinted windows, sharp LED headlights piercing the night. Subtle blue underglow tracing the chassis, glowing beneath the doors. Holographic speed-lines shimmering above the hood, cool electric sheen. Rain-slick asphalt mirror below, tall illuminated skyscrapers rising on both sides, traffic light trails and blurred signs forming a vibrant urban haze." \
+  "Golden retriever on a grassy meadow. Thick sun-kissed fur, clean and glossy, subtle lighter ruff around the neck. Alert amber eyes, black moist nose, relaxed open mouth with pink tongue. Perky ears tilted forward, sturdy athletic stance, tail held in a gentle arc. Warm late-afternoon backdrop, rolling wild grass bending in the breeze, blurred tree line and distant hills under a pastel sky." \
   --validation_steps 100 \
   --validation_height 1024 \
   --validation_width 1024 \
   --num_validation_images 1 \
-  --save_steps 10
+  --save_steps 1000
 cd lora

@@ -575,6 +575,74 @@ class Flux2FoveatedImagePipeline(BasePipeline):
 
         return final_output
 
+    def foveated_training_forward(self, inputs: dict, timestep: torch.Tensor, timestep_id: int):
+        """
+        Single-step foveated forward for training. Used by FoveatedFlowMatchSFTLoss.
+        Downsamples latents with foveation, runs DiT, upsamples output to full resolution.
+        Returns full-res noise prediction [B, H*W, C] matching training target shape.
+        """
+        foveation_mask = inputs.get("foveation_mask")
+        token_upsampler = getattr(self, "token_upsampler", None)
+        token_downsampler = getattr(self, "token_downsampler", None)
+        if foveation_mask is None or token_upsampler is None or token_downsampler is None:
+            models = {name: getattr(self, name) for name in self.in_iteration_models}
+            return self.model_fn(**models, **inputs, timestep=timestep)
+
+        latents = inputs["latents"]
+        height = inputs["height"]
+        width = inputs["width"]
+        latent_height, latent_width = height // 16, width // 16
+        batch_size = latents.shape[0]
+        foveation_mask = foveation_mask.to(latents.device)
+
+        # Get sigma for timestep
+        t = timestep.cpu().squeeze() if hasattr(timestep, "cpu") else timestep.squeeze()
+        sigma = self.scheduler.sigmas[timestep_id].to(dtype=latents.dtype, device=latents.device)
+        sigma = sigma.view(1, 1, 1, 1)
+
+        # z_t high-res unpacked
+        latents_spatial = latents.view(batch_size, latent_height, latent_width, -1).permute(0, 3, 1, 2)
+        z_t_high_unpacked = self._unpatchify_latents(latents_spatial)
+
+        # Downsample latents for DiT
+        latents_input = self._downsample_latents(
+            latents, latent_height, latent_width,
+            foveation_mask=foveation_mask, token_downsampler=token_downsampler, temb=None
+        )
+        z_t_low_packed = self._downsample_remaining_high_res(
+            latents_input, latent_height, latent_width, foveation_mask=foveation_mask
+        )
+        h_2, w_2 = latent_height // 2, latent_width // 2
+        z_t_low_spatial = z_t_low_packed.view(batch_size, h_2, w_2, -1).permute(0, 3, 1, 2)
+        z_t_low_unpacked = self._unpatchify_latents(z_t_low_spatial)
+
+        # Prepare image_ids
+        latent_ids, resolution_mask, resolution_mask_top_left = self._prepare_latent_image_ids_foveation(
+            batch_size, latent_height, latent_width, self.device, latents.dtype, foveation_mask
+        )
+        if latent_ids.ndim == 2:
+            latent_ids = latent_ids.unsqueeze(0).expand(batch_size, -1, -1)
+
+        # Update inputs for model_fn
+        inputs["latents"] = latents_input
+        inputs["image_ids"] = latent_ids
+        inputs["resolution_mask"] = resolution_mask
+        inputs["resolution_mask_top_left"] = resolution_mask_top_left
+
+        # Forward through DiT (no CFG for training)
+        models = {name: getattr(self, name) for name in self.in_iteration_models}
+        noise_pred = self.model_fn(**models, **inputs, timestep=timestep)
+
+        # Upsample to full resolution
+        noise_pred = self._upsample_x0_pred_unpacked(
+            noise_pred, latent_height, latent_width,
+            foveation_mask=foveation_mask, token_upsampler=token_upsampler, temb=None,
+            sigma=sigma, z_t_high=z_t_high_unpacked, z_t_low=z_t_low_unpacked,
+        )
+        noise_pred = self._patchify_latents(noise_pred)
+        noise_pred = rearrange(noise_pred, "B C H W -> B (H W) C")
+        return noise_pred
+
     @torch.no_grad()
     def __call__(
         self,

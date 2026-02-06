@@ -1,4 +1,6 @@
 import os, torch
+import numpy as np
+from PIL import Image
 from accelerate import Accelerator
 from typing import Optional, List, Callable, Any
 
@@ -7,6 +9,39 @@ try:
     WANDB_AVAILABLE = True
 except ImportError:
     WANDB_AVAILABLE = False
+
+
+def _create_foveation_mask(h: int, w: int, center: tuple, r: float, device):
+    """Create circular foveation mask. center in (-0.5, 0.5), r relative to half-diagonal."""
+    cx = (center[0] + 0.5) * w
+    cy = (center[1] + 0.5) * h
+    diagonal = (h**2 + w**2) ** 0.5
+    radius_px = r * (diagonal / 2.0)
+    y = torch.arange(h, device=device, dtype=torch.float32)
+    x = torch.arange(w, device=device, dtype=torch.float32)
+    yy, xx = torch.meshgrid(y, x, indexing="ij")
+    mask = (xx - cx) ** 2 + (yy - cy) ** 2 <= radius_px**2
+    return mask
+
+
+def _unpatchify_for_vis(latents: torch.Tensor, latent_height: int, latent_width: int):
+    """Convert [B, H*W, C] packed FLUX2 latents to [B, 3, H', W'] for visualization (first 3 channels)."""
+    B, _, C = latents.shape
+    latents = latents.reshape(B, latent_height, latent_width, C).permute(0, 3, 1, 2)
+    if C % 4 != 0:
+        return latents[:, : min(3, C)].float().cpu()
+    c_base = C // 4
+    latents = latents.reshape(B, c_base, 2, 2, latent_height, latent_width)
+    latents = latents.permute(0, 1, 4, 2, 5, 3).reshape(B, c_base, latent_height * 2, latent_width * 2)
+    return latents[:, : min(3, c_base)].float().cpu()
+
+
+def _tensor_to_pil_vis(x: torch.Tensor, vmin: float, vmax: float):
+    """Convert tensor [B, 3, H, W] to PIL with fixed scale. No normalization."""
+    x = x.clamp(vmin, vmax)
+    x = (x - vmin) / (vmax - vmin + 1e-8)
+    x = (x * 255).clamp(0, 255).byte().permute(0, 2, 3, 1).numpy()
+    return [Image.fromarray(x[i]) for i in range(x.shape[0])]
 
 
 class ModelLogger:
@@ -155,53 +190,158 @@ class WandbModelLogger(ModelLogger):
         wandb_images = [wandb.Image(img, caption=cap) for img, cap in zip(images, captions)]
         wandb.log({key: wandb_images}, step=self.num_steps)
     
+    def _is_foveated_pipeline(self, pipe):
+        """Check if pipeline supports foveated generation."""
+        return (
+            hasattr(pipe, "token_upsampler")
+            and hasattr(pipe, "token_downsampler")
+            and pipe.token_upsampler is not None
+            and pipe.token_downsampler is not None
+        )
+
+    def _log_foveation_masks_once(self, pipe, height, width):
+        """Visualize four foveation masks (left, right, top, bottom) once."""
+        h, w = height // 16, width // 16
+        device = getattr(pipe, "device", "cuda")
+        if hasattr(device, "index"):
+            device = device
+        positions = [("left", (-0.3, 0)), ("right", (0.3, 0)), ("top", (0, -0.3)), ("bottom", (0, 0.3))]
+        mask_images = []
+        for name, center in positions:
+            mask = _create_foveation_mask(h, w, center, r=0.25, device=device)
+            mask_np = mask.float().cpu().numpy() * 255
+            mask_pil = Image.fromarray(mask_np.astype(np.uint8))
+            mask_images.append(wandb.Image(mask_pil, caption=f"foveation_mask_{name}"))
+        if mask_images:
+            wandb.log({"validation/foveation_masks": mask_images}, step=self.num_steps)
+
+    def _visualize_target_noise_pred(self, pipe, height, width):
+        """Run flow-matching steps at timesteps 0, middle, last and visualize target vs noise_pred with shared scale."""
+        latent_height, latent_width = height // 16, width // 16
+        device = getattr(pipe, "device", "cuda")
+        dtype = getattr(pipe, "torch_dtype", torch.bfloat16)
+        if not hasattr(pipe, "foveated_training_forward"):
+            return
+        try:
+            prompt = self.validation_prompts[0] if self.validation_prompts else ""
+            seed = self.validation_kwargs.get("seed", 42)
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+            np.random.seed(seed)
+
+            pipe.scheduler.set_timesteps(1000, training=True)
+            ts = pipe.scheduler.timesteps
+            timestep_ids = [0, len(ts) // 2, len(ts) - 1]
+            labels = ["t0", "t_mid", "t_last"]
+            all_target_vis = []
+            all_pred_vis = []
+            all_l2_error = []
+            inputs_shared_base = {
+                "height": height, "width": width, "prompt": prompt, "cfg_scale": 1.0,
+                "embedded_guidance": 1.0, "input_image": None, "rand_device": str(device),
+                "seed": seed, **{k: v for k, v in self.validation_kwargs.items() if k not in ("height", "width")},
+            }
+            inputs_posi, inputs_nega = {"prompt": prompt}, {"negative_prompt": ""}
+            for unit in pipe.units:
+                inputs_shared_base, inputs_posi, inputs_nega = pipe.unit_runner(unit, pipe, inputs_shared_base, inputs_posi, inputs_nega)
+
+            input_latents = torch.randn(1, latent_height * latent_width, 128, device=device, dtype=dtype)
+            noise = torch.randn_like(input_latents)
+            foveation_mask = _create_foveation_mask(latent_height, latent_width, center=(0.0, 0.0), r=0.25, device=device)
+
+            for tid, label in zip(timestep_ids, labels):
+                timestep_id = torch.tensor([tid], device=ts.device)
+                timestep = ts[timestep_id].to(dtype=dtype, device=device)
+                latents = pipe.scheduler.add_noise(input_latents, noise, timestep)
+                training_target = pipe.scheduler.training_target(input_latents, noise, timestep)
+                inputs_shared = dict(inputs_shared_base)
+                inputs_shared["latents"] = latents
+                inputs_shared["input_latents"] = input_latents
+                inputs_shared["foveation_mask"] = foveation_mask
+                inputs = dict(inputs_shared, **inputs_posi)
+                noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id)
+                target_vis = _unpatchify_for_vis(training_target, latent_height, latent_width)
+                pred_vis = _unpatchify_for_vis(noise_pred, latent_height, latent_width)
+                l2_error = (target_vis - pred_vis).pow(2).sum(dim=1, keepdim=True).sqrt()
+                all_target_vis.append((label, target_vis))
+                all_pred_vis.append((label, pred_vis))
+                all_l2_error.append((label, l2_error))
+
+            target_images = []
+            pred_images = []
+            for (label, t), (_, p) in zip(all_target_vis, all_pred_vis):
+                vmin = float(min(t.min().item(), p.min().item()))
+                vmax = float(max(t.max().item(), p.max().item()))
+                target_images.append(wandb.Image(_tensor_to_pil_vis(t, vmin, vmax)[0], caption=f"target_{label}"))
+                pred_images.append(wandb.Image(_tensor_to_pil_vis(p, vmin, vmax)[0], caption=f"noise_pred_{label}"))
+            l2_max = float(max(e.max().item() for _, e in all_l2_error))
+            l2_images = []
+            for label, e in all_l2_error:
+                e_3ch = e.expand(-1, 3, -1, -1)
+                l2_images.append(wandb.Image(_tensor_to_pil_vis(e_3ch, 0.0, l2_max)[0], caption=f"l2_error_{label}"))
+            wandb.log({
+                "validation/target": target_images,
+                "validation/noise_pred": pred_images,
+                "validation/l2_error": l2_images,
+            }, step=self.num_steps)
+        except Exception as e:
+            print(f"Warning: Target/noise viz failed: {e}")
+
     def generate_validation_images(self, accelerator: Accelerator, model: torch.nn.Module):
-        """Generate validation images using the model pipeline."""
+        """Generate validation images. Supports foveated pipeline with 4-position masks and target/noise viz."""
         if not accelerator.is_main_process:
             return
-        
         if not self.validation_prompts:
             return
-        
-        # Get the pipeline from the model
         unwrapped_model = accelerator.unwrap_model(model)
-        if not hasattr(unwrapped_model, 'pipe'):
+        if not hasattr(unwrapped_model, "pipe"):
             return
-        
         pipe = unwrapped_model.pipe
-        
-        # Switch to eval mode
         pipe.eval()
-        
         all_images = []
         all_captions = []
-        
+        use_foveation = self._is_foveated_pipeline(pipe)
+        height = self.validation_kwargs.get("height", 1024)
+        width = self.validation_kwargs.get("width", 1024)
+
         with torch.no_grad():
-            for prompt in self.validation_prompts:
-                try:
-                    # Generate images
-                    kwargs = {
-                        "prompt": prompt,
-                        **self.validation_kwargs
-                    }
-                    
-                    # Call pipeline - adapt based on your pipeline's interface
-                    images = pipe(**kwargs)
-                    
-                    if isinstance(images, (list, tuple)):
-                        for i, img in enumerate(images[:self.num_validation_images]):
+            if use_foveation and hasattr(pipe, "foveated_training_forward"):
+                self._visualize_target_noise_pred(pipe, height, width)
+
+            if use_foveation:
+                self._log_foveation_masks_once(pipe, height, width)
+                positions = [("left", (-0.3, 0)), ("right", (0.3, 0)), ("top", (0, -0.3)), ("bottom", (0, 0.3))]
+                h, w = height // 16, width // 16
+                device = getattr(pipe, "device", "cuda")
+                for prompt in self.validation_prompts:
+                    for pos_name, center in positions:
+                        try:
+                            mask = _create_foveation_mask(h, w, center, r=0.25, device=device)
+                            kwargs = {"prompt": prompt, "foveation_mask": mask, "token_upsampler": pipe.token_upsampler, "token_downsampler": pipe.token_downsampler, **self.validation_kwargs}
+                            images = pipe(**kwargs)
+                            img = images[0] if isinstance(images, (list, tuple)) else images
                             all_images.append(img)
-                            all_captions.append(f"{prompt[:50]}... [{i}]" if len(prompt) > 50 else f"{prompt} [{i}]")
-                    else:
-                        all_images.append(images)
-                        all_captions.append(prompt[:50] + "..." if len(prompt) > 50 else prompt)
-                        
-                except Exception as e:
-                    print(f"Warning: Failed to generate validation image for prompt '{prompt[:30]}...': {e}")
-        
-        # Switch back to train mode
+                            all_captions.append(f"{prompt[:40]}... [{pos_name}]" if len(prompt) > 40 else f"{prompt} [{pos_name}]")
+                        except Exception as e:
+                            print(f"Warning: Foveated validation failed {pos_name}: {e}")
+            else:
+                for prompt in self.validation_prompts:
+                    try:
+                        kwargs = {"prompt": prompt, **self.validation_kwargs}
+                        images = pipe(**kwargs)
+                        if isinstance(images, (list, tuple)):
+                            for i, img in enumerate(images[: self.num_validation_images]):
+                                all_images.append(img)
+                                all_captions.append(f"{prompt[:50]}... [{i}]" if len(prompt) > 50 else f"{prompt} [{i}]")
+                        else:
+                            all_images.append(images)
+                            all_captions.append(prompt[:50] + "..." if len(prompt) > 50 else prompt)
+                    except Exception as e:
+                        print(f"Warning: Validation failed: {e}")
+
+
         pipe.train()
-        
         if all_images:
             self.log_images(all_images, all_captions, key="validation/generated")
     

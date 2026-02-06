@@ -26,3 +26,9 @@ TokenUpsampler and TokenDownsampler are trained with the following behavior:
 - The main model uses `--learning_rate` (default: 1e-4).
 - `launch_training_task` uses parameter groups to apply these learning rates separately.
 
+### 4. Phased training (`--tokenAE_train_steps`)
+- Use `--tokenAE_train_steps N` to train **only** token AE for the first N steps, then train both jointly.
+- Steps 0 to N-1: only token_upsampler and token_downsampler are trainable.
+- Steps N onwards: token AE and LoRA/DiT are trained jointly.
+- Omit or set to `None` to train both throughout from the start.
+
