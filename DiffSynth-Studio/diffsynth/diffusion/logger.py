@@ -232,7 +232,8 @@ class WandbModelLogger(ModelLogger):
 
             pipe.scheduler.set_timesteps(1000, training=True)
             ts = pipe.scheduler.timesteps
-            timestep_ids = [0, len(ts) // 2, len(ts) - 1]
+            # 25%, 50%, 75% timesteps for tracking validation
+            timestep_ids = [int(len(ts) * 0.25), int(len(ts) * 0.50), int(len(ts) * 0.75)]
             labels = ["t0", "t_mid", "t_last"]
             all_target_vis = []
             all_pred_vis = []
@@ -246,7 +247,7 @@ class WandbModelLogger(ModelLogger):
             for unit in pipe.units:
                 inputs_shared_base, inputs_posi, inputs_nega = pipe.unit_runner(unit, pipe, inputs_shared_base, inputs_posi, inputs_nega)
 
-            input_latents = torch.randn(1, latent_height * latent_width, 128, device=device, dtype=dtype)
+            input_latents = pipe.fixed_clean_latent # for tracking validation
             noise = torch.randn_like(input_latents)
             foveation_mask = _create_foveation_mask(latent_height, latent_width, center=(0.0, 0.0), r=0.25, device=device)
 
@@ -267,7 +268,8 @@ class WandbModelLogger(ModelLogger):
                 all_target_vis.append((label, target_vis))
                 all_pred_vis.append((label, pred_vis))
                 all_l2_error.append((label, l2_error))
-
+            
+            # visualize target and noise prediction
             target_images = []
             pred_images = []
             for (label, t), (_, p) in zip(all_target_vis, all_pred_vis):
@@ -275,10 +277,11 @@ class WandbModelLogger(ModelLogger):
                 vmax = float(max(t.max().item(), p.max().item()))
                 target_images.append(wandb.Image(_tensor_to_pil_vis(t, vmin, vmax)[0], caption=f"target_{label}"))
                 pred_images.append(wandb.Image(_tensor_to_pil_vis(p, vmin, vmax)[0], caption=f"noise_pred_{label}"))
-            l2_max = float(max(e.max().item() for _, e in all_l2_error))
+            # visualize l2 error
             l2_images = []
             for label, e in all_l2_error:
                 e_3ch = e.expand(-1, 3, -1, -1)
+                l2_max = float(e_3ch.max().item())
                 l2_images.append(wandb.Image(_tensor_to_pil_vis(e_3ch, 0.0, l2_max)[0], caption=f"l2_error_{label}"))
             wandb.log({
                 "validation/target": target_images,

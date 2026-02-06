@@ -92,26 +92,36 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
     def set_training_phase(self, step: int, tokenAE_train_steps=None):
         """Switch from tokenAE-only to joint training. tokenAE_train_steps: train token AE for first N steps, then train both jointly."""
         if tokenAE_train_steps is None or not self._token_ae_trainable:
+            print("<Flux2FoveatedImageTrainingModule> ===> No token AE training required")
             return
         if step < tokenAE_train_steps:
             phase = "tokenAE"
+            if not self._last_phase == "tokenAE":
+                print("<Flux2FoveatedImageTrainingModule> ===> Training token AE for the first {} steps".format(tokenAE_train_steps))
         else:
             phase = "joint"
+            if not self._last_phase == "joint":
+                print("<Flux2FoveatedImageTrainingModule> ===> Training joint model")
         if self._last_phase == phase:
             return
         self._last_phase = phase
+        # set all modules to eval mode and no grad
         self.pipe.eval()
         self.pipe.requires_grad_(False)
+
+        # selectively set modules to train mode based on training phase
         if phase == "tokenAE":
             for name in self._token_ae_trainable:
                 module = self.pipe.get_module(self.pipe, name)
                 if module is not None:
+                    print("<Flux2FoveatedImageTrainingModule> ===> Setting {} to train mode".format(name))
                     module.train()
                     module.requires_grad_(True)
         else:
             for name in self._main_trainable + self._token_ae_trainable:
                 module = self.pipe.get_module(self.pipe, name)
                 if module is not None:
+                    print("<Flux2FoveatedImageTrainingModule> ===> Setting {} to train mode".format(name))
                     module.train()
                     module.requires_grad_(True)
         

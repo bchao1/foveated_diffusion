@@ -31,4 +31,3 @@ TokenUpsampler and TokenDownsampler are trained with the following behavior:
 - Steps 0 to N-1: only token_upsampler and token_downsampler are trainable.
 - Steps N onwards: token AE and LoRA/DiT are trained jointly.
 - Omit or set to `None` to train both throughout from the start.
-

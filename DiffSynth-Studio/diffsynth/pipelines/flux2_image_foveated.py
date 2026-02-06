@@ -68,6 +68,9 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         self.token_upsampler = None
         self.token_downsampler = None
 
+        # fixed latent for tracking validation
+        self.fixed_clean_latent = None
+
         self.model_fn = model_fn_flux2_foveated
         
     
@@ -587,6 +590,11 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         if foveation_mask is None or token_upsampler is None or token_downsampler is None:
             models = {name: getattr(self, name) for name in self.in_iteration_models}
             return self.model_fn(**models, **inputs, timestep=timestep)
+        
+        # fixed clean latent for tracking validation
+        if self.fixed_clean_latent is None:
+            print("<Flux2FoveatedImagePipeline> ===> Creating fixed clean latent for tracking validation")
+            self.fixed_clean_latent = inputs["input_latents"] # clean input latent
 
         latents = inputs["latents"]
         height = inputs["height"]
