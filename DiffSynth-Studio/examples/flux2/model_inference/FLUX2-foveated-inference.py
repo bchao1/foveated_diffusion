@@ -135,19 +135,7 @@ def load_pipeline(args, use_foveated_pipeline=True):
 
 def load_token_ae(args, device):
     """Load TokenUpsampler and TokenDownsampler."""
-    if args.tokenAE_folder is not None:
-        print(f"Loading TokenAE from {args.tokenAE_folder}")
-        token_upsampler = torch.load(
-            os.path.join(args.tokenAE_folder, "token_upsampler.pt"), 
-            map_location='cpu', 
-            weights_only=False
-        )
-        token_downsampler = torch.load(
-            os.path.join(args.tokenAE_folder, "token_downsampler.pt"), 
-            map_location='cpu', 
-            weights_only=False
-        )
-    elif TokenUpsampler is not None and TokenDownsampler is not None:
+    if TokenUpsampler is not None and TokenDownsampler is not None:
         print("Creating new TokenAE (untrained)")
         # FLUX2 uses inner_dim = 48 * 128 = 6144
         token_upsampler = TokenUpsampler(
@@ -171,7 +159,23 @@ def load_token_ae(args, device):
             use_ada_norm=False
         )
     else:
-        print("No TokenAE available, foveation will use bilinear upsampling")
+        print("No TokenAE class provided, using base model")
+        return None, None
+    
+    if args.tokenAE_folder is not None:
+        print(f"Loading TokenAE from {args.tokenAE_folder}")
+        token_upsampler.load_state_dict(torch.load(
+            os.path.join(args.tokenAE_folder, "token_upsampler.pt"), 
+            map_location='cpu', 
+            weights_only=False
+        ))
+        token_downsampler.load_state_dict(torch.load(
+            os.path.join(args.tokenAE_folder, "token_downsampler.pt"), 
+            map_location='cpu', 
+            weights_only=False
+        ))
+    else:
+        print("No TokenAE checkpoints provided, using base model")
         return None, None
     
     token_upsampler = token_upsampler.to(device).to(torch.bfloat16)
@@ -381,6 +385,12 @@ def main(args):
     # Load pipeline
     pipe = load_pipeline(args)
     
+    if args.lora_checkpoint is not None:
+        pipe.load_lora(pipe.dit,args.lora_checkpoint)
+        print(f"Loaded LoRA checkpoint from {args.lora_checkpoint}")
+    else:
+        print("No LoRA checkpoint provided, using base model")
+    
     # Load TokenAE
     token_upsampler, token_downsampler = load_token_ae(args, device)
     
@@ -412,6 +422,8 @@ if __name__ == "__main__":
                         help='HuggingFace model ID for FLUX2')
     parser.add_argument('--tokenAE_folder', default=None, type=str,
                         help='Folder containing pre-trained token_upsampler.pt and token_downsampler.pt')
+    parser.add_argument('--lora_checkpoint', default=None, type=str, help='Path to the LoRA .safetensors checkpoint')
+    
     
     # Generation parameters
     parser.add_argument('--height', type=int, default=1024, help='Image height')

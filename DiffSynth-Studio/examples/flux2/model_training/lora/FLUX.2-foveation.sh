@@ -1,6 +1,6 @@
 export DIFFSYNTH_MODEL_BASE_PATH="/miele/brian/modelscope"
 cd ..
-accelerate launch --gpu_ids $1 train_foveated.py \
+accelerate launch train_foveated.py \
   --dataset_base_path /local/brian/Aesthetic-Train-V2/ \
   --dataset_metadata_path /local/brian/Aesthetic-Train-V2/metadata.csv \
   --max_pixels 1048576 \
@@ -11,7 +11,7 @@ accelerate launch --gpu_ids $1 train_foveated.py \
   --tokenizer_path "black-forest-labs/FLUX.2-klein-base-4B:tokenizer/" \
   --learning_rate 1e-4 \
   --tokenAE_learning_rate 1e-4 \
-  --tokenAE_train_steps 1000000 \
+  --tokenAE_train_steps 0 \
   --num_epochs 10 \
   --remove_prefix_in_ckpt "pipe.dit." \
   --output_path "./models/train/FLUX.2-foveation" \
@@ -22,12 +22,14 @@ accelerate launch --gpu_ids $1 train_foveated.py \
   --dataset_num_workers 8 \
   --use_wandb \
   --wandb_project "flux2-training" \
-  --wandb_run_name "FLUX.2-klein-base-4B-lora-tokenAE-distill" \
+  --wandb_run_name "FLUX.2-klein-base-4B-lora-NO-tokenAE-sft-batch" \
   --validation_prompts \
   "Golden retriever on a grassy meadow. Thick sun-kissed fur, clean and glossy, subtle lighter ruff around the neck. Alert amber eyes, black moist nose, relaxed open mouth with pink tongue. Perky ears tilted forward, sturdy athletic stance, tail held in a gentle arc. Warm late-afternoon backdrop, rolling wild grass bending in the breeze, blurred tree line and distant hills under a pastel sky." \
   --validation_steps 100 \
   --validation_height 1024 \
   --validation_width 1024 \
   --num_validation_images 1 \
-  --save_steps 1000
+  --save_steps 1000 \
+  --task sft \
+  --find_unused_parameters
 cd lora

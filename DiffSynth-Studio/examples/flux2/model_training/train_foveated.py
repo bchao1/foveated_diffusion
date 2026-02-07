@@ -184,7 +184,7 @@ def load_token_ae(args, device):
             num_res_blocks=args.upsampler_num_res_blocks,
             naive_upsample_mode="nearest", 
             learn_residual=True,
-            variance_correction=False,
+            use_learned_components=not args.tokenAE_dont_use_learned_components,
             use_ada_norm=False
         )
         token_downsampler = TokenDownsampler(
@@ -194,7 +194,7 @@ def load_token_ae(args, device):
             num_res_blocks=args.downsampler_num_res_blocks, 
             naive_downsample_mode="nearest", 
             learn_residual=True,
-            variance_correction=False,
+            use_learned_components=not args.tokenAE_dont_use_learned_components,
             use_ada_norm=False
         )
     else:
@@ -234,6 +234,7 @@ def flux2_parser():
     parser.add_argument("--tokenAE_folder", type=str, default=None, help="Path to token AE folder.")
     parser.add_argument("--upsampler_num_res_blocks", type=int, default=10, help="Number of residual blocks for token upsampler.")
     parser.add_argument("--downsampler_num_res_blocks", type=int, default=10, help="Number of residual blocks for token downsampler.")
+    parser.add_argument("--tokenAE_dont_use_learned_components", action="store_false", help="Do not use learned components for token AE, only residual path.")
     parser.add_argument("--tokenAE_learning_rate", type=float, default=1e-4, help="Learning rate for token AE.")
     parser.add_argument("--tokenAE_train_steps", type=int, default=None, help="Train only token AE for the first N steps, then switch to LoRA/DiT. None = train both throughout.")
     

@@ -110,6 +110,7 @@ class TokenDownsampler(nn.Module):
         embedding_dim, 
         num_res_blocks=2, 
         learn_residual=False, 
+        use_learned_components=True,
         variance_correction=False, 
         use_ada_norm=True,
         naive_downsample_mode: Literal["nearest", "bilinear"] = "nearest",
@@ -119,6 +120,7 @@ class TokenDownsampler(nn.Module):
         self.variance_correction = variance_correction
         self.learn_residual = learn_residual
         self.naive_downsample_mode = naive_downsample_mode
+        self.use_learned_components = use_learned_components
         
         self.input_proj = nn.Conv2d(in_channels, feature_channels, kernel_size=3, padding=1)
         
@@ -182,11 +184,14 @@ class TokenDownsampler(nn.Module):
         else:
             x_naive = 0
         
-        # Path B: Learned Residual
-        x = self.input_proj(x) # expand channels
-        for block in self.res_blocks:
-            x = block(x, temb)
-        x = self.downsample(x)
+        if self.use_learned_components:
+            # Path B: Learned Residual
+            x = self.input_proj(x) # expand channels
+            for block in self.res_blocks:
+                x = block(x, temb)
+            x = self.downsample(x)
+        else:
+            x = 0
 
         # Output = Naive + Residual
         return x_naive + x
@@ -213,6 +218,7 @@ class TokenUpsampler(nn.Module):
         cnn_upsample_mode="bilinear", 
         naive_upsample_mode="nearest",
         learn_residual=False,
+        use_learned_components=True,
         variance_correction=False,
         use_ada_norm=True
     ):
@@ -221,6 +227,7 @@ class TokenUpsampler(nn.Module):
         self.learn_residual = learn_residual
         self.cnn_upsample_mode = cnn_upsample_mode
         self.naive_upsample_mode = naive_upsample_mode
+        self.use_learned_components = use_learned_components
         
         # 1. Learned Branch (CNN)
         self.res_blocks = []
@@ -275,12 +282,15 @@ class TokenUpsampler(nn.Module):
         else:
             x_naive = 0
 
-        # Path B: Learned Residual
-        x = self.input_proj(x)
-        x = self.upsample(x)
-        for block in self.res_blocks:
-            x = block(x, temb)
-        x = self.output_proj(x)
+        if self.use_learned_components:
+            # Path B: Learned Residual
+            x = self.input_proj(x)
+            x = self.upsample(x)
+            for block in self.res_blocks:
+                x = block(x, temb)
+            x = self.output_proj(x)
+        else:
+            x = 0
 
         # Output = Naive + Residual
         return x_naive + x
