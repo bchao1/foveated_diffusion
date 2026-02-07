@@ -175,8 +175,7 @@ def load_token_ae(args, device):
             weights_only=False
         ))
     else:
-        print("No TokenAE checkpoints provided, using base model")
-        return None, None
+        print("Not loading TokenAE checkpoints, using non-trained version.")
     
     token_upsampler = token_upsampler.to(device).to(torch.bfloat16)
     token_downsampler = token_downsampler.to(device).to(torch.bfloat16)
@@ -272,7 +271,7 @@ def run_radius_ablation(pipe, args, output_dir, token_upsampler, token_downsampl
     """Run radius ablation experiment."""
     print("Running radius ablation experiment...")
     
-    r_list = np.linspace(0.1, 1.0, 10)
+    r_list = np.linspace(0.1, 1.0, args.num_frames)
     
     for r_idx, r in enumerate(r_list):
         r_idx_str = str(r_idx).zfill(2)
