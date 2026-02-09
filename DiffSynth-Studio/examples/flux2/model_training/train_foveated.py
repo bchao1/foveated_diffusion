@@ -185,7 +185,7 @@ def load_token_ae(args, device):
             naive_upsample_mode="nearest", 
             learn_residual=True,
             use_learned_components=not args.tokenAE_dont_use_learned_components,
-            use_ada_norm=False
+            normalization_type=args.upsampler_normalization_type
         )
         token_downsampler = TokenDownsampler(
             in_channels=32,
@@ -195,7 +195,7 @@ def load_token_ae(args, device):
             naive_downsample_mode="nearest", 
             learn_residual=True,
             use_learned_components=not args.tokenAE_dont_use_learned_components,
-            use_ada_norm=False
+            normalization_type=args.downsampler_normalization_type
         )
     else:
         print("No TokenAE available, foveation will use nearest upsampling and downsampling")
@@ -237,6 +237,8 @@ def flux2_parser():
     parser.add_argument("--tokenAE_dont_use_learned_components", action="store_true", help="Do not use learned components for token AE, only residual path.")
     parser.add_argument("--tokenAE_learning_rate", type=float, default=1e-4, help="Learning rate for token AE.")
     parser.add_argument("--tokenAE_train_steps", type=int, default=None, help="Train only token AE for the first N steps, then switch to LoRA/DiT. None = train both throughout.")
+    parser.add_argument("--upsampler_normalization_type", type=str, default="gn", choices=["ada", "gn", "none"], help="Normalization type for token upsampler.")
+    parser.add_argument("--downsampler_normalization_type", type=str, default="none", choices=["ada", "gn", "none"], help="Normalization type for token downsampler.")
     
     return parser
 

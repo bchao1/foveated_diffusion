@@ -146,7 +146,8 @@ def load_token_ae(args, device):
             naive_upsample_mode="nearest", 
             learn_residual=True,
             variance_correction=False,
-            use_ada_norm=False
+            normalization_type=args.upsampler_normalization_type,
+            use_learned_components=not args.tokenAE_dont_use_learned_components
         )
         token_downsampler = TokenDownsampler(
             in_channels=32,
@@ -156,7 +157,8 @@ def load_token_ae(args, device):
             naive_downsample_mode="nearest", 
             learn_residual=True,
             variance_correction=False,
-            use_ada_norm=False
+            normalization_type=args.downsampler_normalization_type,
+            use_learned_components=not args.tokenAE_dont_use_learned_components
         )
     else:
         print("No TokenAE class provided, using base model")
@@ -449,6 +451,12 @@ if __name__ == "__main__":
     parser.add_argument('--num_frames', type=int, default=100, help='Number of frames for circular experiment')
     parser.add_argument('--orbit_radius', type=float, default=0.25, help='Distance of mask center from image center')
     parser.add_argument('--mask_radius', type=float, default=0.30, help='Radius of the foveation mask')
+
+    # TokenAE configuration
+    parser.add_argument('--tokenAE_dont_use_learned_components', action='store_true', default=False,
+                        help='Do not use learned components for TokenAE')
+    parser.add_argument('--upsampler_normalization_type', type=str, default="gn", choices=["ada", "gn", "none"], help="Normalization type for token upsampler.")
+    parser.add_argument('--downsampler_normalization_type', type=str, default="none", choices=["ada", "gn", "none"], help="Normalization type for token downsampler.")
 
     args = parser.parse_args()
     main(args)
