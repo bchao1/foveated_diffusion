@@ -17,6 +17,7 @@ import sys
 import math
 import time
 import random
+import yaml
 
 import torch
 import torch.nn.functional as F
@@ -133,37 +134,81 @@ def load_pipeline(args, use_foveated_pipeline=True):
     return pipe
 
 
+def load_token_ae_config(tokenAE_folder):
+    """Load token AE config from tokenAE_config.yaml if present. Returns None if not found or invalid."""
+    if tokenAE_folder is None:
+        return None
+    path = os.path.join(tokenAE_folder, "tokenAE_config.yaml")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r") as f:
+            cfg = yaml.safe_load(f)
+        return cfg if isinstance(cfg, dict) else None
+    except Exception as e:
+        print(f"Warning: Could not load tokenAE_config.yaml: {e}")
+        return None
+
+
 def load_token_ae(args, device):
-    """Load TokenUpsampler and TokenDownsampler."""
-    if TokenUpsampler is not None and TokenDownsampler is not None:
-        print("Creating new TokenAE (untrained)")
-        # FLUX2 uses inner_dim = 48 * 128 = 6144
-        token_upsampler = TokenUpsampler(
-            in_channels=32,
-            feature_channels=64, 
-            embedding_dim=6144,
-            num_res_blocks=args.upsampler_num_res_blocks,
-            naive_upsample_mode=args.naive_upsample_mode,
-            learn_residual=True,
-            variance_correction=args.upsampler_variance_correction,
-            normalization_type=args.upsampler_normalization_type,
-            use_learned_components=not args.tokenAE_dont_use_learned_components
-        )
-        token_downsampler = TokenDownsampler(
-            in_channels=32,
-            feature_channels=64, 
-            embedding_dim=6144,
-            num_res_blocks=args.downsampler_num_res_blocks,
-            naive_downsample_mode=args.naive_downsample_mode,
-            learn_residual=True,
-            variance_correction=args.downsampler_variance_correction,
-            normalization_type=args.downsampler_normalization_type,
-            use_learned_components=not args.tokenAE_dont_use_learned_components
-        )
-    else:
+    """Load TokenUpsampler and TokenDownsampler. Uses tokenAE_config.yaml if present, else argparse defaults."""
+    if TokenUpsampler is None or TokenDownsampler is None:
         print("No TokenAE class provided, using base model")
         return None, None
-    
+
+    cfg = load_token_ae_config(args.tokenAE_folder)
+    if cfg is not None:
+        print(f"Using token AE config from {args.tokenAE_folder}/tokenAE_config.yaml")
+        in_channels = cfg.get("in_channels", 32)
+        feature_channels = cfg.get("feature_channels", 64)
+        embedding_dim = cfg.get("embedding_dim", 6144)
+        upsampler_num_res_blocks = cfg.get("upsampler_num_res_blocks", 10)
+        downsampler_num_res_blocks = cfg.get("downsampler_num_res_blocks", 1)
+        tokenAE_dont_use_learned_components = cfg.get("tokenAE_dont_use_learned_components", False)
+        upsampler_normalization_type = cfg.get("upsampler_normalization_type", "gn")
+        downsampler_normalization_type = cfg.get("downsampler_normalization_type", "none")
+        upsampler_variance_correction = cfg.get("upsampler_variance_correction", None)
+        downsampler_variance_correction = cfg.get("downsampler_variance_correction", None)
+        naive_upsample_mode = cfg.get("naive_upsample_mode", "nearest")
+        naive_downsample_mode = cfg.get("naive_downsample_mode", "nearest")
+    else:
+        print("Creating TokenAE from argparse defaults (no tokenAE_config.yaml found)")
+        in_channels = getattr(args, "in_channels", 32)
+        feature_channels = getattr(args, "feature_channels", 64)
+        embedding_dim = getattr(args, "embedding_dim", 6144)
+        upsampler_num_res_blocks = args.upsampler_num_res_blocks
+        downsampler_num_res_blocks = args.downsampler_num_res_blocks
+        tokenAE_dont_use_learned_components = args.tokenAE_dont_use_learned_components
+        upsampler_normalization_type = args.upsampler_normalization_type
+        downsampler_normalization_type = args.downsampler_normalization_type
+        upsampler_variance_correction = args.upsampler_variance_correction
+        downsampler_variance_correction = args.downsampler_variance_correction
+        naive_upsample_mode = args.naive_upsample_mode
+        naive_downsample_mode = args.naive_downsample_mode
+
+    token_upsampler = TokenUpsampler(
+        in_channels=in_channels,
+        feature_channels=feature_channels,
+        embedding_dim=embedding_dim,
+        num_res_blocks=upsampler_num_res_blocks,
+        naive_upsample_mode=naive_upsample_mode,
+        learn_residual=True,
+        variance_correction=upsampler_variance_correction,
+        normalization_type=upsampler_normalization_type,
+        use_learned_components=not tokenAE_dont_use_learned_components,
+    )
+    token_downsampler = TokenDownsampler(
+        in_channels=in_channels,
+        feature_channels=feature_channels,
+        embedding_dim=embedding_dim,
+        num_res_blocks=downsampler_num_res_blocks,
+        naive_downsample_mode=naive_downsample_mode,
+        learn_residual=True,
+        variance_correction=downsampler_variance_correction,
+        normalization_type=downsampler_normalization_type,
+        use_learned_components=not tokenAE_dont_use_learned_components,
+    )
+
     if args.tokenAE_folder is not None:
         print(f"Loading TokenAE from {args.tokenAE_folder}")
         token_upsampler.load_state_dict(torch.load(
@@ -453,7 +498,10 @@ if __name__ == "__main__":
     parser.add_argument('--orbit_radius', type=float, default=0.25, help='Distance of mask center from image center')
     parser.add_argument('--mask_radius', type=float, default=0.30, help='Radius of the foveation mask')
 
-    # TokenAE configuration
+    # TokenAE configuration (used when tokenAE_config.yaml not found)
+    parser.add_argument('--in_channels', type=int, default=32, help='Token AE in_channels.')
+    parser.add_argument('--feature_channels', type=int, default=64, help='Token AE feature_channels.')
+    parser.add_argument('--embedding_dim', type=int, default=6144, help='Token AE embedding_dim.')
     parser.add_argument('--tokenAE_dont_use_learned_components', action='store_true', default=False,
                         help='Do not use learned components for TokenAE')
     parser.add_argument('--upsampler_normalization_type', type=str, default="gn", choices=["ada", "gn", "none"], help="Normalization type for token upsampler.")

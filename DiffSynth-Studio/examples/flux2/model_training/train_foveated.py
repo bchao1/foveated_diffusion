@@ -1,4 +1,5 @@
 import torch, sys, os, argparse, accelerate
+import yaml
 from diffsynth.core import UnifiedDataset
 from diffsynth.pipelines.flux2_image_foveated import Flux2FoveatedImagePipeline
 from diffsynth.pipelines.flux2_image import ModelConfig
@@ -24,6 +25,24 @@ except ImportError:
     TokenDownsampler = None
 
 
+def _token_ae_config_from_args(args):
+    """Build token AE config dict for saving/loading (YAML-serializable, preserves None)."""
+    return {
+        "in_channels": getattr(args, "in_channels", 32),
+        "feature_channels": getattr(args, "feature_channels", 64),
+        "embedding_dim": getattr(args, "embedding_dim", 6144),
+        "upsampler_num_res_blocks": getattr(args, "upsampler_num_res_blocks", 10),
+        "downsampler_num_res_blocks": getattr(args, "downsampler_num_res_blocks", 1),
+        "tokenAE_dont_use_learned_components": getattr(args, "tokenAE_dont_use_learned_components", False),
+        "upsampler_normalization_type": getattr(args, "upsampler_normalization_type", "gn"),
+        "downsampler_normalization_type": getattr(args, "downsampler_normalization_type", "none"),
+        "upsampler_variance_correction": getattr(args, "upsampler_variance_correction", 1.0),
+        "downsampler_variance_correction": getattr(args, "downsampler_variance_correction", 1.0),
+        "naive_upsample_mode": getattr(args, "naive_upsample_mode", "nearest"),
+        "naive_downsample_mode": getattr(args, "naive_downsample_mode", "nearest"),
+    }
+
+
 class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
     def __init__(
         self,
@@ -32,6 +51,7 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         trainable_models=None,
         token_upsampler=None,
         token_downsampler=None,
+        token_ae_config=None,
         lora_base_model=None, lora_target_modules="", lora_rank=32, lora_checkpoint=None,
         preset_lora_path=None, preset_lora_model=None,
         use_gradient_checkpointing=True,
@@ -52,6 +72,7 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         # set token upsampler and downsampler
         self.pipe.token_upsampler = token_upsampler
         self.pipe.token_downsampler = token_downsampler
+        self.token_ae_config = token_ae_config or {}
 
         # Build effective trainable models: trainable_models + lora_base_model + token AE (if present)
         parts = []
@@ -162,6 +183,9 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         os.makedirs(path, exist_ok=True)
         torch.save(self.pipe.token_upsampler.state_dict(), os.path.join(path, "token_upsampler.pt"))
         torch.save(self.pipe.token_downsampler.state_dict(), os.path.join(path, "token_downsampler.pt"))
+        if self.token_ae_config:
+            with open(os.path.join(path, "tokenAE_config.yaml"), "w") as f:
+                yaml.dump(self.token_ae_config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
     
     def forward(self, data, inputs=None):
         if inputs is None: inputs = self.get_pipeline_inputs(data)
@@ -176,11 +200,13 @@ def load_token_ae(args, device):
     """Load TokenUpsampler and TokenDownsampler."""
     if TokenUpsampler is not None and TokenDownsampler is not None:
         print("Creating new TokenAE (untrained)")
-        # FLUX2 uses inner_dim = 48 * 128 = 6144
+        in_ch = getattr(args, "in_channels", 32)
+        feat_ch = getattr(args, "feature_channels", 64)
+        emb_dim = getattr(args, "embedding_dim", 6144)
         token_upsampler = TokenUpsampler(
-            in_channels=32,
-            feature_channels=64, 
-            embedding_dim=6144,
+            in_channels=in_ch,
+            feature_channels=feat_ch,
+            embedding_dim=emb_dim,
             num_res_blocks=args.upsampler_num_res_blocks,
             naive_upsample_mode=args.naive_upsample_mode,
             learn_residual=True,
@@ -189,9 +215,9 @@ def load_token_ae(args, device):
             variance_correction=args.upsampler_variance_correction
         )
         token_downsampler = TokenDownsampler(
-            in_channels=32,
-            feature_channels=64, 
-            embedding_dim=6144,
+            in_channels=in_ch,
+            feature_channels=feat_ch,
+            embedding_dim=emb_dim,
             num_res_blocks=args.downsampler_num_res_blocks, 
             naive_downsample_mode=args.naive_downsample_mode,
             learn_residual=True,
@@ -234,6 +260,9 @@ def flux2_parser():
 
     # token AE arguments
     parser.add_argument("--tokenAE_folder", type=str, default=None, help="Path to token AE folder.")
+    parser.add_argument("--in_channels", type=int, default=32, help="Token AE in_channels (latent channels).")
+    parser.add_argument("--feature_channels", type=int, default=64, help="Token AE feature_channels.")
+    parser.add_argument("--embedding_dim", type=int, default=6144, help="Token AE embedding_dim (FLUX2: 48*128).")
     parser.add_argument("--upsampler_num_res_blocks", type=int, default=10, help="Number of residual blocks for token upsampler.")
     parser.add_argument("--downsampler_num_res_blocks", type=int, default=1, help="Number of residual blocks for token downsampler.")
     parser.add_argument("--tokenAE_dont_use_learned_components", action="store_true", help="Do not use learned components for token AE, only residual path.")
@@ -273,6 +302,7 @@ if __name__ == "__main__":
     # load token upsampler and downsampler
     token_upsampler, token_downsampler = load_token_ae(args, accelerator.device)
     # create training module
+    token_ae_config = _token_ae_config_from_args(args)
     model = Flux2FoveatedImageTrainingModule(
         model_paths=args.model_paths,
         model_id_with_origin_paths=args.model_id_with_origin_paths,
@@ -280,6 +310,7 @@ if __name__ == "__main__":
         trainable_models=args.trainable_models,
         token_upsampler=token_upsampler,
         token_downsampler=token_downsampler,
+        token_ae_config=token_ae_config,
         lora_base_model=args.lora_base_model,
         lora_target_modules=args.lora_target_modules,
         lora_rank=args.lora_rank,
