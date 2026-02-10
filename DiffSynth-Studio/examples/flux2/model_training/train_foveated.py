@@ -182,20 +182,22 @@ def load_token_ae(args, device):
             feature_channels=64, 
             embedding_dim=6144,
             num_res_blocks=args.upsampler_num_res_blocks,
-            naive_upsample_mode="nearest", 
+            naive_upsample_mode=args.naive_upsample_mode,
             learn_residual=True,
             use_learned_components=not args.tokenAE_dont_use_learned_components,
-            normalization_type=args.upsampler_normalization_type
+            normalization_type=args.upsampler_normalization_type,
+            variance_correction=args.upsampler_variance_correction
         )
         token_downsampler = TokenDownsampler(
             in_channels=32,
             feature_channels=64, 
             embedding_dim=6144,
             num_res_blocks=args.downsampler_num_res_blocks, 
-            naive_downsample_mode="nearest", 
+            naive_downsample_mode=args.naive_downsample_mode,
             learn_residual=True,
             use_learned_components=not args.tokenAE_dont_use_learned_components,
-            normalization_type=args.downsampler_normalization_type
+            normalization_type=args.downsampler_normalization_type,
+            variance_correction=args.downsampler_variance_correction
         )
     else:
         print("No TokenAE available, foveation will use nearest upsampling and downsampling")
@@ -233,12 +235,16 @@ def flux2_parser():
     # token AE arguments
     parser.add_argument("--tokenAE_folder", type=str, default=None, help="Path to token AE folder.")
     parser.add_argument("--upsampler_num_res_blocks", type=int, default=10, help="Number of residual blocks for token upsampler.")
-    parser.add_argument("--downsampler_num_res_blocks", type=int, default=10, help="Number of residual blocks for token downsampler.")
+    parser.add_argument("--downsampler_num_res_blocks", type=int, default=1, help="Number of residual blocks for token downsampler.")
     parser.add_argument("--tokenAE_dont_use_learned_components", action="store_true", help="Do not use learned components for token AE, only residual path.")
     parser.add_argument("--tokenAE_learning_rate", type=float, default=1e-4, help="Learning rate for token AE.")
     parser.add_argument("--tokenAE_train_steps", type=int, default=None, help="Train only token AE for the first N steps, then switch to LoRA/DiT. None = train both throughout.")
     parser.add_argument("--upsampler_normalization_type", type=str, default="gn", choices=["ada", "gn", "none"], help="Normalization type for token upsampler.")
     parser.add_argument("--downsampler_normalization_type", type=str, default="none", choices=["ada", "gn", "none"], help="Normalization type for token downsampler.")
+    parser.add_argument("--upsampler_variance_correction", type=float, default=1.0, help="Variance correction for token upsampler.")
+    parser.add_argument("--downsampler_variance_correction", type=float, default=1.0, help="Variance correction for token downsampler.")
+    parser.add_argument("--naive_upsample_mode", type=str, default="nearest", choices=["nearest", "bilinear"], help="Naive upsample mode for token upsampler.")
+    parser.add_argument("--naive_downsample_mode", type=str, default="nearest", choices=["nearest", "bilinear"], help="Naive downsample mode for token downsampler.")
     
     return parser
 

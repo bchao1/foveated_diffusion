@@ -14,7 +14,7 @@ accelerate launch train_foveated.py \
   --tokenAE_train_steps 1000 \
   --num_epochs 10 \
   --remove_prefix_in_ckpt "pipe.dit." \
-  --output_path "/local/brian/foveated_diffusion/models/flux2_foveation/lora_with_tokenAE_up10_gn_down1_none" \
+  --output_path "/local/brian/foveated_diffusion/models/flux2_foveation/lora_with_tokenAE_bilinear_bilinear_1.0_1.0" \
   --lora_base_model "dit" \
   --lora_target_modules "to_q,to_k,to_v,to_out.0,add_q_proj,add_k_proj,add_v_proj,to_add_out,linear_in,linear_out,to_qkv_mlp_proj,single_transformer_blocks.0.attn.to_out,single_transformer_blocks.1.attn.to_out,single_transformer_blocks.2.attn.to_out,single_transformer_blocks.3.attn.to_out,single_transformer_blocks.4.attn.to_out,single_transformer_blocks.5.attn.to_out,single_transformer_blocks.6.attn.to_out,single_transformer_blocks.7.attn.to_out,single_transformer_blocks.8.attn.to_out,single_transformer_blocks.9.attn.to_out,single_transformer_blocks.10.attn.to_out,single_transformer_blocks.11.attn.to_out,single_transformer_blocks.12.attn.to_out,single_transformer_blocks.13.attn.to_out,single_transformer_blocks.14.attn.to_out,single_transformer_blocks.15.attn.to_out,single_transformer_blocks.16.attn.to_out,single_transformer_blocks.17.attn.to_out,single_transformer_blocks.18.attn.to_out,single_transformer_blocks.19.attn.to_out" \
   --lora_rank 32 \
@@ -22,7 +22,7 @@ accelerate launch train_foveated.py \
   --dataset_num_workers 8 \
   --use_wandb \
   --wandb_project "flux2-training" \
-  --wandb_run_name "FLUX.2-klein-base-4B-lora-tokenAE-up10_gn-down1_none" \
+  --wandb_run_name "FLUX.2-klein-base-4B-lora-tokenAE-bilinear-bilinear-1.0-1.0" \
   --validation_prompts \
   "Golden retriever on a grassy meadow. Thick sun-kissed fur, clean and glossy, subtle lighter ruff around the neck. Alert amber eyes, black moist nose, relaxed open mouth with pink tongue. Perky ears tilted forward, sturdy athletic stance, tail held in a gentle arc. Warm late-afternoon backdrop, rolling wild grass bending in the breeze, blurred tree line and distant hills under a pastel sky." \
   --validation_steps 100 \
@@ -33,7 +33,11 @@ accelerate launch train_foveated.py \
   --task sft \
   --find_unused_parameters \
   --upsampler_normalization_type "gn" \
-  --downsampler_normalization_type "none" \
+  --downsampler_normalization_type "gn" \
   --upsampler_num_res_blocks 10 \
-  --downsampler_num_res_blocks 1
+  --downsampler_num_res_blocks 10 \
+  --naive_upsample_mode "bilinear" \
+  --naive_downsample_mode "bilinear" \
+  --upsampler_variance_correction 1.0 \
+  --downsampler_variance_correction 1.0
 cd lora

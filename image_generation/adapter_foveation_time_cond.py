@@ -48,30 +48,36 @@ class AdaGroupNorm(nn.Module):
         return x
 
 class ResidualBlock(nn.Module):
-    def __init__(self, channels, embedding_dim, num_groups=1, use_ada_norm=True):
+    def __init__(self, channels, embedding_dim, num_groups=1, normalization_type: Literal["ada", "gn", "none"] = "gn"):
         """
         Args:
             channels: Number of input/output channels.
             embedding_dim: Dimension of the time embedding (temb).
             num_groups: Number of groups for GroupNorm.
-            use_ada_norm: If True, uses AdaGroupNorm (time-conditioned).
+            normalization_type: If "ada", uses AdaGroupNorm (time-conditioned).
                           If False, uses standard GroupNorm (ignores time).
         """
         super().__init__()
-        self.use_ada_norm = use_ada_norm
+        self.normalization_type = normalization_type
         
         # 1. Select Normalization Type
-        if self.use_ada_norm:
+        if normalization_type == "ada":
             # Your original time-conditioned norm
             print("ada norm")
             self.gn1 = AdaGroupNorm(embedding_dim, channels, num_groups)
             self.gn2 = AdaGroupNorm(embedding_dim, channels, num_groups)
-        else:
+        elif normalization_type == "gn":
             # Standard GroupNorm (sanity check mode)
             # affine=True ensures it can learn scale/shift immediately
             print("standard group norm")
             self.gn1 = nn.GroupNorm(num_groups, channels, affine=True)
             self.gn2 = nn.GroupNorm(num_groups, channels, affine=True)
+        elif normalization_type == "none":
+            print("no normalization")
+            self.gn1 = nn.Identity()
+            self.gn2 = nn.Identity()
+        else:
+            raise ValueError(f"Invalid normalization type: {normalization_type}")
 
         # 2. Standard Convolutional Layers (Unchanged)
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
@@ -84,7 +90,7 @@ class ResidualBlock(nn.Module):
         residual = x
         
         # Block 1
-        if self.use_ada_norm:
+        if self.normalization_type == "ada":
             x = self.gn1(x, temb)
         else:
             x = self.gn1(x) # Ignores temb
@@ -93,7 +99,7 @@ class ResidualBlock(nn.Module):
         x = self.conv1(x)
         
         # Block 2
-        if self.use_ada_norm:
+        if self.normalization_type == "ada":
             x = self.gn2(x, temb)
         else:
             x = self.gn2(x) # Ignores temb
@@ -111,8 +117,8 @@ class TokenDownsampler(nn.Module):
         num_res_blocks=2, 
         learn_residual=False, 
         use_learned_components=True,
-        variance_correction=False, 
-        use_ada_norm=True,
+        variance_correction=None,
+        normalization_type: Literal["ada", "gn", "none"] = "gn",
         naive_downsample_mode: Literal["nearest", "bilinear"] = "nearest",
     ):
         super().__init__()
@@ -123,6 +129,11 @@ class TokenDownsampler(nn.Module):
         self.use_learned_components = use_learned_components
         
         self.input_proj = nn.Conv2d(in_channels, feature_channels, kernel_size=3, padding=1)
+        # variance correction optimizable scalar for naive downsampling
+        if self.variance_correction is not None:
+            self.variance_correction = nn.Parameter(torch.ones(1) * self.variance_correction, requires_grad=True)
+        else:
+            self.variance_correction = None
         
         # 1. Learned Branch (CNN)
         self.res_blocks = []
@@ -130,7 +141,7 @@ class TokenDownsampler(nn.Module):
             # Note: Residual blocks usually keep dim constant. 
             # If in_channels != out_channels, we might need a projection first, 
             # but for this specific "refinement" use-case, usually in==out.
-            self.res_blocks.append(ResidualBlock(feature_channels, embedding_dim, use_ada_norm=use_ada_norm))
+            self.res_blocks.append(ResidualBlock(feature_channels, embedding_dim, normalization_type=normalization_type))
         self.res_blocks = nn.ModuleList(self.res_blocks)
             
         # The strided convolution that actually reduces dimension
@@ -175,8 +186,8 @@ class TokenDownsampler(nn.Module):
         if self.learn_residual:
             if self.naive_downsample_mode == "bilinear":
                 x_naive = F.avg_pool2d(x, kernel_size=2, stride=2)
-                if self.variance_correction:
-                    x_naive *= 2 # used in first-step of the training-free results
+                if self.variance_correction is not None:
+                    x_naive *= self.variance_correction
             elif self.naive_downsample_mode == "nearest":
                 x_naive = F.interpolate(x, scale_factor=0.5, mode="nearest")
             else:
@@ -219,8 +230,8 @@ class TokenUpsampler(nn.Module):
         naive_upsample_mode="nearest",
         learn_residual=False,
         use_learned_components=True,
-        variance_correction=False,
-        use_ada_norm=True
+        variance_correction=None,
+        normalization_type: Literal["ada", "gn", "none"] = "gn",
     ):
         super().__init__()
 
@@ -228,11 +239,18 @@ class TokenUpsampler(nn.Module):
         self.cnn_upsample_mode = cnn_upsample_mode
         self.naive_upsample_mode = naive_upsample_mode
         self.use_learned_components = use_learned_components
+        self.variance_correction = variance_correction
+
+        # variance correction optimizable scalar for naive downsampling
+        if self.variance_correction is not None:
+            self.variance_correction = nn.Parameter(torch.ones(1) * self.variance_correction, requires_grad=True)
+        else:
+            self.variance_correction = None
         
         # 1. Learned Branch (CNN)
         self.res_blocks = []
         for _ in range(num_res_blocks):
-            self.res_blocks.append(ResidualBlock(feature_channels, embedding_dim, use_ada_norm=use_ada_norm))
+            self.res_blocks.append(ResidualBlock(feature_channels, embedding_dim, normalization_type=normalization_type))
         self.res_blocks = nn.ModuleList(self.res_blocks)
 
         self.input_proj = nn.Conv2d(in_channels, feature_channels, kernel_size=3, padding=1)
@@ -275,6 +293,8 @@ class TokenUpsampler(nn.Module):
         if self.learn_residual:
             if self.naive_upsample_mode == "bilinear":
                 x_naive = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
+                if self.variance_correction is not None:
+                    x_naive *= self.variance_correction
             elif self.naive_upsample_mode == "nearest":
                 x_naive = F.interpolate(x, scale_factor=2, mode="nearest")
             else:

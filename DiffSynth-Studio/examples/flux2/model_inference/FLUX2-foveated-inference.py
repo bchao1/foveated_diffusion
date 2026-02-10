@@ -142,10 +142,10 @@ def load_token_ae(args, device):
             in_channels=32,
             feature_channels=64, 
             embedding_dim=6144,
-            num_res_blocks=10, 
-            naive_upsample_mode="nearest", 
+            num_res_blocks=args.upsampler_num_res_blocks,
+            naive_upsample_mode=args.naive_upsample_mode,
             learn_residual=True,
-            variance_correction=False,
+            variance_correction=args.upsampler_variance_correction,
             normalization_type=args.upsampler_normalization_type,
             use_learned_components=not args.tokenAE_dont_use_learned_components
         )
@@ -153,10 +153,10 @@ def load_token_ae(args, device):
             in_channels=32,
             feature_channels=64, 
             embedding_dim=6144,
-            num_res_blocks=10, 
-            naive_downsample_mode="nearest", 
+            num_res_blocks=args.downsampler_num_res_blocks,
+            naive_downsample_mode=args.naive_downsample_mode,
             learn_residual=True,
-            variance_correction=False,
+            variance_correction=args.downsampler_variance_correction,
             normalization_type=args.downsampler_normalization_type,
             use_learned_components=not args.tokenAE_dont_use_learned_components
         )
@@ -319,6 +319,7 @@ def run_radius_ablation(pipe, args, output_dir, token_upsampler, token_downsampl
         print(f"Radius {r:.2f} | Time: {end_time - start_time:.2f}s")
         
         image.save(os.path.join(output_dir, f"img_{r_idx_str}.png"))
+        exit()
 
 
 def run_position_ablation(pipe, args, output_dir, token_upsampler, token_downsampler):
@@ -457,6 +458,12 @@ if __name__ == "__main__":
                         help='Do not use learned components for TokenAE')
     parser.add_argument('--upsampler_normalization_type', type=str, default="gn", choices=["ada", "gn", "none"], help="Normalization type for token upsampler.")
     parser.add_argument('--downsampler_normalization_type', type=str, default="none", choices=["ada", "gn", "none"], help="Normalization type for token downsampler.")
+    parser.add_argument('--naive_upsample_mode', type=str, default="nearest", choices=["nearest", "bilinear"], help="Naive upsample mode for token upsampler.")
+    parser.add_argument('--naive_downsample_mode', type=str, default="nearest", choices=["nearest", "bilinear"], help="Naive downsample mode for token downsampler.")
+    parser.add_argument('--upsampler_variance_correction', default=None, type=float, help="Variance correction for token upsampler.")
+    parser.add_argument('--downsampler_variance_correction', default=None, type=float, help="Variance correction for token downsampler.")
+    parser.add_argument('--upsampler_num_res_blocks', type=int, default=10, help="Number of residual blocks for token upsampler.")
+    parser.add_argument('--downsampler_num_res_blocks', type=int, default=10, help="Number of residual blocks for token downsampler.")
 
     args = parser.parse_args()
     main(args)

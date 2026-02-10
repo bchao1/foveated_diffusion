@@ -199,6 +199,23 @@ class WandbModelLogger(ModelLogger):
             and pipe.token_downsampler is not None
         )
 
+    def _log_variance_correction(self, accelerator: Accelerator, model: torch.nn.Module):
+        """Log learned variance correction parameters from token_upsampler and token_downsampler."""
+        if not self._wandb_initialized:
+            return
+        unwrapped = accelerator.unwrap_model(model)
+        pipe = getattr(unwrapped, "pipe", None)
+        if pipe is None:
+            return
+        metrics = {}
+        for name, module in [("upsampler", getattr(pipe, "token_upsampler", None)), ("downsampler", getattr(pipe, "token_downsampler", None))]:
+            if module is not None and getattr(module, "variance_correction", None) is not None:
+                vc = module.variance_correction
+                if isinstance(vc, torch.nn.Parameter):
+                    metrics[f"train/variance_correction_{name}"] = vc.detach().float().item()
+        if metrics:
+            self.log_metrics(metrics)
+
     def _log_foveation_masks_once(self, pipe, height, width):
         """Visualize four foveation masks (left, right, top, bottom) once."""
         h, w = height // 16, width // 16
@@ -375,6 +392,10 @@ class WandbModelLogger(ModelLogger):
         # Log loss
         if loss is not None and accelerator.is_main_process:
             self.log_loss(loss)
+        
+        # Log learned variance correction (upsampler, downsampler) at every step
+        if accelerator.is_main_process:
+            self._log_variance_correction(accelerator, model)
         
         # Log additional metrics
         if kwargs and accelerator.is_main_process:
