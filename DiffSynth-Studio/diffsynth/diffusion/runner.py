@@ -33,7 +33,9 @@ def launch_training_task(
     )
 
     if has_token_ae and tokenAE_lr is not None:
-        token_ae_params = list(model.pipe.token_upsampler.parameters()) + list(model.pipe.token_downsampler.parameters())
+        up = getattr(model.pipe, "token_upsampler", None)
+        down = getattr(model.pipe, "token_downsampler", None)
+        token_ae_params = list(up.parameters()) + list(down.parameters()) if up and down else []
         token_ae_param_set = set(id(p) for p in token_ae_params)
         main_params = [p for p in model.trainable_modules() if id(p) not in token_ae_param_set]
         param_groups = [{"params": main_params, "lr": learning_rate, "weight_decay": weight_decay}]
@@ -60,6 +62,8 @@ def launch_training_task(
                 else:
                     loss = model(data)
                 accelerator.backward(loss)
+                print(accelerator.unwrap_model(model).pipe.token_upsampler.variance_correction)
+                print(accelerator.unwrap_model(model).pipe.token_downsampler.variance_correction)
                 optimizer.step()
                 model_logger.on_step_end(accelerator, model, save_steps, loss=loss)
                 scheduler.step()

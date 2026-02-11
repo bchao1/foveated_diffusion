@@ -69,7 +69,7 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         self.pipe = Flux2FoveatedImagePipeline.from_pretrained(torch_dtype=torch.bfloat16, device=device, model_configs=model_configs, tokenizer_config=tokenizer_config)
         self.pipe = self.split_pipeline_units(task, self.pipe, trainable_models, lora_base_model)
 
-        # set token upsampler and downsampler
+        # set token upsampler and downsampler (register as our children so they're in the module tree for optimizer/grads)
         self.pipe.token_upsampler = token_upsampler
         self.pipe.token_downsampler = token_downsampler
         self.token_ae_config = token_ae_config or {}
@@ -184,8 +184,16 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         torch.save(self.pipe.token_upsampler.state_dict(), os.path.join(path, "token_upsampler.pt"))
         torch.save(self.pipe.token_downsampler.state_dict(), os.path.join(path, "token_downsampler.pt"))
         if self.token_ae_config:
+            config_to_save = dict(self.token_ae_config)
+            # Overwrite with current learned variance_correction from the models (nn.Parameters updated during training)
+            up = self.pipe.token_upsampler
+            if getattr(up, "variance_correction", None) is not None and hasattr(up.variance_correction, "data"):
+                config_to_save["upsampler_variance_correction"] = up.variance_correction.detach().float().item()
+            down = self.pipe.token_downsampler
+            if getattr(down, "variance_correction", None) is not None and hasattr(down.variance_correction, "data"):
+                config_to_save["downsampler_variance_correction"] = down.variance_correction.detach().float().item()
             with open(os.path.join(path, "tokenAE_config.yaml"), "w") as f:
-                yaml.dump(self.token_ae_config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+                yaml.dump(config_to_save, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
     
     def forward(self, data, inputs=None):
         if inputs is None: inputs = self.get_pipeline_inputs(data)

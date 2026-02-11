@@ -186,12 +186,12 @@ class TokenDownsampler(nn.Module):
         if self.learn_residual:
             if self.naive_downsample_mode == "bilinear":
                 x_naive = F.avg_pool2d(x, kernel_size=2, stride=2)
-                if self.variance_correction is not None:
-                    x_naive *= self.variance_correction
             elif self.naive_downsample_mode == "nearest":
                 x_naive = F.interpolate(x, scale_factor=0.5, mode="nearest")
             else:
                 raise ValueError(f"Naive Downsample mode {self.naive_downsample_mode} is not supported!")
+            if self.variance_correction is not None:
+                x_naive = x_naive * self.variance_correction
         else:
             x_naive = 0
         
@@ -293,12 +293,12 @@ class TokenUpsampler(nn.Module):
         if self.learn_residual:
             if self.naive_upsample_mode == "bilinear":
                 x_naive = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
-                if self.variance_correction is not None:
-                    x_naive *= self.variance_correction
             elif self.naive_upsample_mode == "nearest":
                 x_naive = F.interpolate(x, scale_factor=2, mode="nearest")
             else:
                 raise ValueError(f"Naive Upsample mode {self.naive_upsample_mode} is not supported!")
+            if self.variance_correction is not None:
+                x_naive = x_naive * self.variance_correction
         else:
             x_naive = 0
 
