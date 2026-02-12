@@ -161,7 +161,7 @@ def load_token_ae(args, device):
         print(f"Using token AE config from {args.tokenAE_folder}/tokenAE_config.yaml")
         in_channels = cfg.get("in_channels", 32)
         feature_channels = cfg.get("feature_channels", 64)
-        embedding_dim = cfg.get("embedding_dim", 6144)
+        embedding_dim = cfg.get("embedding_dim", 3072)
         upsampler_num_res_blocks = cfg.get("upsampler_num_res_blocks", 10)
         downsampler_num_res_blocks = cfg.get("downsampler_num_res_blocks", 1)
         tokenAE_dont_use_learned_components = cfg.get("tokenAE_dont_use_learned_components", False)
@@ -501,7 +501,7 @@ if __name__ == "__main__":
     # TokenAE configuration (used when tokenAE_config.yaml not found)
     parser.add_argument('--in_channels', type=int, default=32, help='Token AE in_channels.')
     parser.add_argument('--feature_channels', type=int, default=64, help='Token AE feature_channels.')
-    parser.add_argument('--embedding_dim', type=int, default=6144, help='Token AE embedding_dim.')
+    parser.add_argument('--embedding_dim', type=int, default=3072, help='Token AE embedding_dim.')
     parser.add_argument('--tokenAE_dont_use_learned_components', action='store_true', default=False,
                         help='Do not use learned components for TokenAE')
     parser.add_argument('--upsampler_normalization_type', type=str, default="gn", choices=["ada", "gn", "none"], help="Normalization type for token upsampler.")

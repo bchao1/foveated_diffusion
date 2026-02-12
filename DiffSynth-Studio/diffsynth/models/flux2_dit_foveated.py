@@ -720,10 +720,9 @@ class Flux2DiTFoveated(torch.nn.Module):
 
         # 1. Calculate timestep embedding and modulation parameters
         timestep = timestep.to(hidden_states.dtype) * 1000
-
         if guidance is not None:
             guidance = guidance.to(hidden_states.dtype) * 1000
-
+        # 1000, 4000
         temb = self.time_guidance_embed(timestep, guidance)
 
         double_stream_mod_img = self.double_stream_modulation_img(temb)

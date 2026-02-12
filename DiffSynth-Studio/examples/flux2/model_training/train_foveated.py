@@ -30,7 +30,7 @@ def _token_ae_config_from_args(args):
     return {
         "in_channels": getattr(args, "in_channels", 32),
         "feature_channels": getattr(args, "feature_channels", 64),
-        "embedding_dim": getattr(args, "embedding_dim", 6144),
+        "embedding_dim": getattr(args, "embedding_dim", 3072),
         "upsampler_num_res_blocks": getattr(args, "upsampler_num_res_blocks", 10),
         "downsampler_num_res_blocks": getattr(args, "downsampler_num_res_blocks", 1),
         "tokenAE_dont_use_learned_components": getattr(args, "tokenAE_dont_use_learned_components", False),
@@ -210,7 +210,7 @@ def load_token_ae(args, device):
         print("Creating new TokenAE (untrained)")
         in_ch = getattr(args, "in_channels", 32)
         feat_ch = getattr(args, "feature_channels", 64)
-        emb_dim = getattr(args, "embedding_dim", 6144)
+        emb_dim = getattr(args, "embedding_dim", 3072)
         token_upsampler = TokenUpsampler(
             in_channels=in_ch,
             feature_channels=feat_ch,
@@ -270,7 +270,7 @@ def flux2_parser():
     parser.add_argument("--tokenAE_folder", type=str, default=None, help="Path to token AE folder.")
     parser.add_argument("--in_channels", type=int, default=32, help="Token AE in_channels (latent channels).")
     parser.add_argument("--feature_channels", type=int, default=64, help="Token AE feature_channels.")
-    parser.add_argument("--embedding_dim", type=int, default=6144, help="Token AE embedding_dim (FLUX2: 48*128).")
+    parser.add_argument("--embedding_dim", type=int, default=3072, help="Token AE embedding_dim (FLUX2: 48*128).")
     parser.add_argument("--upsampler_num_res_blocks", type=int, default=10, help="Number of residual blocks for token upsampler.")
     parser.add_argument("--downsampler_num_res_blocks", type=int, default=1, help="Number of residual blocks for token downsampler.")
     parser.add_argument("--tokenAE_dont_use_learned_components", action="store_true", help="Do not use learned components for token AE, only residual path.")

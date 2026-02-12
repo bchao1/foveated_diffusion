@@ -730,7 +730,10 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         
         for progress_id, timestep in enumerate(progress_bar_cmd(self.scheduler.timesteps)):
             timestep_val = timestep.unsqueeze(0).to(dtype=self.torch_dtype, device=self.device)
-            
+
+            # time guidance embedding
+            temb = get_time_guidance_embedding(self.dit, timestep_val, cfg_scale, self.torch_dtype, self.device)
+
             latents_high_res_step = latents.clone()
             
             # Get sigma for x0 prediction
@@ -753,7 +756,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
                     latent_width,
                     foveation_mask=foveation_mask,
                     token_downsampler=token_downsampler,
-                    temb=None,
+                    temb=temb
                 )
 
                 # Get low-res z_t for x0 prediction
@@ -811,7 +814,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
                     latent_width,
                     foveation_mask=foveation_mask,
                     token_upsampler=token_upsampler,
-                    temb=None,
+                    temb=temb,
                     sigma=sigma,
                     z_t_high=z_t_high_unpacked,
                     z_t_low=z_t_low_unpacked,
@@ -1243,3 +1246,10 @@ def model_fn_flux2_foveated(
     
     model_output = model_output[:, :image_seq_len]
     return model_output
+
+def get_time_guidance_embedding(dit, timestep, guidance, dtype, device):
+    timestep = timestep.to(dtype=dtype, device=device)
+    if guidance is not None:
+        guidance = torch.tensor([guidance]).to(dtype=dtype, device=device) * 1000
+    # 1000, 4000
+    return dit.time_guidance_embed(timestep, guidance)

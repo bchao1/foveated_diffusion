@@ -62,8 +62,6 @@ def launch_training_task(
                 else:
                     loss = model(data)
                 accelerator.backward(loss)
-                print(accelerator.unwrap_model(model).pipe.token_upsampler.variance_correction)
-                print(accelerator.unwrap_model(model).pipe.token_downsampler.variance_correction)
                 optimizer.step()
                 model_logger.on_step_end(accelerator, model, save_steps, loss=loss)
                 scheduler.step()
