@@ -40,6 +40,7 @@ def launch_training_task(
         main_params = [p for p in model.trainable_modules() if id(p) not in token_ae_param_set]
         param_groups = [{"params": main_params, "lr": learning_rate, "weight_decay": weight_decay}]
         if token_ae_params:
+            print(f"Using token AE learning rate: {tokenAE_lr}")
             param_groups.append({"params": token_ae_params, "lr": tokenAE_lr, "weight_decay": weight_decay})
         optimizer = torch.optim.AdamW(param_groups)
     else:
@@ -49,10 +50,13 @@ def launch_training_task(
     
     model, optimizer, dataloader, scheduler = accelerator.prepare(model, optimizer, dataloader, scheduler)
     tokenAE_train_steps = getattr(args, "tokenAE_train_steps", None) if args is not None else None
+    max_training_steps = getattr(args, "max_training_steps", None) if args is not None else None
     global_step = 0
 
     for epoch_id in range(num_epochs):
         for data in tqdm(dataloader):
+            if max_training_steps is not None and global_step >= max_training_steps:
+                break
             with accelerator.accumulate(model):
                 if hasattr(accelerator.unwrap_model(model), "set_training_phase"):
                     accelerator.unwrap_model(model).set_training_phase(global_step, tokenAE_train_steps)
@@ -66,6 +70,8 @@ def launch_training_task(
                 model_logger.on_step_end(accelerator, model, save_steps, loss=loss)
                 scheduler.step()
                 global_step += 1
+        if max_training_steps is not None and global_step >= max_training_steps:
+            break
         if save_steps is None:
             model_logger.on_epoch_end(accelerator, model, epoch_id)
     model_logger.on_training_end(accelerator, model, save_steps)

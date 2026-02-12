@@ -1,8 +1,8 @@
 export DIFFSYNTH_MODEL_BASE_PATH="/miele/brian/modelscope"
 cd ..
 
-exp_name="tokenAE_time_conditioning"
-
+for lr in 5e-4 1e-3 2e-3 5e-3; do
+exp_name="tokenAE_lr_$lr"
 accelerate launch train_foveated.py \
   --dataset_base_path /local/brian/Aesthetic-Train-V2/ \
   --dataset_metadata_path /local/brian/Aesthetic-Train-V2/metadata.csv \
@@ -13,9 +13,10 @@ accelerate launch train_foveated.py \
   --model_id_with_origin_paths "black-forest-labs/FLUX.2-klein-base-4B:text_encoder/*.safetensors,black-forest-labs/FLUX.2-klein-base-4B:transformer/*.safetensors,black-forest-labs/FLUX.2-klein-base-4B:vae/diffusion_pytorch_model.safetensors" \
   --tokenizer_path "black-forest-labs/FLUX.2-klein-base-4B:tokenizer/" \
   --learning_rate 1e-4 \
-  --tokenAE_learning_rate 1e-4 \
+  --tokenAE_learning_rate $lr \
   --tokenAE_train_steps 1000 \
   --num_epochs 1 \
+  --max_training_steps 4000 \
   --remove_prefix_in_ckpt "pipe.dit." \
   --output_path "/local/brian/foveated_diffusion/models/flux2_foveation/$exp_name" \
   --lora_base_model "dit" \
@@ -35,13 +36,13 @@ accelerate launch train_foveated.py \
   --save_steps 1000 \
   --task sft \
   --find_unused_parameters \
-  --upsampler_normalization_type "ada" \
-  --downsampler_normalization_type "ada" \
+  --upsampler_normalization_type "gn" \
+  --downsampler_normalization_type "none" \
   --upsampler_num_res_blocks 10 \
   --downsampler_num_res_blocks 1 \
   --naive_upsample_mode "nearest" \
   --naive_downsample_mode "nearest" \
   --upsampler_variance_correction 1.0 \
   --downsampler_variance_correction 1.0
-
+done
 cd lora

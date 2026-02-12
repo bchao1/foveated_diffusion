@@ -282,6 +282,7 @@ def flux2_parser():
     parser.add_argument("--downsampler_variance_correction", type=float, default=1.0, help="Variance correction for token downsampler.")
     parser.add_argument("--naive_upsample_mode", type=str, default="nearest", choices=["nearest", "bilinear"], help="Naive upsample mode for token upsampler.")
     parser.add_argument("--naive_downsample_mode", type=str, default="nearest", choices=["nearest", "bilinear"], help="Naive downsample mode for token downsampler.")
+    parser.add_argument("--max_training_steps", type=int, default=None, help="Stop training after this many steps. None = train for full num_epochs.")
     
     return parser
 
