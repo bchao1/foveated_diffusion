@@ -617,6 +617,9 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         sigma = self.scheduler.sigmas[timestep_id].to(dtype=latents.dtype, device=latents.device)
         sigma = sigma.view(1, 1, 1, 1)
 
+        # timestep and guidance embedding
+        temb = get_time_guidance_embedding(self.dit, timestep, inputs["embedded_guidance"], self.torch_dtype, self.device)
+
         # z_t high-res unpacked
         latents_spatial = latents.view(batch_size, latent_height, latent_width, -1).permute(0, 3, 1, 2)
         z_t_high_unpacked = self._unpatchify_latents(latents_spatial)
@@ -624,7 +627,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         # Downsample latents for DiT
         latents_input = self._downsample_latents(
             latents, latent_height, latent_width,
-            foveation_mask=foveation_mask, token_downsampler=token_downsampler, temb=None
+            foveation_mask=foveation_mask, token_downsampler=token_downsampler, temb=temb
         )
         z_t_low_packed = self._downsample_remaining_high_res(
             latents_input, latent_height, latent_width, foveation_mask=foveation_mask
@@ -653,7 +656,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         # Upsample to full resolution
         noise_pred = self._upsample_x0_pred_unpacked(
             noise_pred, latent_height, latent_width,
-            foveation_mask=foveation_mask, token_upsampler=token_upsampler, temb=None,
+            foveation_mask=foveation_mask, token_upsampler=token_upsampler, temb=temb,
             sigma=sigma, z_t_high=z_t_high_unpacked, z_t_low=z_t_low_unpacked,
         )
         noise_pred = self._patchify_latents(noise_pred)
@@ -732,7 +735,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
             timestep_val = timestep.unsqueeze(0).to(dtype=self.torch_dtype, device=self.device)
 
             # time guidance embedding
-            temb = get_time_guidance_embedding(self.dit, timestep_val, cfg_scale, self.torch_dtype, self.device)
+            temb = get_time_guidance_embedding(self.dit, timestep_val, embedded_guidance, self.torch_dtype, self.device)
 
             latents_high_res_step = latents.clone()
             

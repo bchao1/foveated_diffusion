@@ -1,8 +1,8 @@
 export DIFFSYNTH_MODEL_BASE_PATH="/miele/brian/modelscope"
 cd ..
 
-for rank in 128; do
-exp_name="lora_with_tokenAE_nn_warmup_rank_$rank"
+exp_name="tokenAE_time_conditioning"
+
 accelerate launch train_foveated.py \
   --dataset_base_path /local/brian/Aesthetic-Train-V2/ \
   --dataset_metadata_path /local/brian/Aesthetic-Train-V2/metadata.csv \
@@ -20,7 +20,7 @@ accelerate launch train_foveated.py \
   --output_path "/local/brian/foveated_diffusion/models/flux2_foveation/$exp_name" \
   --lora_base_model "dit" \
   --lora_target_modules "to_q,to_k,to_v,to_out.0,add_q_proj,add_k_proj,add_v_proj,to_add_out,linear_in,linear_out,to_qkv_mlp_proj,single_transformer_blocks.0.attn.to_out,single_transformer_blocks.1.attn.to_out,single_transformer_blocks.2.attn.to_out,single_transformer_blocks.3.attn.to_out,single_transformer_blocks.4.attn.to_out,single_transformer_blocks.5.attn.to_out,single_transformer_blocks.6.attn.to_out,single_transformer_blocks.7.attn.to_out,single_transformer_blocks.8.attn.to_out,single_transformer_blocks.9.attn.to_out,single_transformer_blocks.10.attn.to_out,single_transformer_blocks.11.attn.to_out,single_transformer_blocks.12.attn.to_out,single_transformer_blocks.13.attn.to_out,single_transformer_blocks.14.attn.to_out,single_transformer_blocks.15.attn.to_out,single_transformer_blocks.16.attn.to_out,single_transformer_blocks.17.attn.to_out,single_transformer_blocks.18.attn.to_out,single_transformer_blocks.19.attn.to_out" \
-  --lora_rank $rank \
+  --lora_rank 32 \
   --use_gradient_checkpointing \
   --dataset_num_workers 8 \
   --use_wandb \
@@ -35,13 +35,13 @@ accelerate launch train_foveated.py \
   --save_steps 1000 \
   --task sft \
   --find_unused_parameters \
-  --upsampler_normalization_type "gn" \
-  --downsampler_normalization_type "none" \
+  --upsampler_normalization_type "ada" \
+  --downsampler_normalization_type "ada" \
   --upsampler_num_res_blocks 10 \
   --downsampler_num_res_blocks 1 \
   --naive_upsample_mode "nearest" \
   --naive_downsample_mode "nearest" \
   --upsampler_variance_correction 1.0 \
   --downsampler_variance_correction 1.0
-done
+
 cd lora
