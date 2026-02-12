@@ -7,8 +7,8 @@ Convert JSONL to CSV format.
 import json
 import csv
 
-input_jsonl_path = "/miele/brian/data/Aesthetic-Train-V2/metadata.jsonl"
-output_csv_path = "/local/brian/Aesthetic-Train-V2/metadata.csv"
+input_jsonl_path = "/scratch/m000051-pm05/brianchc_2/Aesthetic-Train-V2/metadata.jsonl"
+output_csv_path = "/scratch/m000051-pm05/brianchc_2/Aesthetic-Train-V2/metadata.csv"
 
 # Read JSONL and write to CSV
 with open(input_jsonl_path, 'r') as jsonl_file, open(output_csv_path, 'w', newline='') as csv_file:
