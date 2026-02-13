@@ -31,14 +31,50 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../image_ge
 from diffsynth.pipelines.flux2_image_foveated import Flux2FoveatedImagePipeline
 from diffsynth.pipelines.flux2_image import Flux2ImagePipeline, ModelConfig
 
-# Import Token Upsampler/Downsampler from image_generation
+# Import Token Upsampler/Downsampler from image_generation (adapter arch)
 try:
     from adapter_foveation_time_cond import TokenDownsampler, TokenUpsampler
 except ImportError:
-    print("Warning: Could not import TokenUpsampler/TokenDownsampler from adapter_foveation_time_cond")
-    print("Make sure the file is in the path or provide pre-trained weights via --tokenAE_folder")
     TokenUpsampler = None
     TokenDownsampler = None
+
+# Import Flux2 Token AE (flux2 arch)
+try:
+    from diffsynth.models.flux2_token_ae import Flux2TokenDownsampler, Flux2TokenUpsampler
+except ImportError:
+    Flux2TokenDownsampler = None
+    Flux2TokenUpsampler = None
+
+# Config keys saved by train_tokenAE_pretrain.py (for loading tokenAE_config.yaml)
+TOKEN_AE_CONFIG_KEYS = {
+    "tokenAE_arch",
+    "in_channels",
+    "feature_channels",
+    "embedding_dim",
+    "upsampler_num_res_blocks",
+    "downsampler_num_res_blocks",
+    "tokenAE_dont_use_learned_components",
+    "upsampler_normalization_type",
+    "downsampler_normalization_type",
+    "upsampler_variance_correction",
+    "downsampler_variance_correction",
+    "naive_upsample_mode",
+    "naive_downsample_mode",
+    "flux2_naive_downsample_mode",
+    "flux2_resnet_eps",
+    "flux2_resnet_act_fn",
+    "flux2_resnet_groups",
+    "flux2_downsampler_add_norm_act_before_conv_out",
+    "flux2_upsampler_add_norm_act_before_conv_out",
+    "flux2_upsampler_num_pre_upsampler_res_blocks",
+    "flux2_upsampler_naive_upsample_mode",
+    "flux2_downsampler_add_attention",
+    "flux2_downsampler_attention_head_dim",
+    "flux2_downsampler_attn_groups",
+    "flux2_upsampler_add_attention",
+    "flux2_upsampler_attention_head_dim",
+    "flux2_upsampler_attn_groups",
+}
 
 
 def create_foveation_mask(
@@ -134,99 +170,115 @@ def load_pipeline(args, use_foveated_pipeline=True):
     return pipe
 
 
-def load_token_ae_config(tokenAE_folder):
-    """Load token AE config from tokenAE_config.yaml if present. Returns None if not found or invalid."""
-    if tokenAE_folder is None:
-        return None
-    path = os.path.join(tokenAE_folder, "tokenAE_config.yaml")
-    if not os.path.isfile(path):
-        return None
-    try:
-        with open(path, "r") as f:
-            cfg = yaml.safe_load(f)
-        return cfg if isinstance(cfg, dict) else None
-    except Exception as e:
-        print(f"Warning: Could not load tokenAE_config.yaml: {e}")
-        return None
+def _load_token_ae_config_from_folder(folder):
+    """Load tokenAE_config.yaml from checkpoint folder. Returns {} if not found."""
+    if folder is None:
+        return {}
+    for name in ("tokenAE_config.yaml", "tokenAE_config.yml"):
+        path = os.path.join(folder, name)
+        if os.path.isfile(path):
+            try:
+                with open(path) as f:
+                    cfg = yaml.safe_load(f)
+                return cfg if isinstance(cfg, dict) else {}
+            except Exception as e:
+                print(f"Warning: Could not load {name}: {e}")
+                return {}
+    return {}
+
+
+def _get_cfg(cfg, args, key, default=None):
+    """Get value from config, else args, else default."""
+    if cfg is not None and key in cfg:
+        return cfg[key]
+    return getattr(args, key, default)
 
 
 def load_token_ae(args, device):
-    """Load TokenUpsampler and TokenDownsampler. Uses tokenAE_config.yaml if present, else argparse defaults."""
-    if TokenUpsampler is None or TokenDownsampler is None:
-        print("No TokenAE class provided, using base model")
-        return None, None
-
-    cfg = load_token_ae_config(args.tokenAE_folder)
-    if cfg is not None:
+    """Load TokenUpsampler and TokenDownsampler. Supports adapter and flux2 architectures.
+    Uses tokenAE_config.yaml from tokenAE_folder when present; otherwise argparse defaults."""
+    # Load config from folder if available
+    saved_cfg = _load_token_ae_config_from_folder(args.tokenAE_folder)
+    if saved_cfg:
         print(f"Using token AE config from {args.tokenAE_folder}/tokenAE_config.yaml")
-        in_channels = cfg.get("in_channels", 32)
-        feature_channels = cfg.get("feature_channels", 64)
-        embedding_dim = cfg.get("embedding_dim", 3072)
-        upsampler_num_res_blocks = cfg.get("upsampler_num_res_blocks", 10)
-        downsampler_num_res_blocks = cfg.get("downsampler_num_res_blocks", 1)
-        tokenAE_dont_use_learned_components = cfg.get("tokenAE_dont_use_learned_components", False)
-        upsampler_normalization_type = cfg.get("upsampler_normalization_type", "gn")
-        downsampler_normalization_type = cfg.get("downsampler_normalization_type", "none")
-        upsampler_variance_correction = cfg.get("upsampler_variance_correction", None)
-        downsampler_variance_correction = cfg.get("downsampler_variance_correction", None)
-        naive_upsample_mode = cfg.get("naive_upsample_mode", "nearest")
-        naive_downsample_mode = cfg.get("naive_downsample_mode", "nearest")
-    else:
-        print("Creating TokenAE from argparse defaults (no tokenAE_config.yaml found)")
-        in_channels = getattr(args, "in_channels", 32)
-        feature_channels = getattr(args, "feature_channels", 64)
-        embedding_dim = getattr(args, "embedding_dim", 6144)
-        upsampler_num_res_blocks = args.upsampler_num_res_blocks
-        downsampler_num_res_blocks = args.downsampler_num_res_blocks
-        tokenAE_dont_use_learned_components = args.tokenAE_dont_use_learned_components
-        upsampler_normalization_type = args.upsampler_normalization_type
-        downsampler_normalization_type = args.downsampler_normalization_type
-        upsampler_variance_correction = args.upsampler_variance_correction
-        downsampler_variance_correction = args.downsampler_variance_correction
-        naive_upsample_mode = args.naive_upsample_mode
-        naive_downsample_mode = args.naive_downsample_mode
+        # Apply saved config to args for consistent getattr
+        for key in TOKEN_AE_CONFIG_KEYS:
+            if key in saved_cfg:
+                setattr(args, key, saved_cfg[key])
 
-    token_upsampler = TokenUpsampler(
-        in_channels=in_channels,
-        feature_channels=feature_channels,
-        embedding_dim=embedding_dim,
-        num_res_blocks=upsampler_num_res_blocks,
-        naive_upsample_mode=naive_upsample_mode,
-        learn_residual=True,
-        variance_correction=upsampler_variance_correction,
-        normalization_type=upsampler_normalization_type,
-        use_learned_components=not tokenAE_dont_use_learned_components,
-    )
-    token_downsampler = TokenDownsampler(
-        in_channels=in_channels,
-        feature_channels=feature_channels,
-        embedding_dim=embedding_dim,
-        num_res_blocks=downsampler_num_res_blocks,
-        naive_downsample_mode=naive_downsample_mode,
-        learn_residual=True,
-        variance_correction=downsampler_variance_correction,
-        normalization_type=downsampler_normalization_type,
-        use_learned_components=not tokenAE_dont_use_learned_components,
-    )
+    arch = getattr(args, "tokenAE_arch", "adapter")
+
+    if arch == "flux2":
+        if Flux2TokenDownsampler is None or Flux2TokenUpsampler is None:
+            print("Flux2TokenAE not found (diffsynth.models.flux2_token_ae). Using base model.")
+            return None, None
+        # Build config dict for from_config (saved_cfg + args fallback)
+        cfg = dict(saved_cfg) if saved_cfg else {}
+        for key in TOKEN_AE_CONFIG_KEYS:
+            if key not in cfg and hasattr(args, key):
+                cfg[key] = getattr(args, key)
+        token_upsampler = Flux2TokenUpsampler.from_config(cfg)
+        token_downsampler = Flux2TokenDownsampler.from_config(cfg)
+        print(f"Created Flux2 TokenAE (in_channels={cfg.get('in_channels', 32)})")
+    else:
+        if TokenUpsampler is None or TokenDownsampler is None:
+            print("TokenUpsampler/TokenDownsampler not found (adapter_foveation_time_cond). Using base model.")
+            return None, None
+        in_channels = _get_cfg(saved_cfg, args, "in_channels", 32)
+        feature_channels = _get_cfg(saved_cfg, args, "feature_channels", 64)
+        embedding_dim = _get_cfg(saved_cfg, args, "embedding_dim", 3072)
+        upsampler_num_res_blocks = _get_cfg(saved_cfg, args, "upsampler_num_res_blocks", 10)
+        downsampler_num_res_blocks = _get_cfg(saved_cfg, args, "downsampler_num_res_blocks", 1)
+        tokenAE_dont_use_learned_components = _get_cfg(saved_cfg, args, "tokenAE_dont_use_learned_components", False)
+        upsampler_normalization_type = _get_cfg(saved_cfg, args, "upsampler_normalization_type", "gn")
+        downsampler_normalization_type = _get_cfg(saved_cfg, args, "downsampler_normalization_type", "none")
+        upsampler_variance_correction = _get_cfg(saved_cfg, args, "upsampler_variance_correction")
+        downsampler_variance_correction = _get_cfg(saved_cfg, args, "downsampler_variance_correction")
+        naive_upsample_mode = _get_cfg(saved_cfg, args, "naive_upsample_mode", "nearest")
+        naive_downsample_mode = _get_cfg(saved_cfg, args, "naive_downsample_mode", "nearest")
+        token_upsampler = TokenUpsampler(
+            in_channels=in_channels,
+            feature_channels=feature_channels,
+            embedding_dim=embedding_dim,
+            num_res_blocks=upsampler_num_res_blocks,
+            naive_upsample_mode=naive_upsample_mode,
+            learn_residual=True,
+            variance_correction=upsampler_variance_correction,
+            normalization_type=upsampler_normalization_type,
+            use_learned_components=not tokenAE_dont_use_learned_components,
+        )
+        token_downsampler = TokenDownsampler(
+            in_channels=in_channels,
+            feature_channels=feature_channels,
+            embedding_dim=embedding_dim,
+            num_res_blocks=downsampler_num_res_blocks,
+            naive_downsample_mode=naive_downsample_mode,
+            learn_residual=True,
+            variance_correction=downsampler_variance_correction,
+            normalization_type=downsampler_normalization_type,
+            use_learned_components=not tokenAE_dont_use_learned_components,
+        )
+        if not saved_cfg:
+            print("Creating adapter TokenAE from argparse defaults (no tokenAE_config.yaml found)")
 
     if args.tokenAE_folder is not None:
-        print(f"Loading TokenAE from {args.tokenAE_folder}")
-        token_upsampler.load_state_dict(torch.load(
-            os.path.join(args.tokenAE_folder, "token_upsampler.pt"), 
-            map_location='cpu', 
-            weights_only=False
-        ))
-        token_downsampler.load_state_dict(torch.load(
-            os.path.join(args.tokenAE_folder, "token_downsampler.pt"), 
-            map_location='cpu', 
-            weights_only=False
-        ))
+        up_path = os.path.join(args.tokenAE_folder, "token_upsampler.pt")
+        down_path = os.path.join(args.tokenAE_folder, "token_downsampler.pt")
+        if os.path.isfile(up_path) and os.path.isfile(down_path):
+            print(f"Loading TokenAE weights from {args.tokenAE_folder}")
+            token_upsampler.load_state_dict(
+                torch.load(up_path, map_location="cpu", weights_only=False)
+            )
+            token_downsampler.load_state_dict(
+                torch.load(down_path, map_location="cpu", weights_only=False)
+            )
+        else:
+            print("Warning: token_upsampler.pt or token_downsampler.pt not found, using untrained weights.")
     else:
-        print("Not loading TokenAE checkpoints, using non-trained version.")
-    
+        print("Not loading TokenAE checkpoints, using untrained weights.")
+
     token_upsampler = token_upsampler.to(device).to(torch.bfloat16)
     token_downsampler = token_downsampler.to(device).to(torch.bfloat16)
-    
     return token_upsampler, token_downsampler
 
 
@@ -468,7 +520,9 @@ if __name__ == "__main__":
     parser.add_argument('--model_id', type=str, default="black-forest-labs/FLUX.2-klein-base-4B",
                         help='HuggingFace model ID for FLUX2')
     parser.add_argument('--tokenAE_folder', default=None, type=str,
-                        help='Folder containing pre-trained token_upsampler.pt and token_downsampler.pt')
+                        help='Folder containing pre-trained token_upsampler.pt, token_downsampler.pt, and tokenAE_config.yaml')
+    parser.add_argument('--tokenAE_arch', type=str, default="adapter", choices=["adapter", "flux2"],
+                        help='TokenAE architecture. Overridden by tokenAE_config.yaml when loading from tokenAE_folder.')
     parser.add_argument('--lora_checkpoint', default=None, type=str, help='Path to the LoRA .safetensors checkpoint')
     
     
@@ -512,6 +566,24 @@ if __name__ == "__main__":
     parser.add_argument('--downsampler_variance_correction', default=None, type=float, help="Variance correction for token downsampler.")
     parser.add_argument('--upsampler_num_res_blocks', type=int, default=10, help="Number of residual blocks for token upsampler.")
     parser.add_argument('--downsampler_num_res_blocks', type=int, default=10, help="Number of residual blocks for token downsampler.")
+
+    # Flux2 TokenAE config (used when tokenAE_arch=flux2; overridden by tokenAE_config.yaml)
+    parser.add_argument('--flux2_naive_downsample_mode', type=str, default=None,
+                        help="Flux2 downsampler: None=learned, 'nearest'/'bilinear'=fixed interpolate.")
+    parser.add_argument('--flux2_resnet_eps', type=float, default=1e-6)
+    parser.add_argument('--flux2_resnet_act_fn', type=str, default="swish")
+    parser.add_argument('--flux2_resnet_groups', type=int, default=32)
+    parser.add_argument('--flux2_downsampler_add_norm_act_before_conv_out', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--flux2_upsampler_add_norm_act_before_conv_out', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--flux2_upsampler_num_pre_upsampler_res_blocks', type=int, default=0)
+    parser.add_argument('--flux2_upsampler_naive_upsample_mode', type=str, default=None, choices=["nearest", "bilinear"],
+                        help="Add residual path: output = naive_upsample(input) + network_output.")
+    parser.add_argument('--flux2_downsampler_add_attention', action='store_true', default=False)
+    parser.add_argument('--flux2_downsampler_attention_head_dim', type=int, default=None)
+    parser.add_argument('--flux2_downsampler_attn_groups', type=int, default=None)
+    parser.add_argument('--flux2_upsampler_add_attention', action='store_true', default=False)
+    parser.add_argument('--flux2_upsampler_attention_head_dim', type=int, default=None)
+    parser.add_argument('--flux2_upsampler_attn_groups', type=int, default=None)
 
     args = parser.parse_args()
     main(args)

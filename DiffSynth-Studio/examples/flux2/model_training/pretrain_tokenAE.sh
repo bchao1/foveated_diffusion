@@ -1,21 +1,29 @@
 export DIFFSYNTH_MODEL_BASE_PATH="/miele/brian/modelscope"
+export DIFFSYNTH_SKIP_DOWNLOAD=True
+
+exp_name="flux2_tokenAE_pretrain_down_nearest_up_learned"
 accelerate launch train_tokenAE_pretrain.py \
   --dataset_base_path /local/brian/Aesthetic-Train-V2/ \
   --dataset_metadata_path /local/brian/Aesthetic-Train-V2/metadata.csv \
   --model_id_with_origin_paths "black-forest-labs/FLUX.2-klein-base-4B:text_encoder/*.safetensors,black-forest-labs/FLUX.2-klein-base-4B:transformer/*.safetensors,black-forest-labs/FLUX.2-klein-base-4B:vae/diffusion_pytorch_model.safetensors" \
   --tokenizer_path "black-forest-labs/FLUX.2-klein-base-4B:tokenizer/" \
   --data_file_keys image \
-  --output_path /local/brian/foveated_diffusion/tokenAE_pretrain \
+  --output_path /local/brian/foveated_diffusion/tokenAE_pretrain_flux2_arch/$exp_name \
   --use_wandb \
   --wandb_project tokenAE-pretrain \
   --log_steps 100 \
   --save_steps 1000 \
   --num_epochs 5 \
-  --upsampler_normalization_type "gn" \
-  --downsampler_normalization_type "none" \
+  --tokenAE_arch "flux2" \
   --upsampler_num_res_blocks 10 \
-  --downsampler_num_res_blocks 1 \
-  --naive_upsample_mode "bilinear" \
-  --naive_downsample_mode "bilinear" \
-  --upsampler_variance_correction 1.0 \
-  --downsampler_variance_correction 1.0
+  --flux2_naive_downsample_mode "nearest" \
+  --wandb_run_name $exp_name
+
+#  --upsampler_normalization_type "gn" \
+#  --downsampler_normalization_type "none" \
+#  --upsampler_num_res_blocks 10 \
+#  --downsampler_num_res_blocks 1 \
+#  --naive_upsample_mode "bilinear" \
+#  --naive_downsample_mode "bilinear" \
+#  --upsampler_variance_correction 1.0 \
+#  --downsampler_variance_correction 1.0
