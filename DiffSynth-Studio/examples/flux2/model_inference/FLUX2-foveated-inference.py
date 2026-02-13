@@ -194,6 +194,16 @@ def _get_cfg(cfg, args, key, default=None):
     return getattr(args, key, default)
 
 
+def count_token_ae_params(token_upsampler, token_downsampler):
+    """Count and print total parameters of token upsampler and downsampler."""
+    def _count(m):
+        return sum(p.numel() for p in m.parameters()) if m is not None else 0
+    up_params = _count(token_upsampler)
+    down_params = _count(token_downsampler)
+    total = up_params + down_params
+    print(f"TokenAE params: upsampler={up_params:,}, downsampler={down_params:,}, total={total:,}")
+
+
 def load_token_ae(args, device):
     """Load TokenUpsampler and TokenDownsampler. Supports adapter and flux2 architectures.
     Uses tokenAE_config.yaml from tokenAE_folder when present; otherwise argparse defaults."""
@@ -492,7 +502,9 @@ def main(args):
     
     # Load TokenAE
     token_upsampler, token_downsampler = load_token_ae(args, device)
-    
+    if token_upsampler is not None and token_downsampler is not None:
+        count_token_ae_params(token_upsampler, token_downsampler)
+
     # Run selected experiment
     if args.experiment == "baseline":
         run_baseline(pipe, args, output_dir)
