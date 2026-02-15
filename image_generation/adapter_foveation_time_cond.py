@@ -134,6 +134,7 @@ class TokenDownsampler(nn.Module):
             self.variance_correction = nn.Parameter(torch.ones(1) * self.variance_correction, requires_grad=True)
         else:
             self.variance_correction = None
+        print("Downsampler variance correction: ", self.variance_correction)
         
         # 1. Learned Branch (CNN)
         self.res_blocks = []
@@ -246,6 +247,7 @@ class TokenUpsampler(nn.Module):
             self.variance_correction = nn.Parameter(torch.ones(1) * self.variance_correction, requires_grad=True)
         else:
             self.variance_correction = None
+        print("Upsampler variance correction: ", self.variance_correction)
         
         # 1. Learned Branch (CNN)
         self.res_blocks = []
