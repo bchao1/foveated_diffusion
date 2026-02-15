@@ -1,4 +1,4 @@
-exp_name="lora_rank_64"
+exp_name="lora_rank_128"
 root_folder="/scratch/m000051-pm05/brianchc_2"
 
 accelerate launch \
@@ -20,7 +20,7 @@ accelerate launch \
   --output_path "${root_folder}/foveated_diffusion/experiments/${exp_name}" \
   --lora_base_model "dit" \
   --lora_target_modules "to_q,to_k,to_v,to_out.0,add_q_proj,add_k_proj,add_v_proj,to_add_out,linear_in,linear_out,to_qkv_mlp_proj,single_transformer_blocks.0.attn.to_out,single_transformer_blocks.1.attn.to_out,single_transformer_blocks.2.attn.to_out,single_transformer_blocks.3.attn.to_out,single_transformer_blocks.4.attn.to_out,single_transformer_blocks.5.attn.to_out,single_transformer_blocks.6.attn.to_out,single_transformer_blocks.7.attn.to_out,single_transformer_blocks.8.attn.to_out,single_transformer_blocks.9.attn.to_out,single_transformer_blocks.10.attn.to_out,single_transformer_blocks.11.attn.to_out,single_transformer_blocks.12.attn.to_out,single_transformer_blocks.13.attn.to_out,single_transformer_blocks.14.attn.to_out,single_transformer_blocks.15.attn.to_out,single_transformer_blocks.16.attn.to_out,single_transformer_blocks.17.attn.to_out,single_transformer_blocks.18.attn.to_out,single_transformer_blocks.19.attn.to_out" \
-  --lora_rank 64 \
+  --lora_rank 32 \
   --use_gradient_checkpointing \
   --dataset_num_workers 8 \
   --use_wandb \
@@ -35,11 +35,10 @@ accelerate launch \
   --save_steps 1000 \
   --task sft \
   --find_unused_parameters \
-  --upsampler_normalization_type "gn" \
-  --downsampler_normalization_type "none" \
+  --tokenAE_arch "adapter" \
   --upsampler_num_res_blocks 10 \
-  --downsampler_num_res_blocks 1 \
-  --naive_upsample_mode "nearest" \
-  --naive_downsample_mode "nearest" \
-  --upsampler_variance_correction 1.0 \
-  --downsampler_variance_correction 1.0
+  --downsampler_num_res_blocks 2 \
+  --naive_upsample_mode "bilinear" \
+  --naive_downsample_mode "bilinear" \
+  --upsampler_normalization_type "gn" \
+  --downsampler_normalization_type "none"
