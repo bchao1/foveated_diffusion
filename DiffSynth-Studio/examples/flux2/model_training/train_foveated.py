@@ -104,6 +104,8 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         offload_models=None,
         device="cpu",
         task="sft",
+        prediction_type="clean",
+        detach_z_mix=False,
     ):
         super().__init__()
         # Load models
@@ -116,6 +118,8 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         self.pipe.token_upsampler = token_upsampler
         self.pipe.token_downsampler = token_downsampler
         self.token_ae_config = token_ae_config or {}
+        self.detach_z_mix = detach_z_mix
+        print("<Flux2FoveatedImageTrainingModule> ===> Detach z_mix: {}".format(self.detach_z_mix))
 
         # Build effective trainable models: trainable_models + lora_base_model + token AE (if present)
         parts = []
@@ -143,6 +147,7 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         self.extra_inputs = extra_inputs.split(",") if extra_inputs is not None else []
         self.fp8_models = fp8_models
         self.task = task
+        self.prediction_type = prediction_type
         self.task_to_loss = {
             "sft:data_process": lambda pipe, *args: args,
             "direct_distill:data_process": lambda pipe, *args: args,
@@ -206,6 +211,7 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
             "rand_device": self.pipe.device,
             "use_gradient_checkpointing": self.use_gradient_checkpointing,
             "use_gradient_checkpointing_offload": self.use_gradient_checkpointing_offload,
+            "prediction_type": self.prediction_type,
         }
         inputs_shared = self.parse_extra_inputs(data, self.extra_inputs, inputs_shared)
         return inputs_shared, inputs_posi, inputs_nega
@@ -320,7 +326,7 @@ def load_token_ae(args, device):
             learn_residual=True,
             use_learned_components=not args.tokenAE_dont_use_learned_components,
             normalization_type=args.upsampler_normalization_type,
-            variance_correction=args.upsampler_variance_correction,
+            variance_correction=args.upsampler_variance_correction
         )
         token_downsampler = TokenDownsampler(
             in_channels=in_ch,
@@ -331,14 +337,17 @@ def load_token_ae(args, device):
             learn_residual=True,
             use_learned_components=not args.tokenAE_dont_use_learned_components,
             normalization_type=args.downsampler_normalization_type,
-            variance_correction=args.downsampler_variance_correction,
+            variance_correction=args.downsampler_variance_correction
         )
         print("<load_token_ae> ===> Loaded adapter token AE")
 
     if args.tokenAE_folder is not None:
         token_upsampler.load_state_dict(torch.load(os.path.join(args.tokenAE_folder, "token_upsampler.pt"), map_location="cpu"))
         token_downsampler.load_state_dict(torch.load(os.path.join(args.tokenAE_folder, "token_downsampler.pt"), map_location="cpu"))
-
+        print("<load_token_ae> ===> Loaded token AE weights from {}".format(args.tokenAE_folder))
+    # explicitly set variance correction to None
+    token_upsampler.variance_correction = None
+    token_downsampler.variance_correction = None
     return token_upsampler.to(device).to(torch.bfloat16), token_downsampler.to(device).to(torch.bfloat16)
 
 def flux2_parser():
@@ -379,6 +388,8 @@ def flux2_parser():
     parser.add_argument("--naive_upsample_mode", type=str, default="nearest", choices=["nearest", "bilinear"], help="Naive upsample mode for token upsampler (adapter only).")
     parser.add_argument("--naive_downsample_mode", type=str, default="nearest", choices=["nearest", "bilinear"], help="Naive downsample mode for token downsampler (adapter only).")
     parser.add_argument("--max_training_steps", type=int, default=None, help="Stop training after this many steps. None = train for full num_epochs.")
+    parser.add_argument("--prediction_type", type=str, default="clean", choices=["clean", "flow"], help="Prediction type for token AE: clean or flow.")
+    parser.add_argument("--detach_z_mix", action="store_true", help="Detach z_mix from the model.")
 
     # Flux2 TokenAE config (used when tokenAE_arch=flux2; overridden by tokenAE_config.yaml)
     parser.add_argument("--flux2_naive_downsample_mode", type=str, default=None,
@@ -447,6 +458,8 @@ if __name__ == "__main__":
         offload_models=args.offload_models,
         task=args.task,
         device=accelerator.device,
+        prediction_type=args.prediction_type,
+        detach_z_mix=args.detach_z_mix,
     )
     # Create logger (WandB or standard)
     if args.use_wandb:
@@ -467,6 +480,7 @@ if __name__ == "__main__":
                 "num_inference_steps": args.num_inference_steps,
                 "cfg_scale": args.cfg_scale,
                 "seed": args.seed,
+                "prediction_type": args.prediction_type,
             },
         )
     else:
