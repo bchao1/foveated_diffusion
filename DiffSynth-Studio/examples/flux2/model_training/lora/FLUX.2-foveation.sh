@@ -2,8 +2,8 @@ export DIFFSYNTH_MODEL_BASE_PATH="/miele/brian/modelscope"
 export DIFFSYNTH_SKIP_DOWNLOAD=True
 cd ..
 
-for lr in 2e-4 5e-4 2e-3 5e-3; do
-exp_name="adapter_tokenAE_lr_$lr"
+exp_name="adapter_tokenAE_z_mix_detach"
+
 accelerate launch train_foveated.py \
   --dataset_base_path /local/brian/Aesthetic-Train-V2/ \
   --dataset_metadata_path /local/brian/Aesthetic-Train-V2/metadata.csv \
@@ -14,14 +14,14 @@ accelerate launch train_foveated.py \
   --model_id_with_origin_paths "black-forest-labs/FLUX.2-klein-base-4B:text_encoder/*.safetensors,black-forest-labs/FLUX.2-klein-base-4B:transformer/*.safetensors,black-forest-labs/FLUX.2-klein-base-4B:vae/diffusion_pytorch_model.safetensors" \
   --tokenizer_path "black-forest-labs/FLUX.2-klein-base-4B:tokenizer/" \
   --learning_rate 1e-4 \
-  --tokenAE_learning_rate $lr \
+  --tokenAE_learning_rate 1e-4 \
   --tokenAE_train_steps 1000 \
   --num_epochs 1 \
   --remove_prefix_in_ckpt "pipe.dit." \
   --output_path "/local/brian/foveated_diffusion/models/flux2_foveation/$exp_name" \
   --lora_base_model "dit" \
   --lora_target_modules "to_q,to_k,to_v,to_out.0,add_q_proj,add_k_proj,add_v_proj,to_add_out,linear_in,linear_out,to_qkv_mlp_proj,single_transformer_blocks.0.attn.to_out,single_transformer_blocks.1.attn.to_out,single_transformer_blocks.2.attn.to_out,single_transformer_blocks.3.attn.to_out,single_transformer_blocks.4.attn.to_out,single_transformer_blocks.5.attn.to_out,single_transformer_blocks.6.attn.to_out,single_transformer_blocks.7.attn.to_out,single_transformer_blocks.8.attn.to_out,single_transformer_blocks.9.attn.to_out,single_transformer_blocks.10.attn.to_out,single_transformer_blocks.11.attn.to_out,single_transformer_blocks.12.attn.to_out,single_transformer_blocks.13.attn.to_out,single_transformer_blocks.14.attn.to_out,single_transformer_blocks.15.attn.to_out,single_transformer_blocks.16.attn.to_out,single_transformer_blocks.17.attn.to_out,single_transformer_blocks.18.attn.to_out,single_transformer_blocks.19.attn.to_out" \
-  --lora_rank 64 \
+  --lora_rank 32 \
   --use_gradient_checkpointing \
   --dataset_num_workers 8 \
   --use_wandb \
@@ -39,9 +39,11 @@ accelerate launch train_foveated.py \
   --tokenAE_arch "adapter" \
   --upsampler_num_res_blocks 10 \
   --downsampler_num_res_blocks 2 \
-  --naive_upsample_mode "bilinear" \
-  --naive_downsample_mode "bilinear" \
+  --naive_upsample_mode bilinear \
+  --naive_downsample_mode bilinear \
   --upsampler_normalization_type "gn" \
-  --downsampler_normalization_type "none"
-done
+  --downsampler_normalization_type "none" \
+  --prediction_type "clean" \
+  --detach_z_mix
+
 cd lora

@@ -305,6 +305,7 @@ def run_baseline(pipe, args, output_dir):
         num_inference_steps=args.num_inference_steps,
         cfg_scale=args.guidance_scale,
         foveation_mask=None,
+        prediction_type=args.prediction_type,
     )
     
     image.save(os.path.join(output_dir, "img_baseline.png"))
@@ -356,6 +357,13 @@ def run_circular_experiment(pipe, args, output_dir, token_upsampler, token_downs
         torch.cuda.empty_cache()
         start_time = time.time()
         
+        vis_kwargs = {}
+        foveation_mask_to_use = foveation_mask_high.squeeze().to(pipe.device)
+        if getattr(args, "save_vis_vlow_x0", False):
+            vis_kwargs["vis_vlow_x0_folder"] = os.path.join(output_dir, "vis_vlow_x0")
+            if getattr(args, "vis_vlow_x0_steps", None):
+                vis_kwargs["vis_vlow_x0_steps"] = [int(x) for x in args.vis_vlow_x0_steps.split(",")]
+            foveation_mask_to_use = torch.zeros(args.height // 16, args.width // 16, device=pipe.device, dtype=torch.float32)
         image = pipe(
             prompt=args.prompt,
             height=args.height,
@@ -364,10 +372,12 @@ def run_circular_experiment(pipe, args, output_dir, token_upsampler, token_downs
             rand_device="cuda",
             num_inference_steps=args.num_inference_steps,
             cfg_scale=args.guidance_scale,
-            foveation_mask=foveation_mask_high.squeeze().to(pipe.device),
+            foveation_mask=foveation_mask_to_use,
             token_upsampler=token_upsampler,
             token_downsampler=token_downsampler,
             decode_mode=args.decode_mode,
+            prediction_type=args.prediction_type,
+            **vis_kwargs,
         )
         
         end_time = time.time()
@@ -408,6 +418,13 @@ def run_radius_ablation(pipe, args, output_dir, token_upsampler, token_downsampl
         torch.cuda.empty_cache()
         start_time = time.time()
         
+        vis_kwargs = {}
+        foveation_mask_to_use = foveation_mask_high.squeeze().to(pipe.device)
+        if getattr(args, "save_vis_vlow_x0", False):
+            vis_kwargs["vis_vlow_x0_folder"] = os.path.join(output_dir, "vis_vlow_x0")
+            if getattr(args, "vis_vlow_x0_steps", None):
+                vis_kwargs["vis_vlow_x0_steps"] = [int(x) for x in args.vis_vlow_x0_steps.split(",")]
+            foveation_mask_to_use = torch.zeros(args.height // 16, args.width // 16, device=pipe.device, dtype=torch.float32)
         image = pipe(
             prompt=args.prompt,
             height=args.height,
@@ -416,10 +433,12 @@ def run_radius_ablation(pipe, args, output_dir, token_upsampler, token_downsampl
             rand_device="cuda",
             num_inference_steps=args.num_inference_steps,
             cfg_scale=args.guidance_scale,
-            foveation_mask=foveation_mask_high.squeeze().to(pipe.device),
+            foveation_mask=foveation_mask_to_use,
             token_upsampler=token_upsampler,
             token_downsampler=token_downsampler,
             decode_mode=args.decode_mode,
+            prediction_type=args.prediction_type,
+            **vis_kwargs,
         )
         
         end_time = time.time()
@@ -457,6 +476,13 @@ def run_position_ablation(pipe, args, output_dir, token_upsampler, token_downsam
             
             torch.cuda.empty_cache()
             
+            vis_kwargs = {}
+            foveation_mask_to_use = foveation_mask_high.squeeze().to(pipe.device)
+            if getattr(args, "save_vis_vlow_x0", False):
+                vis_kwargs["vis_vlow_x0_folder"] = os.path.join(output_dir, "vis_vlow_x0")
+                if getattr(args, "vis_vlow_x0_steps", None):
+                    vis_kwargs["vis_vlow_x0_steps"] = [int(x) for x in args.vis_vlow_x0_steps.split(",")]
+                foveation_mask_to_use = torch.zeros(args.height // 16, args.width // 16, device=pipe.device, dtype=torch.float32)
             image = pipe(
                 prompt=args.prompt,
                 height=args.height,
@@ -465,10 +491,12 @@ def run_position_ablation(pipe, args, output_dir, token_upsampler, token_downsam
                 rand_device="cuda",
                 num_inference_steps=args.num_inference_steps,
                 cfg_scale=args.guidance_scale,
-                foveation_mask=foveation_mask_high.squeeze().to(pipe.device),
+                foveation_mask=foveation_mask_to_use,
                 token_upsampler=token_upsampler,
                 token_downsampler=token_downsampler,
                 decode_mode=args.decode_mode,
+                prediction_type=args.prediction_type,
+                **vis_kwargs,
             )
             
             image.save(os.path.join(output_dir, f"img_{x_idx}_{y_idx}.png"))
@@ -551,8 +579,14 @@ if __name__ == "__main__":
     # Output configuration
     parser.add_argument('--output_dir', type=str, default='./outputs/flux2_foveated_diffsynth',
                         help='Directory to save generated images')
+    parser.add_argument('--save_vis_vlow_x0', action='store_true',
+                        help='Save v_low_unpacked and x0_low RGB visualizations to output_dir/vis_vlow_x0 at specific denoising steps.')
+    parser.add_argument('--vis_vlow_x0_steps', type=str, default=None,
+                        help='Comma-separated step indices to save (e.g. "0,12,25,37,49"). Default: first, 25%%, 50%%, 75%%, last.')
     parser.add_argument('--decode_mode', type=str, default="direct", choices=["direct", "merge"],
                         help='VAE decode mode: direct or merge')
+    parser.add_argument('--prediction_type', type=str, default="clean", choices=["clean", "flow"],
+                        help='Prediction type for token AE: clean or flow')
     
     # Experiment configuration
     parser.add_argument('--experiment', type=str, default="circular",

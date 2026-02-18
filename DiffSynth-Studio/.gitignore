@@ -13,6 +13,7 @@
 *.mv
 log*.txt
 ./results
+./paper_figures
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -278,7 +278,8 @@ class WandbModelLogger(ModelLogger):
                 inputs_shared["input_latents"] = input_latents
                 inputs_shared["foveation_mask"] = foveation_mask
                 inputs = dict(inputs_shared, **inputs_posi)
-                noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id)
+                prediction_type = self.validation_kwargs.get("prediction_type", "clean")
+                noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id, prediction_type)
                 target_vis = _unpatchify_for_vis(training_target, latent_height, latent_width)
                 pred_vis = _unpatchify_for_vis(noise_pred, latent_height, latent_width)
                 l2_error = (target_vis - pred_vis).pow(2).sum(dim=1, keepdim=True).sqrt()

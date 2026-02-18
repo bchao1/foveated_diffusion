@@ -71,7 +71,8 @@ def FoveatedFlowMatchSFTLoss(pipe: BasePipeline, **inputs):
         h, w = height // 16, width // 16
         foveation_mask = _create_random_foveation_mask(h, w, pipe.device, pipe.torch_dtype)
         inputs["foveation_mask"] = foveation_mask
-        noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id)
+        prediction_type = inputs.get("prediction_type", "clean")
+        noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id, prediction_type)
     else:
         # Fallback to standard Flow Matching
         models = {name: getattr(pipe, name) for name in pipe.in_iteration_models}
@@ -113,14 +114,15 @@ def FoveatedDistillLoss(pipe: BasePipeline, **inputs):
         width = inputs["width"]
         h, w = height // 16, width // 16
         foveation_mask = _create_random_foveation_mask(h, w, pipe.device, pipe.torch_dtype)
+        prediction_type = inputs.get("prediction_type", "clean")
 
         # unfoveated training target
         inputs["foveation_mask"] = None
-        training_target = pipe.foveated_training_forward(inputs, timestep, timestep_id)
+        training_target = pipe.foveated_training_forward(inputs, timestep, timestep_id, prediction_type)
 
         # foveated prediction
         inputs["foveation_mask"] = foveation_mask
-        noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id)
+        noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id, prediction_type)
     else:
         # Fallback to standard Flow Matching
         models = {name: getattr(pipe, name) for name in pipe.in_iteration_models}

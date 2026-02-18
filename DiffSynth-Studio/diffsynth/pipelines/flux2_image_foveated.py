@@ -11,7 +11,10 @@ Key features:
 - CRPA attention for efficient mixed-resolution attention
 """
 
+import os
 import torch
+import matplotlib
+matplotlib.use("Agg")
 import math
 import torchvision
 import numpy as np
@@ -70,6 +73,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
 
         # fixed latent for tracking validation
         self.fixed_clean_latent = None
+        self.detach_z_mix = False
 
         self.model_fn = model_fn_flux2_foveated
         
@@ -477,6 +481,62 @@ class Flux2FoveatedImagePipeline(BasePipeline):
 
         return final_output.reshape(batch_size, height * width, channels)
 
+    def _save_vlow_x0_vis(
+        self,
+        v_low_unpacked: torch.Tensor,
+        x_0_low: Optional[torch.Tensor],
+        save_folder: str,
+        progress_id: int,
+        prediction_type: str,
+    ):
+        """Save v_low_unpacked and x_0_low using viridis (value) and inferno (spatial gradient/edges) colormaps."""
+        import matplotlib.cm as mpl_cm
+        viridis = mpl_cm.get_cmap("viridis")
+        inferno = mpl_cm.get_cmap("inferno")
+
+        def _to_scalar(t: torch.Tensor):
+            """Reduce first 3 channels to scalar: L2 norm per pixel."""
+            x = t[:, :3].float().detach().cpu()
+            return (x ** 2).sum(dim=1, keepdim=True).sqrt().squeeze(1)
+
+        def _spatial_gradient_mag(t: torch.Tensor):
+            """Compute spatial gradient magnitude (edges). Input [B, C, H, W], output [B, H, W]."""
+            x = t[:, :3].float().detach().cpu().mean(dim=1)
+            gx = F.pad(x[:, :, 1:] - x[:, :, :-1], (0, 1), mode="replicate")
+            gy = F.pad(x[:, 1:] - x[:, :-1], (0, 0, 0, 1), mode="replicate")
+            return (gx ** 2 + gy ** 2).sqrt()
+
+        tensors_to_save = [("v_low", v_low_unpacked)]
+        if x_0_low is not None and prediction_type == "clean":
+            tensors_to_save.append(("x0_low", x_0_low))
+
+        all_scalars = [_to_scalar(t) for _, t in tensors_to_save]
+        vmin = float(min(s.min().item() for s in all_scalars))
+        vmax = float(max(s.max().item() for s in all_scalars))
+        if vmax - vmin < 1e-8:
+            vmax = vmin + 1e-8
+
+        os.makedirs(save_folder, exist_ok=True)
+        for (name, t), scalar in zip(tensors_to_save, all_scalars):
+            for b in range(t.shape[0]):
+                s = scalar[b].numpy()
+                s_norm = (s - vmin) / (vmax - vmin)
+                s_norm = np.clip(s_norm, 0, 1)
+                rgb_viridis = (viridis(s_norm)[:, :, :3] * 255).astype(np.uint8)
+                img_v = Image.fromarray(rgb_viridis).resize((512, 512), Image.NEAREST)
+                path_v = os.path.join(save_folder, f"step_{progress_id:04d}_{name}_b{b}.png")
+                img_v.save(path_v)
+
+                grad = _spatial_gradient_mag(t[b:b + 1]).squeeze(0).numpy()
+                gmin, gmax = float(grad.min()), float(grad.max())
+                if gmax - gmin < 1e-8:
+                    gmax = gmin + 1e-8
+                grad_norm = np.clip((grad - gmin) / (gmax - gmin), 0, 1)
+                rgb_inferno = (inferno(grad_norm)[:, :, :3] * 255).astype(np.uint8)
+                img_g = Image.fromarray(rgb_inferno).resize((512, 512), Image.NEAREST)
+                path_g = os.path.join(save_folder, f"step_{progress_id:04d}_{name}_grad_b{b}.png")
+                img_g.save(path_g)
+
     def _upsample_x0_pred_unpacked(
         self,
         noise_pred: torch.Tensor,
@@ -488,6 +548,10 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         sigma: Optional[torch.Tensor] = None,
         z_t_high: Optional[torch.Tensor] = None,
         z_t_low: Optional[torch.Tensor] = None,
+        prediction_type: str = "clean",
+        vis_save_folder: Optional[str] = None,
+        progress_id: Optional[int] = None,
+        vis_save_steps: Optional[List[int]] = None,
     ):
         """
         Upsample using X0 (clean image) prediction domain.
@@ -522,19 +586,38 @@ class Flux2FoveatedImagePipeline(BasePipeline):
 
         h_2, w_2 = latent_height // 2, latent_width // 2
         v_low_spatial = v_low_packed.view(batch_size, h_2, w_2, channels).permute(0, 3, 1, 2)
-        v_low_unpacked = self._unpatchify_latents(v_low_spatial)
+        v_low_unpacked = self._unpatchify_latents(v_low_spatial) # VISUALIZE
 
+        ## sigma calculation
         if sigma.dim() == 1:
             sigma = sigma.view(-1, 1, 1, 1)
         elif sigma.dim() == 2:
             sigma = sigma.view(sigma.shape[0], 1, 1, 1)
-
-        x_0_low = z_t_low - sigma * v_low_unpacked
-
-        x_0_high_upsampled = token_upsampler(x_0_low, temb=temb, foveation_mask=foveation_mask)
-
         sigma_clamped = sigma.clamp(min=1e-6)
-        v_high_from_upsampler = (z_t_high - x_0_high_upsampled) / sigma_clamped
+        ## sigma calculation end
+
+        if prediction_type == "clean":
+            if self.detach_z_mix:
+                z_t_low = z_t_low.detach()
+            x_0_low = z_t_low - sigma * v_low_unpacked
+            x_0_high_upsampled = token_upsampler(x_0_low, temb=temb, foveation_mask=foveation_mask)
+            v_high_from_upsampler = (z_t_high - x_0_high_upsampled) / sigma_clamped
+        elif prediction_type == "flow":
+            x_0_low = None
+            v_high_from_upsampler = token_upsampler(v_low_unpacked, temb=temb, foveation_mask=foveation_mask)
+        else:
+            raise ValueError(f"Invalid prediction type: {prediction_type}")
+
+        if vis_save_folder is not None and progress_id is not None:
+            save_steps = set(vis_save_steps) if vis_save_steps is not None else {0}
+            if progress_id in save_steps:
+                self._save_vlow_x0_vis(
+                    v_low_unpacked,
+                    x_0_low,
+                    vis_save_folder,
+                    progress_id,
+                    prediction_type,
+                )
 
         # HIGH-RES REGIONS: Keep Original DiT Predictions
         h_2, w_2 = latent_height // 2, latent_width // 2
@@ -578,7 +661,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
 
         return final_output
 
-    def foveated_training_forward(self, inputs: dict, timestep: torch.Tensor, timestep_id: int):
+    def foveated_training_forward(self, inputs: dict, timestep: torch.Tensor, timestep_id: int, prediction_type: str):
         """
         Single-step foveated forward for training. Used by FoveatedFlowMatchSFTLoss.
         Downsamples latents with foveation, runs DiT, upsamples output to full resolution.
@@ -658,6 +741,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
             noise_pred, latent_height, latent_width,
             foveation_mask=foveation_mask, token_upsampler=token_upsampler, temb=temb,
             sigma=sigma, z_t_high=z_t_high_unpacked, z_t_low=z_t_low_unpacked,
+            prediction_type=prediction_type,
         )
         noise_pred = self._patchify_latents(noise_pred)
         noise_pred = rearrange(noise_pred, "B C H W -> B (H W) C")
@@ -689,6 +773,9 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         token_upsampler: Optional[torch.nn.Module] = None,
         token_downsampler: Optional[torch.nn.Module] = None,
         decode_mode: str = "direct",
+        prediction_type: str = "clean",
+        vis_vlow_x0_folder: Optional[str] = None,
+        vis_vlow_x0_steps: Optional[List[int]] = None,
     ):
         """
         Generate images with optional foveated rendering.
@@ -702,6 +789,10 @@ class Flux2FoveatedImagePipeline(BasePipeline):
             decode_mode: "direct" or "merge" for VAE decoding.
         """
         self.scheduler.set_timesteps(num_inference_steps, denoising_strength=denoising_strength, dynamic_shift_len=height//16*width//16)
+
+        if vis_vlow_x0_folder is not None and vis_vlow_x0_steps is None:
+            n = len(self.scheduler.timesteps)
+            vis_vlow_x0_steps = [0, n // 4, n // 2, 3 * n // 4, n - 1] if n >= 5 else list(range(n))
 
         # Prepare latent dimensions
         latent_height = height // 16
@@ -821,6 +912,10 @@ class Flux2FoveatedImagePipeline(BasePipeline):
                     sigma=sigma,
                     z_t_high=z_t_high_unpacked,
                     z_t_low=z_t_low_unpacked,
+                    prediction_type=prediction_type,
+                    vis_save_folder=vis_vlow_x0_folder,
+                    progress_id=progress_id,
+                    vis_save_steps=vis_vlow_x0_steps,
                 )
                 # Pack back
                 noise_pred = self._patchify_latents(noise_pred)
