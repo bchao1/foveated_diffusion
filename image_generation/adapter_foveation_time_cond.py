@@ -342,7 +342,7 @@ class TokenUpsampler(nn.Module):
 
 # FLUX2 DiT constants (match flux2_dit.Flux2DiT)
 #_FLUX2_PATCH_TOKEN_DIM = 128  # patchified latent: 32 * 4 (token dimension)
-_FLUX2_DIT_HEADS = 8
+_FLUX2_DIT_HEADS = 1
 _FLUX2_DIT_HEAD_DIM = 128
 _FLUX2_DIT_INNER_DIM = _FLUX2_DIT_HEADS * _FLUX2_DIT_HEAD_DIM
 _FLUX2_DIT_MLP_RATIO = 3.0

@@ -2,7 +2,7 @@ export DIFFSYNTH_MODEL_BASE_PATH="/miele/brian/modelscope"
 export DIFFSYNTH_SKIP_DOWNLOAD=True
 cd ..
 
-exp_name="dit_tokenAE_1_block_no_temb_refiner"
+exp_name="dit_tokenAE_1_block_1_head_no_temb"
 
 accelerate launch train_foveated.py \
   --dataset_base_path /local/brian/Aesthetic-Train-V2/ \
@@ -47,6 +47,6 @@ accelerate launch train_foveated.py \
   --downsampler_num_dit_blocks 1 \
   --upsampler_dit_use_temb "false" \
   --downsampler_dit_use_temb "false" \
-  --prediction_type "refiner" \
-  --use_as_refiner "true"
+  --prediction_type "clean" \
+  --use_as_refiner "false"
 cd lora
