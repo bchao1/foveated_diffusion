@@ -133,7 +133,7 @@ class TokenDownsampler(nn.Module):
         use_learned_components=True,
         variance_correction=None,
         normalization_type: Literal["ada", "gn", "none"] = "gn",
-        naive_downsample_mode: Literal["nearest", "bilinear"] = "nearest",
+        naive_downsample_mode: Literal["nearest", "bilinear", "bicubic"] = "nearest",
     ):
         super().__init__()
 
@@ -200,9 +200,11 @@ class TokenDownsampler(nn.Module):
         # Check if your specific VAE/DiT expects variance correction. Standard here:
         if self.learn_residual:
             if self.naive_downsample_mode == "bilinear":
-                x_naive = F.avg_pool2d(x, kernel_size=2, stride=2)
+                x_naive = F.interpolate(x, scale_factor=0.5, mode="bilinear", align_corners=False)
             elif self.naive_downsample_mode == "nearest":
                 x_naive = F.interpolate(x, scale_factor=0.5, mode="nearest")
+            elif self.naive_downsample_mode == "bicubic":
+                x_naive = F.interpolate(x, scale_factor=0.5, mode="bicubic", align_corners=False)
             else:
                 raise ValueError(f"Naive Downsample mode {self.naive_downsample_mode} is not supported!")
             if self.variance_correction is not None:
@@ -311,6 +313,8 @@ class TokenUpsampler(nn.Module):
                 x_naive = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
             elif self.naive_upsample_mode == "nearest":
                 x_naive = F.interpolate(x, scale_factor=2, mode="nearest")
+            elif self.naive_upsample_mode == "bicubic":
+                x_naive = F.interpolate(x, scale_factor=2, mode="bicubic", align_corners=False)
             else:
                 raise ValueError(f"Naive Upsample mode {self.naive_upsample_mode} is not supported!")
             if self.variance_correction is not None:
@@ -337,10 +341,10 @@ class TokenUpsampler(nn.Module):
 # ---------------------------------------------------------------------------
 
 # FLUX2 DiT constants (match flux2_dit.Flux2DiT)
-_FLUX2_PATCH_TOKEN_DIM = 128  # patchified latent: 32 * 4
-_FLUX2_DIT_INNER_DIM = 48 * 128  # 6144
-_FLUX2_DIT_HEADS = 48
+#_FLUX2_PATCH_TOKEN_DIM = 128  # patchified latent: 32 * 4 (token dimension)
+_FLUX2_DIT_HEADS = 8
 _FLUX2_DIT_HEAD_DIM = 128
+_FLUX2_DIT_INNER_DIM = _FLUX2_DIT_HEADS * _FLUX2_DIT_HEAD_DIM
 _FLUX2_DIT_MLP_RATIO = 3.0
 _FLUX2_ROPE_AXES_DIM = (32, 32, 32, 32)  # T, H, W, L
 _FLUX2_ROPE_THETA = 2000
@@ -400,11 +404,12 @@ class TokenDiTUpsampler(nn.Module):
         use_temb: bool = True,
         rope_theta: int = _FLUX2_ROPE_THETA,
         rope_axes_dim: Tuple[int, ...] = _FLUX2_ROPE_AXES_DIM,
-        inner_dim: int = _FLUX2_DIT_INNER_DIM,
         num_heads: int = _FLUX2_DIT_HEADS,
         head_dim: int = _FLUX2_DIT_HEAD_DIM,
         mlp_ratio: float = _FLUX2_DIT_MLP_RATIO,
         eps: float = 1e-6,
+        naive_upsample_mode: Literal["nearest", "bilinear", "bicubic"] = "bilinear",
+        use_as_refiner: bool = False,
     ):
         super().__init__()
         if not _HAS_FLUX2_DIT:
@@ -413,20 +418,23 @@ class TokenDiTUpsampler(nn.Module):
         self.in_channels = in_channels
         self.token_dim = in_channels * 4  # 128
         self.use_temb = use_temb
+        self.inner_dim = num_heads * head_dim
         self.num_dit_blocks = num_dit_blocks
+        self.naive_upsample_mode = naive_upsample_mode
+        self.use_as_refiner = use_as_refiner
 
-        self.x_embedder = nn.Linear(self.token_dim, inner_dim, bias=False)
-        self.proj_out = nn.Linear(inner_dim, self.token_dim, bias=False)
+        self.x_embedder = nn.Linear(self.token_dim, self.inner_dim, bias=False)
+        self.proj_out = nn.Linear(self.inner_dim, self.token_dim, bias=False)
 
         self.pos_embed = Flux2PosEmbed(theta=rope_theta, axes_dim=list(rope_axes_dim))
         if use_temb:
-            self.modulation = Flux2Modulation(inner_dim, mod_param_sets=1, bias=False)
+            self.modulation = Flux2Modulation(self.inner_dim, mod_param_sets=1, bias=False)
         else:
             self.modulation = None
 
         self.blocks = nn.ModuleList([
             Flux2SingleTransformerBlock(
-                dim=inner_dim,
+                dim=self.inner_dim,
                 num_attention_heads=num_heads,
                 attention_head_dim=head_dim,
                 mlp_ratio=mlp_ratio,
@@ -436,19 +444,32 @@ class TokenDiTUpsampler(nn.Module):
             for _ in range(num_dit_blocks)
         ])
 
+        # init projection for 0 residual connection
+        nn.init.zeros_(self.proj_out.weight)
+
     def forward(self, x: torch.Tensor, temb: Optional[torch.Tensor] = None, foveation_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if self.use_as_refiner:
+            shortcut = x # x is already high-res latents
+        else:
+            if self.naive_upsample_mode == "bilinear":
+                x = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
+            elif self.naive_upsample_mode == "nearest":
+                x = F.interpolate(x, scale_factor=2, mode="nearest")
+            elif self.naive_upsample_mode == "bicubic":
+                x = F.interpolate(x, scale_factor=2, mode="bicubic", align_corners=False)
+            else:
+                raise ValueError(f"Naive Upsample mode {self.naive_upsample_mode} is not supported!")
+            shortcut = x
+
         # x: [B, 32, H, W] -> patchified sequence [B, S, 128]
         seq, h, w = _patchify_spatial_to_sequence(x)
         b, s, d = seq.shape
 
-        # Expand sequence 2x per dim: repeat each token 4x -> [B, 4*S, 128]
-        seq_exp = seq.repeat_interleave(4, dim=1)
-
         # Project to inner dim
-        hidden = self.x_embedder(seq_exp)
+        hidden = self.x_embedder(seq)
 
-        # RoPE for expanded grid (2h x 2w)
-        pos_ids = _make_position_ids_2d(2 * h, 2 * w, hidden.device, hidden.dtype)
+        # RoPE for grid (h x w)
+        pos_ids = _make_position_ids_2d(h, w, hidden.device, hidden.dtype)
         image_rotary_emb = self.pos_embed(pos_ids)
 
         # Optional time modulation
@@ -473,7 +494,7 @@ class TokenDiTUpsampler(nn.Module):
             )
 
         out = self.proj_out(hidden)
-        return _unpatchify_sequence_to_spatial(out, 2 * h, 2 * w)
+        return _unpatchify_sequence_to_spatial(out, h, w) + shortcut
 
 
 class TokenDiTDownsampler(nn.Module):
@@ -491,12 +512,11 @@ class TokenDiTDownsampler(nn.Module):
         use_temb: bool = True,
         rope_theta: int = _FLUX2_ROPE_THETA,
         rope_axes_dim: Tuple[int, ...] = _FLUX2_ROPE_AXES_DIM,
-        inner_dim: int = _FLUX2_DIT_INNER_DIM,
         num_heads: int = _FLUX2_DIT_HEADS,
         head_dim: int = _FLUX2_DIT_HEAD_DIM,
         mlp_ratio: float = _FLUX2_DIT_MLP_RATIO,
         eps: float = 1e-6,
-        merge_mode: Literal["mean", "linear"] = "mean",
+        naive_downsample_mode: Literal["nearest", "bilinear", "bicubic"] = "bilinear",
     ):
         super().__init__()
         if not _HAS_FLUX2_DIT:
@@ -504,22 +524,24 @@ class TokenDiTDownsampler(nn.Module):
         assert in_channels == 32
         self.in_channels = in_channels
         self.token_dim = in_channels * 4
+        self.inner_dim = num_heads * head_dim
         self.use_temb = use_temb
         self.num_dit_blocks = num_dit_blocks
-        self.merge_mode = merge_mode
+        self.naive_downsample_mode = naive_downsample_mode
 
-        self.x_embedder = nn.Linear(self.token_dim, inner_dim, bias=False)
-        self.proj_out = nn.Linear(inner_dim, self.token_dim, bias=False)
+        self.x_embedder = nn.Linear(self.token_dim, self.inner_dim, bias=False)
+        # Single projection: reduce seq 4x then 4*inner_dim -> token_dim
+        self.proj_out = nn.Linear(4 * self.inner_dim, self.token_dim, bias=False)
 
         self.pos_embed = Flux2PosEmbed(theta=rope_theta, axes_dim=list(rope_axes_dim))
         if use_temb:
-            self.modulation = Flux2Modulation(inner_dim, mod_param_sets=1, bias=False)
+            self.modulation = Flux2Modulation(self.inner_dim, mod_param_sets=1, bias=False)
         else:
             self.modulation = None
 
         self.blocks = nn.ModuleList([
             Flux2SingleTransformerBlock(
-                dim=inner_dim,
+                dim=self.inner_dim,
                 num_attention_heads=num_heads,
                 attention_head_dim=head_dim,
                 mlp_ratio=mlp_ratio,
@@ -528,11 +550,19 @@ class TokenDiTDownsampler(nn.Module):
             )
             for _ in range(num_dit_blocks)
         ])
-
-        if merge_mode == "linear":
-            self.merge = nn.Linear(self.token_dim * 4, self.token_dim, bias=False)
+        # init projection for 0 residual connection
+        nn.init.zeros_(self.proj_out.weight)
 
     def forward(self, x: torch.Tensor, temb: Optional[torch.Tensor] = None, foveation_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if self.naive_downsample_mode == "bilinear":
+            shortcut = F.interpolate(x, scale_factor=0.5, mode="bilinear", align_corners=False)
+        elif self.naive_downsample_mode == "nearest":
+            shortcut = F.interpolate(x, scale_factor=0.5, mode="nearest")
+        elif self.naive_downsample_mode == "bicubic":
+            shortcut = F.interpolate(x, scale_factor=0.5, mode="bicubic", align_corners=False)
+        else:
+            raise ValueError(f"Naive Downsample mode {self.naive_downsample_mode} is not supported!")
+
         seq, h, w = _patchify_spatial_to_sequence(x)
         b, s, d = seq.shape
         assert h % 2 == 0 and w % 2 == 0, "Height and width must be even for 2x downsampling."
@@ -561,18 +591,10 @@ class TokenDiTDownsampler(nn.Module):
                 image_rotary_emb=image_rotary_emb,
             )
 
-        hidden = self.proj_out(hidden)
-        # Merge 2x2: [B, h*w, 128] -> [B, (h/2)*(w/2), 128]
-        hidden = hidden.view(b, h, w, d)
-        hidden = hidden.view(b, h // 2, 2, w // 2, 2, d)
-        if self.merge_mode == "mean":
-            hidden = hidden.mean(dim=(2, 4))
-        else:
-            hidden = hidden.permute(0, 1, 3, 2, 4, 5).reshape(b, h // 2 * w // 2, d * 4)
-            hidden = self.merge(hidden)
-        # hidden [B, h/2, w/2, 128] -> sequence [B, (h/2)*(w/2), 128]
-        seq_low = hidden.reshape(b, -1, d)
-        return _unpatchify_sequence_to_spatial(seq_low, h // 2, w // 2)
+        # Reduce seq by 4x: [B, S, inner_dim] -> [B, S/4, 4*inner_dim], then project and unpatchify
+        hidden = hidden.view(b, s // 4, 4, self.inner_dim).reshape(b, s // 4, 4 * self.inner_dim)
+        seq_low = self.proj_out(hidden)
+        return _unpatchify_sequence_to_spatial(seq_low, h // 2, w // 2) + shortcut
 
 
 def count_parameters(model):
@@ -587,8 +609,20 @@ if __name__ == "__main__":
     
     # Check for CUDA availability
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    x = torch.randn(1, 128, 64, 64).to(device)
+    x = torch.randn(1, 32, 128, 128).to(device)
 
+    downsampler = TokenDiTDownsampler(in_channels=32, num_dit_blocks=1, use_temb=False).to(device)
+    upsampler = TokenDiTUpsampler(in_channels=32, num_dit_blocks=1, use_temb=False).to(device)
+    x_down = downsampler(x)
+    print("x_down.shape: ", x_down.shape)
+    x_up = upsampler(x_down)
+    print("x_up.shape: ", x_up.shape)
+    
+    # count parameters
+    count_parameters(downsampler)
+    count_parameters(upsampler)
+
+    """
     # Instantiate
     downsampler = TokenDownsampler(in_channels=128, out_channels=128, embedding_dim=3072, num_res_blocks=2).to(device)
     upsampler = TokenUpsampler(in_channels=128, out_channels=128, embedding_dim=3072, num_res_blocks=2, naive_upsample_mode="nearest").to(device)
@@ -619,3 +653,5 @@ if __name__ == "__main__":
     # print number of parameters in M
     count_parameters(downsampler)
     count_parameters(upsampler)
+
+    """

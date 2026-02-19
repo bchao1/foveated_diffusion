@@ -605,6 +605,12 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         elif prediction_type == "flow":
             x_0_low = None
             v_high_from_upsampler = token_upsampler(v_low_unpacked, temb=temb, foveation_mask=foveation_mask)
+        elif prediction_type == "refiner":
+            # the token "upsampler" is actually a refiner that refines high-res latents
+            x_0_low = z_t_low - sigma * v_low_unpacked
+            x_0_high_bicubic = F.interpolate(x_0_low, size=(pixel_height, pixel_width), mode='bicubic', align_corners=False)
+            v_high_coarse = (z_t_high - x_0_high_bicubic) / sigma_clamped
+            v_high_from_upsampler = token_upsampler(v_high_coarse, temb=temb, foveation_mask=foveation_mask) # not actually upsampling, just DiT block
         else:
             raise ValueError(f"Invalid prediction type: {prediction_type}")
 
@@ -652,7 +658,6 @@ class Flux2FoveatedImagePipeline(BasePipeline):
             size=(pixel_height, pixel_width),
             mode='nearest'
         ).squeeze().bool()
-
         final_output = torch.where(
             foveation_mask_upsampled.to(device),
             v_high_original.to(device),

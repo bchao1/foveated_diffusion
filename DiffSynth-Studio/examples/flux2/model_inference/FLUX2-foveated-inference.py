@@ -31,12 +31,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../image_ge
 from diffsynth.pipelines.flux2_image_foveated import Flux2FoveatedImagePipeline
 from diffsynth.pipelines.flux2_image import Flux2ImagePipeline, ModelConfig
 
-# Import Token Upsampler/Downsampler from image_generation (adapter arch)
+# Import Token Upsampler/Downsampler from image_generation (adapter and dit arch)
 try:
-    from adapter_foveation_time_cond import TokenDownsampler, TokenUpsampler
+    from adapter_foveation_time_cond import (
+        TokenDownsampler,
+        TokenUpsampler,
+        TokenDiTUpsampler,
+        TokenDiTDownsampler,
+    )
 except ImportError:
     TokenUpsampler = None
     TokenDownsampler = None
+    TokenDiTUpsampler = None
+    TokenDiTDownsampler = None
 
 # Import Flux2 Token AE (flux2 arch)
 try:
@@ -74,6 +81,11 @@ TOKEN_AE_CONFIG_KEYS = {
     "flux2_upsampler_add_attention",
     "flux2_upsampler_attention_head_dim",
     "flux2_upsampler_attn_groups",
+    # DiT token up/down sampler (tokenAE_arch=dit)
+    "upsampler_num_dit_blocks",
+    "downsampler_num_dit_blocks",
+    "upsampler_dit_use_temb",
+    "downsampler_dit_use_temb",
 }
 
 
@@ -194,6 +206,17 @@ def _get_cfg(cfg, args, key, default=None):
     return getattr(args, key, default)
 
 
+def _str_to_bool(s):
+    """Parse true/false to bool. Accepts bool (passthrough), 'true'/'false'/'1'/'0'/'yes'/'no', or numeric."""
+    if isinstance(s, bool):
+        return s
+    if isinstance(s, str):
+        return s.lower() in ("true", "1", "yes")
+    if isinstance(s, (int, float)):
+        return bool(s)
+    raise argparse.ArgumentTypeError("Expected true/false (or bool), got {!r}".format(s))
+
+
 def count_token_ae_params(token_upsampler, token_downsampler):
     """Count and print total parameters of token upsampler and downsampler."""
     def _count(m):
@@ -230,6 +253,31 @@ def load_token_ae(args, device):
         token_upsampler = Flux2TokenUpsampler.from_config(cfg)
         token_downsampler = Flux2TokenDownsampler.from_config(cfg)
         print(f"Created Flux2 TokenAE (in_channels={cfg.get('in_channels', 32)})")
+    elif arch == "dit":
+        if TokenDiTUpsampler is None or TokenDiTDownsampler is None:
+            print("TokenDiTUpsampler/TokenDiTDownsampler not found (adapter_foveation_time_cond). Using base model.")
+            return None, None
+        in_channels = _get_cfg(saved_cfg, args, "in_channels", 32)
+        up_num_dit_blocks = _get_cfg(saved_cfg, args, "upsampler_num_dit_blocks", 1)
+        down_num_dit_blocks = _get_cfg(saved_cfg, args, "downsampler_num_dit_blocks", 1)
+        up_use_temb = _str_to_bool(_get_cfg(saved_cfg, args, "upsampler_dit_use_temb", False))
+        down_use_temb = _str_to_bool(_get_cfg(saved_cfg, args, "downsampler_dit_use_temb", False))
+        naive_upsample_mode = _get_cfg(saved_cfg, args, "naive_upsample_mode", "bilinear")
+        naive_downsample_mode = _get_cfg(saved_cfg, args, "naive_downsample_mode", "bilinear")
+        token_upsampler = TokenDiTUpsampler(
+            in_channels=in_channels,
+            num_dit_blocks=up_num_dit_blocks,
+            use_temb=up_use_temb,
+            naive_upsample_mode=naive_upsample_mode,
+            use_as_refiner=args.use_as_refiner,
+        )
+        token_downsampler = TokenDiTDownsampler(
+            in_channels=in_channels,
+            num_dit_blocks=down_num_dit_blocks,
+            use_temb=down_use_temb,
+            naive_downsample_mode=naive_downsample_mode,
+        )
+        print(f"Created DiT TokenAE (up_num_dit_blocks={up_num_dit_blocks}, down_num_dit_blocks={down_num_dit_blocks}, up_use_temb={up_use_temb}, down_use_temb={down_use_temb})")
     else:
         if TokenUpsampler is None or TokenDownsampler is None:
             print("TokenUpsampler/TokenDownsampler not found (adapter_foveation_time_cond). Using base model.")
@@ -561,8 +609,8 @@ if __name__ == "__main__":
                         help='HuggingFace model ID for FLUX2')
     parser.add_argument('--tokenAE_folder', default=None, type=str,
                         help='Folder containing pre-trained token_upsampler.pt, token_downsampler.pt, and tokenAE_config.yaml')
-    parser.add_argument('--tokenAE_arch', type=str, default="adapter", choices=["adapter", "flux2"],
-                        help='TokenAE architecture. Overridden by tokenAE_config.yaml when loading from tokenAE_folder.')
+    parser.add_argument('--tokenAE_arch', type=str, default="adapter", choices=["adapter", "flux2", "dit"],
+                        help='TokenAE architecture: adapter (CNN), flux2 (Flux2 token AE), dit (DiT block up/down). Overridden by tokenAE_config.yaml when loading from tokenAE_folder.')
     parser.add_argument('--lora_checkpoint', default=None, type=str, help='Path to the LoRA .safetensors checkpoint')
     
     
@@ -585,8 +633,10 @@ if __name__ == "__main__":
                         help='Comma-separated step indices to save (e.g. "0,12,25,37,49"). Default: first, 25%%, 50%%, 75%%, last.')
     parser.add_argument('--decode_mode', type=str, default="direct", choices=["direct", "merge"],
                         help='VAE decode mode: direct or merge')
-    parser.add_argument('--prediction_type', type=str, default="clean", choices=["clean", "flow"],
+    parser.add_argument('--prediction_type', type=str, default="clean", choices=["clean", "flow", "refiner"],
                         help='Prediction type for token AE: clean or flow')
+    parser.add_argument('--use_as_refiner', action='store_true', default=False,
+                        help='Use the token upsampler as a refiner')
     
     # Experiment configuration
     parser.add_argument('--experiment', type=str, default="circular",
@@ -606,8 +656,8 @@ if __name__ == "__main__":
                         help='Do not use learned components for TokenAE')
     parser.add_argument('--upsampler_normalization_type', type=str, default="gn", choices=["ada", "gn", "none"], help="Normalization type for token upsampler.")
     parser.add_argument('--downsampler_normalization_type', type=str, default="none", choices=["ada", "gn", "none"], help="Normalization type for token downsampler.")
-    parser.add_argument('--naive_upsample_mode', type=str, default="nearest", choices=["nearest", "bilinear"], help="Naive upsample mode for token upsampler.")
-    parser.add_argument('--naive_downsample_mode', type=str, default="nearest", choices=["nearest", "bilinear"], help="Naive downsample mode for token downsampler.")
+    parser.add_argument('--naive_upsample_mode', type=str, default="nearest", choices=["nearest", "bilinear", "bicubic"], help="Naive upsample mode for token upsampler.")
+    parser.add_argument('--naive_downsample_mode', type=str, default="nearest", choices=["nearest", "bilinear", "bicubic"], help="Naive downsample mode for token downsampler.")
     parser.add_argument('--upsampler_variance_correction', default=None, type=float, help="Variance correction for token upsampler.")
     parser.add_argument('--downsampler_variance_correction', default=None, type=float, help="Variance correction for token downsampler.")
     parser.add_argument('--upsampler_num_res_blocks', type=int, default=10, help="Number of residual blocks for token upsampler.")
@@ -630,6 +680,14 @@ if __name__ == "__main__":
     parser.add_argument('--flux2_upsampler_add_attention', action='store_true', default=False)
     parser.add_argument('--flux2_upsampler_attention_head_dim', type=int, default=None)
     parser.add_argument('--flux2_upsampler_attn_groups', type=int, default=None)
+
+    # DiT token up/down sampler (tokenAE_arch=dit; overridden by tokenAE_config.yaml)
+    parser.add_argument('--upsampler_num_dit_blocks', type=int, default=1, help='Number of DiT blocks in DiT token upsampler.')
+    parser.add_argument('--downsampler_num_dit_blocks', type=int, default=1, help='Number of DiT blocks in DiT token downsampler.')
+    parser.add_argument('--upsampler_dit_use_temb', type=_str_to_bool, default=False,
+                        help='Use time conditioning in DiT token upsampler (true/false).')
+    parser.add_argument('--downsampler_dit_use_temb', type=_str_to_bool, default=False,
+                        help='Use time conditioning in DiT token downsampler (true/false).')
 
     args = parser.parse_args()
     main(args)
