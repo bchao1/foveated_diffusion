@@ -1371,4 +1371,6 @@ def get_time_guidance_embedding(dit, timestep, guidance, dtype, device):
     if guidance is not None:
         guidance = torch.tensor([guidance]).to(dtype=dtype, device=device) * 1000
     # 1000, 4000
+
+    #print("in pipeline: timestep: ", timestep, "guidance: ", guidance)
     return dit.time_guidance_embed(timestep, guidance)

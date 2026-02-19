@@ -984,7 +984,6 @@ class Flux2DiT(torch.nn.Module):
 
         if guidance is not None:
             guidance = guidance.to(hidden_states.dtype) * 1000
-
         temb = self.time_guidance_embed(timestep, guidance)
 
         double_stream_mod_img = self.double_stream_modulation_img(temb)

@@ -396,7 +396,6 @@ def _temb_from_timestep_guidance(time_guidance_embed: nn.Module, timestep: torch
     timestep = timestep.to(device=device, dtype=dtype)
     if timestep.dim() == 0:
         timestep = timestep.unsqueeze(0)
-    timestep = timestep * 1000
     if guidance is not None:
         if not isinstance(guidance, torch.Tensor):
             guidance = torch.tensor([guidance], device=device, dtype=dtype)
@@ -405,6 +404,7 @@ def _temb_from_timestep_guidance(time_guidance_embed: nn.Module, timestep: torch
         if guidance.dim() == 0:
             guidance = guidance.unsqueeze(0)
         guidance = guidance * 1000
+    #print("in adapter: timestep: ", timestep, "guidance: ", guidance)
     return time_guidance_embed(timestep, guidance)
 
 
