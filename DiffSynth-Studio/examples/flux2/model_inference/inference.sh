@@ -14,20 +14,20 @@ downsampler_num_res_blocks=2
 # dit 
 upsampler_num_dit_blocks=1
 downsampler_num_dit_blocks=1
-upsampler_dit_use_temb="false"
-downsampler_dit_use_temb="false"
+upsampler_dit_use_temb="true"
+downsampler_dit_use_temb="true"
 
 step=15000
 lora_checkpoint=${ckpt_folder}/step-${step}.safetensors
 tokenAE_folder=${ckpt_folder}/tokenAE/step-${step}
 
 CUDA_VISIBLE_DEVICES=$1 python FLUX2-foveated-inference.py \
-    --experiment baseline \
+    --experiment circular \
     --decode_mode direct \
-    --output_dir /home/brianchc/foveated_diffusion/DiffSynth-Studio/results/test_baseline \
+    --output_dir /home/brianchc/foveated_diffusion/DiffSynth-Studio/results/test \
     --seed 42 \
     --prompt "Golden retriever on a grassy meadow. Thick sun-kissed fur, clean and glossy, subtle lighter ruff around the neck. Alert amber eyes, black moist nose, relaxed open mouth with pink tongue. Perky ears tilted forward, sturdy athletic stance, tail held in a gentle arc. Warm late-afternoon backdrop, rolling wild grass bending in the breeze, blurred tree line and distant hills under a pastel sky." \
-    --prediction_type "refiner" \
+    --prediction_type "clean" \
     --tokenAE_arch "dit" \
     --naive_upsample_mode ${naive_upsample_mode} \
     --naive_downsample_mode ${naive_downsample_mode} \
@@ -39,6 +39,5 @@ CUDA_VISIBLE_DEVICES=$1 python FLUX2-foveated-inference.py \
     --downsampler_num_dit_blocks ${downsampler_num_dit_blocks} \
     --upsampler_dit_use_temb ${upsampler_dit_use_temb} \
     --downsampler_dit_use_temb ${downsampler_dit_use_temb} \
-    --use_as_refiner \
     --save_vis_vlow_x0 \
     --vis_vlow_x0_steps "0,12,25,37,49"

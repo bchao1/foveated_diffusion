@@ -311,6 +311,8 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         sample_mode: str = "average",
         token_downsampler: Optional[torch.nn.Module] = None,
         temb: Optional[torch.Tensor] = None,
+        timestep: Optional[torch.Tensor] = None,
+        guidance: Optional[torch.Tensor] = None,
     ):
         """
         Downsample latents spatially based on foveation mask.
@@ -336,7 +338,13 @@ class Flux2FoveatedImagePipeline(BasePipeline):
 
         # Downsample
         if token_downsampler is not None:
-            latents_down = token_downsampler(latents_spatial, temb=temb, foveation_mask=foveation_mask)
+            latents_down = token_downsampler(
+                latents_spatial,
+                temb=temb,
+                timestep=timestep,
+                guidance=guidance,
+                foveation_mask=foveation_mask,
+            )
         elif sample_mode == "average":
             latents_down = F.interpolate(latents_spatial, scale_factor=0.5, mode="bilinear") * 2
         elif sample_mode == "top_left":
@@ -545,6 +553,8 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         foveation_mask: Optional[torch.Tensor] = None,
         token_upsampler: Optional[torch.nn.Module] = None,
         temb: Optional[torch.Tensor] = None,
+        timestep: Optional[torch.Tensor] = None,
+        guidance: Optional[torch.Tensor] = None,
         sigma: Optional[torch.Tensor] = None,
         z_t_high: Optional[torch.Tensor] = None,
         z_t_low: Optional[torch.Tensor] = None,
@@ -600,17 +610,17 @@ class Flux2FoveatedImagePipeline(BasePipeline):
             if self.detach_z_mix:
                 z_t_low = z_t_low.detach()
             x_0_low = z_t_low - sigma * v_low_unpacked
-            x_0_high_upsampled = token_upsampler(x_0_low, temb=temb, foveation_mask=foveation_mask)
+            x_0_high_upsampled = token_upsampler(x_0_low, temb=temb, timestep=timestep, guidance=guidance, foveation_mask=foveation_mask)
             v_high_from_upsampler = (z_t_high - x_0_high_upsampled) / sigma_clamped
         elif prediction_type == "flow":
             x_0_low = None
-            v_high_from_upsampler = token_upsampler(v_low_unpacked, temb=temb, foveation_mask=foveation_mask)
+            v_high_from_upsampler = token_upsampler(v_low_unpacked, temb=temb, timestep=timestep, guidance=guidance, foveation_mask=foveation_mask)
         elif prediction_type == "refiner":
             # the token "upsampler" is actually a refiner that refines high-res latents
             x_0_low = z_t_low - sigma * v_low_unpacked
             x_0_high_bicubic = F.interpolate(x_0_low, size=(pixel_height, pixel_width), mode='bicubic', align_corners=False)
             v_high_coarse = (z_t_high - x_0_high_bicubic) / sigma_clamped
-            v_high_from_upsampler = token_upsampler(v_high_coarse, temb=temb, foveation_mask=foveation_mask) # not actually upsampling, just DiT block
+            v_high_from_upsampler = token_upsampler(v_high_coarse, temb=temb, timestep=timestep, guidance=guidance, foveation_mask=foveation_mask)  # not actually upsampling, just DiT block
         else:
             raise ValueError(f"Invalid prediction type: {prediction_type}")
 
@@ -715,7 +725,8 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         # Downsample latents for DiT
         latents_input = self._downsample_latents(
             latents, latent_height, latent_width,
-            foveation_mask=foveation_mask, token_downsampler=token_downsampler, temb=temb
+            foveation_mask=foveation_mask, token_downsampler=token_downsampler, temb=temb,
+            timestep=timestep, guidance=inputs.get("embedded_guidance"),
         )
         z_t_low_packed = self._downsample_remaining_high_res(
             latents_input, latent_height, latent_width, foveation_mask=foveation_mask
@@ -745,6 +756,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         noise_pred = self._upsample_x0_pred_unpacked(
             noise_pred, latent_height, latent_width,
             foveation_mask=foveation_mask, token_upsampler=token_upsampler, temb=temb,
+            timestep=timestep, guidance=inputs.get("embedded_guidance"),
             sigma=sigma, z_t_high=z_t_high_unpacked, z_t_low=z_t_low_unpacked,
             prediction_type=prediction_type,
         )
@@ -850,12 +862,14 @@ class Flux2FoveatedImagePipeline(BasePipeline):
             if foveation_mask is not None:
                 # Downsample latents for DiT input
                 latents_input = self._downsample_latents(
-                    latents_high_res_step, 
-                    latent_height, 
+                    latents_high_res_step,
+                    latent_height,
                     latent_width,
                     foveation_mask=foveation_mask,
                     token_downsampler=token_downsampler,
-                    temb=temb
+                    temb=temb,
+                    timestep=timestep_val,
+                    guidance=embedded_guidance,
                 )
 
                 # Get low-res z_t for x0 prediction
@@ -914,6 +928,8 @@ class Flux2FoveatedImagePipeline(BasePipeline):
                     foveation_mask=foveation_mask,
                     token_upsampler=token_upsampler,
                     temb=temb,
+                    timestep=timestep_val,
+                    guidance=embedded_guidance,
                     sigma=sigma,
                     z_t_high=z_t_high_unpacked,
                     z_t_low=z_t_low_unpacked,
@@ -1355,4 +1371,6 @@ def get_time_guidance_embedding(dit, timestep, guidance, dtype, device):
     if guidance is not None:
         guidance = torch.tensor([guidance]).to(dtype=dtype, device=device) * 1000
     # 1000, 4000
+
+    #print("in pipeline: timestep: ", timestep, "guidance: ", guidance)
     return dit.time_guidance_embed(timestep, guidance)

@@ -9,12 +9,14 @@ try:
         Flux2SingleTransformerBlock,
         Flux2Modulation,
         Flux2PosEmbed,
+        Flux2TimestepGuidanceEmbeddings,
     )
     _HAS_FLUX2_DIT = True
 except ImportError:
     Flux2SingleTransformerBlock = None
     Flux2Modulation = None
     Flux2PosEmbed = None
+    Flux2TimestepGuidanceEmbeddings = None
     _HAS_FLUX2_DIT = False
 
 class AdaGroupNorm(nn.Module):
@@ -193,7 +195,7 @@ class TokenDownsampler(nn.Module):
             if m.bias is not None:
                 nn.init.zeros_(m.bias)
 
-    def forward(self, x, temb, foveation_mask=None):
+    def forward(self, x, temb, timestep=None, guidance=None, foveation_mask=None):
         # Path A: Naive (Average Pooling)
         # We assume "variance preserving" average pooling often used in diffusion
         # (Avg * 2) if fitting a specific distribution, but standard Avg is safer as baseline.
@@ -305,8 +307,8 @@ class TokenUpsampler(nn.Module):
             if m.bias is not None:
                 nn.init.zeros_(m.bias)
 
-    def forward(self, x, temb, foveation_mask=None):
-        
+    def forward(self, x, temb, timestep=None, guidance=None, foveation_mask=None):
+        # timestep/guidance ignored (backwards compat with DiT path that passes them)
         # Path A: Naive (Bilinear Upsampling or straight-through)
         if self.learn_residual:
             if self.naive_upsample_mode == "bilinear":
@@ -389,6 +391,23 @@ def _make_position_ids_2d(h: int, w: int, device: torch.device, dtype: torch.dty
     return ids.reshape(-1, 4)
 
 
+def _temb_from_timestep_guidance(time_guidance_embed: nn.Module, timestep: torch.Tensor, guidance, dtype: torch.dtype, device: torch.device) -> torch.Tensor:
+    """Compute temb from raw timestep and guidance, matching Flux2DiT.forward scaling (* 1000)."""
+    timestep = timestep.to(device=device, dtype=dtype)
+    if timestep.dim() == 0:
+        timestep = timestep.unsqueeze(0)
+    if guidance is not None:
+        if not isinstance(guidance, torch.Tensor):
+            guidance = torch.tensor([guidance], device=device, dtype=dtype)
+        else:
+            guidance = guidance.to(device=device, dtype=dtype)
+        if guidance.dim() == 0:
+            guidance = guidance.unsqueeze(0)
+        guidance = guidance * 1000
+    #print("in adapter: timestep: ", timestep, "guidance: ", guidance)
+    return time_guidance_embed(timestep, guidance)
+
+
 class TokenDiTUpsampler(nn.Module):
     """
     DiT block-based token upsampler in the patchified domain (same as FLUX2 DiT tokens).
@@ -429,6 +448,12 @@ class TokenDiTUpsampler(nn.Module):
         self.pos_embed = Flux2PosEmbed(theta=rope_theta, axes_dim=list(rope_axes_dim))
         if use_temb:
             self.modulation = Flux2Modulation(self.inner_dim, mod_param_sets=1, bias=False)
+            self.time_guidance_embed = Flux2TimestepGuidanceEmbeddings(
+                in_channels=256,
+                embedding_dim=self.inner_dim,
+                bias=False,
+                guidance_embeds=True
+            )
         else:
             self.modulation = None
 
@@ -447,7 +472,14 @@ class TokenDiTUpsampler(nn.Module):
         # init projection for 0 residual connection
         nn.init.zeros_(self.proj_out.weight)
 
-    def forward(self, x: torch.Tensor, temb: Optional[torch.Tensor] = None, foveation_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        temb: Optional[torch.Tensor] = None,
+        timestep: Optional[torch.Tensor] = None,
+        guidance: Optional[torch.Tensor] = None,
+        foveation_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         if self.use_as_refiner:
             shortcut = x # x is already high-res latents
         else:
@@ -472,14 +504,21 @@ class TokenDiTUpsampler(nn.Module):
         pos_ids = _make_position_ids_2d(h, w, hidden.device, hidden.dtype)
         image_rotary_emb = self.pos_embed(pos_ids)
 
-        # Optional time modulation
-        if self.modulation is not None and temb is not None:
-            mod_params = self.modulation(temb)[0]
-            mod_shift, mod_scale, mod_gate = mod_params
-            if mod_shift.ndim == 2:
-                mod_shift = mod_shift.unsqueeze(1)
-                mod_scale = mod_scale.unsqueeze(1)
-                mod_gate = mod_gate.unsqueeze(1)
+        # Optional time modulation: prefer raw timestep+guidance (DiT path) else precomputed temb (backwards compat)
+        if self.modulation is not None:
+            if timestep is not None and guidance is not None and getattr(self, "time_guidance_embed", None) is not None:
+                temb = _temb_from_timestep_guidance(self.time_guidance_embed, timestep, guidance, hidden.dtype, hidden.device)
+            if temb is not None:
+                mod_params = self.modulation(temb)[0]
+                mod_shift, mod_scale, mod_gate = mod_params
+                if mod_shift.ndim == 2:
+                    mod_shift = mod_shift.unsqueeze(1)
+                    mod_scale = mod_scale.unsqueeze(1)
+                    mod_gate = mod_gate.unsqueeze(1)
+            else:
+                mod_shift = torch.zeros_like(hidden[:, :1])
+                mod_scale = torch.zeros_like(hidden[:, :1])
+                mod_gate = torch.ones_like(hidden[:, :1])
         else:
             mod_shift = torch.zeros_like(hidden[:, :1])
             mod_scale = torch.zeros_like(hidden[:, :1])
@@ -536,6 +575,12 @@ class TokenDiTDownsampler(nn.Module):
         self.pos_embed = Flux2PosEmbed(theta=rope_theta, axes_dim=list(rope_axes_dim))
         if use_temb:
             self.modulation = Flux2Modulation(self.inner_dim, mod_param_sets=1, bias=False)
+            self.time_guidance_embed = Flux2TimestepGuidanceEmbeddings(
+                in_channels=256,
+                embedding_dim=self.inner_dim,
+                bias=False,
+                guidance_embeds=True
+            )
         else:
             self.modulation = None
 
@@ -553,7 +598,14 @@ class TokenDiTDownsampler(nn.Module):
         # init projection for 0 residual connection
         nn.init.zeros_(self.proj_out.weight)
 
-    def forward(self, x: torch.Tensor, temb: Optional[torch.Tensor] = None, foveation_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        temb: Optional[torch.Tensor] = None,
+        timestep: Optional[torch.Tensor] = None,
+        guidance: Optional[torch.Tensor] = None,
+        foveation_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         if self.naive_downsample_mode == "bilinear":
             shortcut = F.interpolate(x, scale_factor=0.5, mode="bilinear", align_corners=False)
         elif self.naive_downsample_mode == "nearest":
@@ -571,13 +623,21 @@ class TokenDiTDownsampler(nn.Module):
         pos_ids = _make_position_ids_2d(h, w, hidden.device, hidden.dtype)
         image_rotary_emb = self.pos_embed(pos_ids)
 
-        if self.modulation is not None and temb is not None:
-            mod_params = self.modulation(temb)[0]
-            mod_shift, mod_scale, mod_gate = mod_params
-            if mod_shift.ndim == 2:
-                mod_shift = mod_shift.unsqueeze(1)
-                mod_scale = mod_scale.unsqueeze(1)
-                mod_gate = mod_gate.unsqueeze(1)
+        # Optional time modulation: prefer raw timestep+guidance (DiT path) else precomputed temb (backwards compat)
+        if self.modulation is not None:
+            if timestep is not None and guidance is not None and getattr(self, "time_guidance_embed", None) is not None:
+                temb = _temb_from_timestep_guidance(self.time_guidance_embed, timestep, guidance, hidden.dtype, hidden.device)
+            if temb is not None:
+                mod_params = self.modulation(temb)[0]
+                mod_shift, mod_scale, mod_gate = mod_params
+                if mod_shift.ndim == 2:
+                    mod_shift = mod_shift.unsqueeze(1)
+                    mod_scale = mod_scale.unsqueeze(1)
+                    mod_gate = mod_gate.unsqueeze(1)
+            else:
+                mod_shift = torch.zeros_like(hidden[:, :1])
+                mod_scale = torch.zeros_like(hidden[:, :1])
+                mod_gate = torch.ones_like(hidden[:, :1])
         else:
             mod_shift = torch.zeros_like(hidden[:, :1])
             mod_scale = torch.zeros_like(hidden[:, :1])
@@ -611,8 +671,8 @@ if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
     x = torch.randn(1, 32, 128, 128).to(device)
 
-    downsampler = TokenDiTDownsampler(in_channels=32, num_dit_blocks=1, use_temb=False).to(device)
-    upsampler = TokenDiTUpsampler(in_channels=32, num_dit_blocks=1, use_temb=False).to(device)
+    downsampler = TokenDiTDownsampler(in_channels=32, num_dit_blocks=1, use_temb=True).to(device)
+    upsampler = TokenDiTUpsampler(in_channels=32, num_dit_blocks=1, use_temb=True).to(device)
     x_down = downsampler(x)
     print("x_down.shape: ", x_down.shape)
     x_up = upsampler(x_down)
