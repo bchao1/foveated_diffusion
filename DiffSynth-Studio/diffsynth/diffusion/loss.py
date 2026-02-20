@@ -82,6 +82,81 @@ def FoveatedFlowMatchSFTLoss(pipe: BasePipeline, **inputs):
     loss = loss * pipe.scheduler.training_weight(timestep)
     return loss
 
+
+def FoveatedFlowMatchNoTokenAESFTLoss(pipe: BasePipeline, **inputs):
+    """
+    Foveated Flow Matching (FFM) training objective.
+    Combines Flow Matching with foveation: for each step, a random foveation mask
+    is generated and used for token upsampling/downsampling. The final noise
+    prediction is high-resolution (same shape as training target).
+    """
+    max_timestep_boundary = int(inputs.get("max_timestep_boundary", 1) * len(pipe.scheduler.timesteps))
+    min_timestep_boundary = int(inputs.get("min_timestep_boundary", 0) * len(pipe.scheduler.timesteps))
+
+    timestep_id = torch.randint(min_timestep_boundary, max_timestep_boundary, (1,))
+    timestep = pipe.scheduler.timesteps[timestep_id].to(dtype=pipe.torch_dtype, device=pipe.device)
+
+    noise = torch.randn_like(inputs["input_latents"])
+    inputs["latents"] = pipe.scheduler.add_noise(inputs["input_latents"], noise, timestep)
+    training_target = pipe.scheduler.training_target(inputs["input_latents"], noise, timestep)
+
+    # downsampled_noise
+    noise_downsampled = torch.randn_like(inputs["input_latents_downsampled"])
+    inputs["latents_downsampled"] = pipe.scheduler.add_noise(inputs["input_latents_downsampled"], noise_downsampled, timestep)
+    training_target_downsampled = pipe.scheduler.training_target(inputs["input_latents_downsampled"], noise_downsampled, timestep)
+
+    # Use foveated forward if pipe supports it and has token AE
+    has_foveated_forward = hasattr(pipe, "foveated_training_forward") and callable(
+        getattr(pipe, "foveated_training_forward", None)
+    )
+
+    if has_foveated_forward:
+        # Generate random foveation mask for this step (latent resolution)
+        height = inputs["height"]
+        width = inputs["width"]
+        batch_size, _, channels = inputs["latents"].shape
+        h, w = height // 16, width // 16
+        foveation_mask = _create_random_foveation_mask(h, w, pipe.device, pipe.torch_dtype)
+
+        # contruct merged training target
+        h_2, w_2 = h // 2, w // 2
+        training_target_merged = training_target.view(batch_size, h, w, channels)
+        training_target_downsampled = training_target_downsampled.view(batch_size, h_2, w_2, channels)
+        training_target_merged = training_target_merged.view(batch_size, h_2, 2, w_2, 2, channels)
+        training_target_merged = training_target_merged.permute(0, 1, 3, 2, 4, 5).reshape(batch_size, h_2, w_2, 4, channels)
+
+        mask_blocks = foveation_mask.view(h_2, 2, w_2, 2).permute(0, 2, 1, 3).reshape(h_2, w_2, 4)
+        is_high_res_block = (mask_blocks.sum(dim=-1) > 0)
+        is_low_res_block = ~is_high_res_block
+
+        training_target_merged[:, is_low_res_block, 0, :] = training_target_downsampled[:, is_low_res_block, :].to(training_target_merged.dtype)
+
+        valid_tokens = torch.ones(h_2, w_2, 4, device=training_target_merged.device, dtype=torch.bool)
+        valid_tokens[is_low_res_block, 1:] = False
+
+        training_target_merged = training_target_merged.view(batch_size, -1, channels)
+        valid_tokens = valid_tokens.view(-1)
+        
+        training_target_merged = training_target_merged[:, valid_tokens, :]
+        training_target = training_target_merged
+        # end of contruct merged training target
+
+
+        inputs["foveation_mask"] = foveation_mask
+        prediction_type = inputs.get("prediction_type", "clean")
+        tokenAE_training = inputs.get("tokenAE_training", False)
+        noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id, prediction_type, tokenAE_training)
+    else:
+        # Fallback to standard Flow Matching
+        models = {name: getattr(pipe, name) for name in pipe.in_iteration_models}
+        noise_pred = pipe.model_fn(**models, **inputs, timestep=timestep)
+    #print('noise_pred shape', noise_pred.shape, 'training_target_merged shape', training_target_merged.shape)
+    #exit()
+
+    loss = torch.nn.functional.mse_loss(noise_pred.float(), training_target.float())
+    loss = loss * pipe.scheduler.training_weight(timestep)
+    return loss
+
 def FoveatedDistillLoss(pipe: BasePipeline, **inputs):
     """
     Foveated Distillation training objective.

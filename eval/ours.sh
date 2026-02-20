@@ -16,16 +16,16 @@ upsampler_dit_use_temb="false"
 downsampler_dit_use_temb="false"
 
 
-step=13000
+step=15042
 ckpt_folder="/local/brian/foveated_diffusion/models/flux2_foveation/adapter_arch_bilinear/" # cnn
-ckpt_folder="/local/brian/foveated_diffusion/models/flux2_foveation/dit_tokenAE_1_block_1_head_no_temb/" # dit
+ckpt_folder="/local/brian/foveated_diffusion/models/flux2_foveation/dit_tokenAE_1_block_no_temb/" # dit
 tokenAE_folder="${ckpt_folder}/tokenAE/step-${step}"
 lora_checkpoint="${ckpt_folder}/step-${step}.safetensors"
 
 CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment ours \
     --decode_mode direct \
-    --output_dir ../results/eccv2026_final/ours_dit_step_${step}_eval \
+    --output_dir ../results/eccv2026_final/ours_dit_8_heads_step_${step}_eval \
     --seed 42 \
     --prediction_type "clean" \
     --tokenAE_arch "dit" \

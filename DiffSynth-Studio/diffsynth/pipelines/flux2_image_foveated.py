@@ -308,11 +308,12 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         height: int,
         width: int,
         foveation_mask: Optional[torch.Tensor] = None,
-        sample_mode: str = "average",
+        sample_mode: str = "nearest",
         token_downsampler: Optional[torch.nn.Module] = None,
         temb: Optional[torch.Tensor] = None,
         timestep: Optional[torch.Tensor] = None,
         guidance: Optional[torch.Tensor] = None,
+        latents_downsampled: Optional[torch.Tensor] = None,
     ):
         """
         Downsample latents spatially based on foveation mask.
@@ -337,25 +338,28 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         latents_spatial = latents_spatial.reshape(batch_size, channels // 4, height * 2, width * 2)
 
         # Downsample
-        if token_downsampler is not None:
-            latents_down = token_downsampler(
-                latents_spatial,
-                temb=temb,
-                timestep=timestep,
-                guidance=guidance,
-                foveation_mask=foveation_mask,
-            )
-        elif sample_mode == "average":
-            latents_down = F.interpolate(latents_spatial, scale_factor=0.5, mode="bilinear") * 2
-        elif sample_mode == "top_left":
-            latents_down = F.interpolate(latents_spatial, scale_factor=0.5, mode="nearest")
-        else:
-            raise ValueError(f"Unknown sample_mode: {sample_mode}")
+        if latents_downsampled is None:
+            if token_downsampler is not None:
+                latents_down = token_downsampler(
+                    latents_spatial,
+                    temb=temb,
+                    timestep=timestep,
+                    guidance=guidance,
+                    foveation_mask=foveation_mask,
+                )
+            elif sample_mode == "average":
+                latents_down = F.interpolate(latents_spatial, scale_factor=0.5, mode="bilinear") * 2
+            elif sample_mode == "top_left":
+                latents_down = F.interpolate(latents_spatial, scale_factor=0.5, mode="nearest")
+            else:
+                raise ValueError(f"Unknown sample_mode: {sample_mode}")
 
-        # Repack
-        latents_down = latents_down.reshape(batch_size, channels // 4, height // 2, 2, width // 2, 2)
-        latents_down = latents_down.permute(0, 2, 4, 1, 3, 5)
-        low_res_packed = latents_down.reshape(batch_size, height // 2, width // 2, channels)
+            # Repack
+            latents_down = latents_down.reshape(batch_size, channels // 4, height // 2, 2, width // 2, 2)
+            latents_down = latents_down.permute(0, 2, 4, 1, 3, 5)
+            low_res_packed = latents_down.reshape(batch_size, height // 2, width // 2, channels)
+        else:
+            low_res_packed = latents_downsampled.reshape(batch_size, height // 2, width // 2, channels)
 
         h_2, w_2 = height // 2, width // 2
         output_latents = output_latents.view(batch_size, height, width, channels)
@@ -676,7 +680,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
 
         return final_output
 
-    def foveated_training_forward(self, inputs: dict, timestep: torch.Tensor, timestep_id: int, prediction_type: str):
+    def foveated_training_forward(self, inputs: dict, timestep: torch.Tensor, timestep_id: int, prediction_type: str, tokenAE_training: bool):
         """
         Single-step foveated forward for training. Used by FoveatedFlowMatchSFTLoss.
         Downsamples latents with foveation, runs DiT, upsamples output to full resolution.
@@ -686,7 +690,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         foveation_mask = inputs.get("foveation_mask")
         token_upsampler = getattr(self, "token_upsampler", None)
         token_downsampler = getattr(self, "token_downsampler", None)
-        if foveation_mask is None or token_upsampler is None or token_downsampler is None:
+        if foveation_mask is None or (tokenAE_training and (token_upsampler is None or token_downsampler is None)):
             models = {name: getattr(self, name) for name in self.in_iteration_models}
             return self.model_fn(**models, **inputs, timestep=timestep)
         
@@ -710,30 +714,39 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         batch_size = latents.shape[0]
         foveation_mask = foveation_mask.to(latents.device)
 
-        # Get sigma for timestep
-        t = timestep.cpu().squeeze() if hasattr(timestep, "cpu") else timestep.squeeze()
-        sigma = self.scheduler.sigmas[timestep_id].to(dtype=latents.dtype, device=latents.device)
-        sigma = sigma.view(1, 1, 1, 1)
+        if tokenAE_training:
+            # Get sigma for timestep
+            t = timestep.cpu().squeeze() if hasattr(timestep, "cpu") else timestep.squeeze()
+            sigma = self.scheduler.sigmas[timestep_id].to(dtype=latents.dtype, device=latents.device)
+            sigma = sigma.view(1, 1, 1, 1)
 
-        # timestep and guidance embedding
-        temb = get_time_guidance_embedding(self.dit, timestep, inputs["embedded_guidance"], self.torch_dtype, self.device)
+            # timestep and guidance embedding
+            temb = get_time_guidance_embedding(self.dit, timestep, inputs["embedded_guidance"], self.torch_dtype, self.device)
 
-        # z_t high-res unpacked
-        latents_spatial = latents.view(batch_size, latent_height, latent_width, -1).permute(0, 3, 1, 2)
-        z_t_high_unpacked = self._unpatchify_latents(latents_spatial)
+            # z_t high-res unpacked
+            latents_spatial = latents.view(batch_size, latent_height, latent_width, -1).permute(0, 3, 1, 2)
+            z_t_high_unpacked = self._unpatchify_latents(latents_spatial)
 
-        # Downsample latents for DiT
-        latents_input = self._downsample_latents(
-            latents, latent_height, latent_width,
-            foveation_mask=foveation_mask, token_downsampler=token_downsampler, temb=temb,
-            timestep=timestep, guidance=inputs.get("embedded_guidance"),
-        )
-        z_t_low_packed = self._downsample_remaining_high_res(
-            latents_input, latent_height, latent_width, foveation_mask=foveation_mask
-        )
-        h_2, w_2 = latent_height // 2, latent_width // 2
-        z_t_low_spatial = z_t_low_packed.view(batch_size, h_2, w_2, -1).permute(0, 3, 1, 2)
-        z_t_low_unpacked = self._unpatchify_latents(z_t_low_spatial)
+            # Downsample latents for DiT
+            latents_input = self._downsample_latents(
+                latents, latent_height, latent_width,
+                foveation_mask=foveation_mask, token_downsampler=token_downsampler, temb=temb,
+                timestep=timestep, guidance=inputs.get("embedded_guidance"),
+                latents_downsampled=None
+            )
+            z_t_low_packed = self._downsample_remaining_high_res(
+                latents_input, latent_height, latent_width, foveation_mask=foveation_mask
+            )
+            h_2, w_2 = latent_height // 2, latent_width // 2
+            z_t_low_spatial = z_t_low_packed.view(batch_size, h_2, w_2, -1).permute(0, 3, 1, 2)
+            z_t_low_unpacked = self._unpatchify_latents(z_t_low_spatial)
+        else:
+            latents_input = self._downsample_latents(
+                latents, latent_height, latent_width,
+                foveation_mask=foveation_mask, token_downsampler=None, temb=None,
+                timestep=None, guidance=None,
+                latents_downsampled=inputs["latents_downsampled"]
+            )
 
         # Prepare image_ids
         latent_ids, resolution_mask, resolution_mask_top_left = self._prepare_latent_image_ids_foveation(
@@ -753,15 +766,20 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         noise_pred = self.model_fn(**models, **inputs, timestep=timestep)
 
         # Upsample to full resolution
-        noise_pred = self._upsample_x0_pred_unpacked(
-            noise_pred, latent_height, latent_width,
-            foveation_mask=foveation_mask, token_upsampler=token_upsampler, temb=temb,
-            timestep=timestep, guidance=inputs.get("embedded_guidance"),
-            sigma=sigma, z_t_high=z_t_high_unpacked, z_t_low=z_t_low_unpacked,
-            prediction_type=prediction_type,
-        )
-        noise_pred = self._patchify_latents(noise_pred)
-        noise_pred = rearrange(noise_pred, "B C H W -> B (H W) C")
+        if tokenAE_training:
+            noise_pred = self._upsample_x0_pred_unpacked(
+                noise_pred, latent_height, latent_width,
+                foveation_mask=foveation_mask, token_upsampler=token_upsampler, temb=temb,
+                timestep=timestep, guidance=inputs.get("embedded_guidance"),
+                sigma=sigma, z_t_high=z_t_high_unpacked, z_t_low=z_t_low_unpacked,
+                prediction_type=prediction_type,
+            )
+            noise_pred = self._patchify_latents(noise_pred)
+            noise_pred = rearrange(noise_pred, "B C H W -> B (H W) C")
+        else:
+            # do nothing to the noise prediction from the dit
+            #print('no tokenAE training', noise_pred.shape)
+            pass
         return noise_pred
 
     @torch.no_grad()
@@ -791,6 +809,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         token_downsampler: Optional[torch.nn.Module] = None,
         decode_mode: str = "direct",
         prediction_type: str = "clean",
+        tokenAE_training: bool = False,
         vis_vlow_x0_folder: Optional[str] = None,
         vis_vlow_x0_steps: Optional[List[int]] = None,
     ):
@@ -838,50 +857,62 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         models = {name: getattr(self, name) for name in self.in_iteration_models}
         
         latents = inputs_shared["latents"]
+        if not tokenAE_training:
+            # if no tokenAE training, all downsampling is done in the first step only
+            latents = self._downsample_latents(
+                latents, latent_height, latent_width,
+                foveation_mask=foveation_mask, token_downsampler=None, temb=None,
+                timestep=None, guidance=None,
+                latents_downsampled=inputs_shared["latents_downsampled"]
+            )
+        print('decode mode', decode_mode)
         
         for progress_id, timestep in enumerate(progress_bar_cmd(self.scheduler.timesteps)):
             timestep_val = timestep.unsqueeze(0).to(dtype=self.torch_dtype, device=self.device)
-
-            # time guidance embedding
-            temb = get_time_guidance_embedding(self.dit, timestep_val, embedded_guidance, self.torch_dtype, self.device)
-
-            latents_high_res_step = latents.clone()
-            
-            # Get sigma for x0 prediction
-            sigma = self.scheduler.sigmas[progress_id].to(dtype=latents.dtype, device=self.device)
-            sigma = sigma.view(1, 1, 1, 1)
-            
-            # Get high-res z_t in unpacked format
             batch_size = latents.shape[0]
-            latents_spatial = latents_high_res_step.view(
-                batch_size, latent_height, latent_width, -1
-            ).permute(0, 3, 1, 2)
-            z_t_high_unpacked = self._unpatchify_latents(latents_spatial)
 
             # Prepare inputs for transformer
             if foveation_mask is not None:
-                # Downsample latents for DiT input
-                latents_input = self._downsample_latents(
-                    latents_high_res_step,
-                    latent_height,
-                    latent_width,
-                    foveation_mask=foveation_mask,
-                    token_downsampler=token_downsampler,
-                    temb=temb,
-                    timestep=timestep_val,
-                    guidance=embedded_guidance,
-                )
+                if tokenAE_training:
+                    # time guidance embedding
+                    temb = get_time_guidance_embedding(self.dit, timestep_val, embedded_guidance, self.torch_dtype, self.device)
 
-                # Get low-res z_t for x0 prediction
-                z_t_low_packed = self._downsample_remaining_high_res(
-                    latents_input,
-                    latent_height,
-                    latent_width,
-                    foveation_mask=foveation_mask,
-                )
-                h_2, w_2 = latent_height // 2, latent_width // 2
-                z_t_low_spatial = z_t_low_packed.view(batch_size, h_2, w_2, -1).permute(0, 3, 1, 2)
-                z_t_low_unpacked = self._unpatchify_latents(z_t_low_spatial)
+                    latents_high_res_step = latents.clone()
+                    
+                    # Get sigma for x0 prediction
+                    sigma = self.scheduler.sigmas[progress_id].to(dtype=latents.dtype, device=self.device)
+                    sigma = sigma.view(1, 1, 1, 1)
+
+                    latents_spatial = latents_high_res_step.view(
+                        batch_size, latent_height, latent_width, -1
+                    ).permute(0, 3, 1, 2)
+                    z_t_high_unpacked = self._unpatchify_latents(latents_spatial)
+                    
+
+                    # Downsample latents for DiT input
+                    latents_input = self._downsample_latents(
+                        latents_high_res_step,
+                        latent_height,
+                        latent_width,
+                        foveation_mask=foveation_mask,
+                        token_downsampler=token_downsampler,
+                        temb=temb,
+                        timestep=timestep_val,
+                        guidance=embedded_guidance,
+                    )
+
+                    # Get low-res z_t for x0 prediction
+                    z_t_low_packed = self._downsample_remaining_high_res(
+                        latents_input,
+                        latent_height,
+                        latent_width,
+                        foveation_mask=foveation_mask,
+                    )
+                    h_2, w_2 = latent_height // 2, latent_width // 2
+                    z_t_low_spatial = z_t_low_packed.view(batch_size, h_2, w_2, -1).permute(0, 3, 1, 2)
+                    z_t_low_unpacked = self._unpatchify_latents(z_t_low_spatial)
+                else:
+                    latents_input = latents
 
                 # Prepare position IDs for foveated latents
                 latent_ids, resolution_mask, resolution_mask_top_left = self._prepare_latent_image_ids_foveation(
@@ -921,32 +952,38 @@ class Flux2FoveatedImagePipeline(BasePipeline):
 
             # Upsample using x0 prediction if foveating
             if foveation_mask is not None:
-                noise_pred = self._upsample_x0_pred_unpacked(
-                    noise_pred,
-                    latent_height,
-                    latent_width,
-                    foveation_mask=foveation_mask,
-                    token_upsampler=token_upsampler,
-                    temb=temb,
-                    timestep=timestep_val,
-                    guidance=embedded_guidance,
-                    sigma=sigma,
-                    z_t_high=z_t_high_unpacked,
-                    z_t_low=z_t_low_unpacked,
-                    prediction_type=prediction_type,
-                    vis_save_folder=vis_vlow_x0_folder,
-                    progress_id=progress_id,
-                    vis_save_steps=vis_vlow_x0_steps,
-                )
-                # Pack back
-                noise_pred = self._patchify_latents(noise_pred)
-                noise_pred = rearrange(noise_pred, "B C H W -> B (H W) C")
+                if tokenAE_training:
+                    noise_pred = self._upsample_x0_pred_unpacked(
+                        noise_pred,
+                        latent_height,
+                        latent_width,
+                        foveation_mask=foveation_mask,
+                        token_upsampler=token_upsampler,
+                        temb=temb,
+                        timestep=timestep_val,
+                        guidance=embedded_guidance,
+                        sigma=sigma,
+                        z_t_high=z_t_high_unpacked,
+                        z_t_low=z_t_low_unpacked,
+                        prediction_type=prediction_type,
+                        vis_save_folder=vis_vlow_x0_folder,
+                        progress_id=progress_id,
+                        vis_save_steps=vis_vlow_x0_steps,
+                    )
+                    # Pack back
+                    noise_pred = self._patchify_latents(noise_pred)
+                    noise_pred = rearrange(noise_pred, "B C H W -> B (H W) C")
+                else:
+                    pass
             else:
                 # Slice to latent size only
                 noise_pred = noise_pred[:, :latents_high_res_step.size(1), :]
 
             # Scheduler step
-            latents = self.step(self.scheduler, progress_id=progress_id, noise_pred=noise_pred, latents=latents_high_res_step)
+            if tokenAE_training:
+                latents = self.step(self.scheduler, progress_id=progress_id, noise_pred=noise_pred, latents=latents_high_res_step)
+            else:
+                latents = self.step(self.scheduler, progress_id=progress_id, noise_pred=noise_pred, latents=latents)
         
         inputs_shared["latents"] = latents
         
@@ -962,10 +999,13 @@ class Flux2FoveatedImagePipeline(BasePipeline):
             # Note: DiffSynth VAE expects patched latents [B, 128, H/2, W/2] - do NOT unpatchify
             
             # Step 1: Convert full-res latents to mixed-res latents
-            mixed_res_latents = self._downsample_latents(
-                latents, latent_height, latent_width, 
-                foveation_mask=foveation_mask, token_downsampler=token_downsampler, temb=None
-            )
+            if tokenAE_training:
+                mixed_res_latents = self._downsample_latents(
+                    latents, latent_height, latent_width, 
+                    foveation_mask=foveation_mask, token_downsampler=token_downsampler, temb=None
+                )
+            else:
+                mixed_res_latents = latents # already
             
             # Step 2: Low-res path - downsample mixed-res to uniform low-res grid
             low_res_latents = self._downsample_remaining_high_res(
@@ -1268,35 +1308,61 @@ class Flux2FoveatedUnit_NoiseInitializer(PipelineUnit):
     def __init__(self):
         super().__init__(
             input_params=("height", "width", "seed", "rand_device"),
-            output_params=("noise",),
+            output_params=("noise", "downsampled_noise"),
         )
 
     def process(self, pipe: Flux2FoveatedImagePipeline, height, width, seed, rand_device):
         noise = pipe.generate_noise((1, 128, height//16, width//16), seed=seed, rand_device=rand_device, rand_torch_dtype=pipe.torch_dtype)
+        noise_downsampled = pipe.generate_noise((1, 128, height//16//2, width//16//2), seed=seed, rand_device=rand_device, rand_torch_dtype=pipe.torch_dtype)
         noise = noise.reshape(1, 128, height//16 * width//16).permute(0, 2, 1)
-        return {"noise": noise}
+        noise_downsampled = noise_downsampled.reshape(1, 128, height//16//2 * width//16//2).permute(0, 2, 1)
+        return {"noise": noise, "noise_downsampled": noise_downsampled}
 
 
 class Flux2FoveatedUnit_InputImageEmbedder(PipelineUnit):
     def __init__(self):
         super().__init__(
-            input_params=("input_image", "noise"),
-            output_params=("latents", "input_latents"),
+            input_params=("input_image", "noise", "noise_downsampled"),
+            output_params=("latents", "latents_downsampled", "input_latents", "input_latents_downsampled"),
             onload_model_names=("vae",)
         )
 
-    def process(self, pipe: Flux2FoveatedImagePipeline, input_image, noise):
+    def process(self, pipe: Flux2FoveatedImagePipeline, input_image, noise, noise_downsampled):
         if input_image is None:
-            return {"latents": noise, "input_latents": None}
+            return {
+                "latents": noise, 
+                "latents_downsampled": noise_downsampled,
+                "input_latents": None, 
+                "input_latents_downsampled": None
+            }
         pipe.load_models_to_device(['vae'])
         image = pipe.preprocess_image(input_image)
         input_latents = pipe.vae.encode(image)
+        _, _, latent_height, latent_width = input_latents.shape
         input_latents = rearrange(input_latents, "B C H W -> B (H W) C")
+
+        # create downsample 
+        image_downsampled = F.interpolate(image, size=(image.shape[-2]//2, image.shape[-1]//2), mode='bicubic', align_corners=False)
+        input_latents_downsampled = pipe.vae.encode(image_downsampled)
+        input_latents_downsampled = rearrange(input_latents_downsampled, "B C H W -> B (H W) C") # 4X less tokens
+
+
         if pipe.scheduler.training:
-            return {"latents": noise, "input_latents": input_latents}
+            return {
+                "latents": noise, 
+                "latents_downsampled": noise_downsampled,
+                "input_latents": input_latents,
+                "input_latents_downsampled": input_latents_downsampled
+            }
         else:
             latents = pipe.scheduler.add_noise(input_latents, noise, timestep=pipe.scheduler.timesteps[0])
-            return {"latents": latents, "input_latents": input_latents}
+            latents_downsampled = pipe.scheduler.add_noise(input_latents_downsampled, noise_downsampled, timestep=pipe.scheduler.timesteps[0])
+            return {
+                "latents": latents, 
+                "latents_downsampled": latents_downsampled, 
+                "input_latents": input_latents, 
+                "input_latents_downsampled": input_latents_downsampled
+            }
 
 
 class Flux2FoveatedUnit_ImageIDs(PipelineUnit):

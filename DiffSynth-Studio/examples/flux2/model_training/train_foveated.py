@@ -129,6 +129,7 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         device="cpu",
         task="sft",
         prediction_type="clean",
+        tokenAE_training=False, # no tokenAE at all
         detach_z_mix=False,
     ):
         super().__init__()
@@ -172,10 +173,12 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         self.fp8_models = fp8_models
         self.task = task
         self.prediction_type = prediction_type
+        self.tokenAE_training = tokenAE_training
         self.task_to_loss = {
             "sft:data_process": lambda pipe, *args: args,
             "direct_distill:data_process": lambda pipe, *args: args,
             "sft": lambda pipe, inputs_shared, inputs_posi, inputs_nega: FoveatedFlowMatchSFTLoss(pipe, **inputs_shared, **inputs_posi), # use foveated flow match sft loss
+            "sft_no_tokenAE": lambda pipe, inputs_shared, inputs_posi, inputs_nega: FoveatedFlowMatchNoTokenAESFTLoss(pipe, **inputs_shared, **inputs_posi), # use foveated flow match sft loss without token AE
             "distill": lambda pipe, inputs_shared, inputs_posi, inputs_nega: FoveatedDistillLoss(pipe, **inputs_shared, **inputs_posi), # use foveated distillation loss
             "sft:train": lambda pipe, inputs_shared, inputs_posi, inputs_nega: FoveatedFlowMatchSFTLoss(pipe, **inputs_shared, **inputs_posi), # use foveated flow match sft loss
             "direct_distill": lambda pipe, inputs_shared, inputs_posi, inputs_nega: DirectDistillLoss(pipe, **inputs_shared, **inputs_posi),
@@ -186,7 +189,7 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
     def set_training_phase(self, step: int, tokenAE_train_steps=None):
         """Switch from tokenAE-only to joint training. tokenAE_train_steps: train token AE for first N steps, then train both jointly."""
         if tokenAE_train_steps is None or not self._token_ae_trainable:
-            print("<Flux2FoveatedImageTrainingModule> ===> No token AE training required")
+            #print("<Flux2FoveatedImageTrainingModule> ===> No token AE training required")
             return
         if step < tokenAE_train_steps:
             phase = "tokenAE"
@@ -236,6 +239,7 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
             "use_gradient_checkpointing": self.use_gradient_checkpointing,
             "use_gradient_checkpointing_offload": self.use_gradient_checkpointing_offload,
             "prediction_type": self.prediction_type,
+            "tokenAE_training": self.tokenAE_training,
         }
         inputs_shared = self.parse_extra_inputs(data, self.extra_inputs, inputs_shared)
         return inputs_shared, inputs_posi, inputs_nega
@@ -278,6 +282,10 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
 
 
 def load_token_ae(args, device):
+    if not args.tokenAE_training:
+        print("<load_token_ae> ===> No token AE training")
+        return None, None
+    
     """Load TokenUpsampler and TokenDownsampler. Supports adapter and flux2 architectures.
     Uses tokenAE_config.yaml from tokenAE_folder when present; otherwise argparse defaults."""
     # When resuming, optionally override args from saved config
@@ -439,8 +447,10 @@ def flux2_parser():
     parser.add_argument("--naive_upsample_mode", type=str, default="nearest", choices=["nearest", "bilinear", "bicubic"], help="Naive upsample mode for token upsampler (adapter only).")
     parser.add_argument("--naive_downsample_mode", type=str, default="nearest", choices=["nearest", "bilinear", "bicubic"], help="Naive downsample mode for token downsampler (adapter only).")
     parser.add_argument("--max_training_steps", type=int, default=None, help="Stop training after this many steps. None = train for full num_epochs.")
-    parser.add_argument("--prediction_type", type=str, default="clean", choices=["clean", "flow"], help="Prediction type for token AE: clean or flow.")
+    parser.add_argument("--prediction_type", type=str, default="clean", choices=["clean", "flow", "refiner"], help="Prediction type for token AE: clean or flow.")
     parser.add_argument("--detach_z_mix", action="store_true", help="Detach z_mix from the model.")
+    parser.add_argument("--tokenAE_training", action="store_true", help="Train token AE (true/false).")
+    parser.add_argument("--decode_mode", type=str, default="direct", choices=["direct", "merge"], help="Decode mode for final VAE step")
 
     # Flux2 TokenAE config (used when tokenAE_arch=flux2; overridden by tokenAE_config.yaml)
     parser.add_argument("--flux2_naive_downsample_mode", type=str, default=None,
@@ -542,7 +552,9 @@ if __name__ == "__main__":
                 "num_inference_steps": args.num_inference_steps,
                 "cfg_scale": args.cfg_scale,
                 "seed": args.seed,
+                "decode_mode": args.decode_mode,
                 "prediction_type": args.prediction_type,
+                "tokenAE_training": args.tokenAE_training,
             },
         )
     else:
@@ -554,6 +566,7 @@ if __name__ == "__main__":
         "sft:data_process": launch_data_process_task,
         "direct_distill:data_process": launch_data_process_task,
         "sft": launch_training_task,
+        "sft_no_tokenAE": launch_training_task,
         "sft:train": launch_training_task,
         "distill": launch_training_task, # added foveation distillation loss task
         "direct_distill": launch_training_task,

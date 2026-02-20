@@ -2,7 +2,7 @@ export DIFFSYNTH_MODEL_BASE_PATH="/miele/brian/modelscope"
 export DIFFSYNTH_SKIP_DOWNLOAD=True
 cd ..
 
-exp_name="dit_tokenAE_1_block_1_head_no_temb"
+exp_name="no_tokenAE_test"
 
 accelerate launch train_foveated.py \
   --dataset_base_path /local/brian/Aesthetic-Train-V2/ \
@@ -34,7 +34,7 @@ accelerate launch train_foveated.py \
   --validation_width 1024 \
   --num_validation_images 1 \
   --save_steps 1000 \
-  --task sft \
+  --task sft_no_tokenAE \
   --find_unused_parameters \
   --tokenAE_arch "dit" \
   --upsampler_num_res_blocks 10 \
