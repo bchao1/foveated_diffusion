@@ -1027,12 +1027,12 @@ class Flux2FoveatedImagePipeline(BasePipeline):
             high_res_image = self.vae.decode(high_res_spatial)
 
             # Step 4: Upsample low-res image and merge
-            low_res_image = F.interpolate(low_res_image, size=(height, width), mode='bilinear', align_corners=False)
+            low_res_image = F.interpolate(low_res_image, size=(height, width), mode='bicubic', align_corners=False)
             
             high_res_foveation_mask = F.interpolate(
                 foveation_mask[None, None, :, :].float(), 
                 size=(height, width), 
-                mode='bilinear'
+                mode='bicubic'
             ).to(latents.dtype).to(latents.device)
             
             merged_image = low_res_image * (1 - high_res_foveation_mask) + high_res_image * high_res_foveation_mask
