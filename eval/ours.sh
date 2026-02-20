@@ -16,7 +16,7 @@ upsampler_dit_use_temb="false"
 downsampler_dit_use_temb="false"
 
 
-step=7000
+step=13000
 ckpt_folder="/local/brian/foveated_diffusion/models/flux2_foveation/adapter_arch_bilinear/" # cnn
 ckpt_folder="/local/brian/foveated_diffusion/models/flux2_foveation/dit_tokenAE_1_block_1_head_no_temb/" # dit
 tokenAE_folder="${ckpt_folder}/tokenAE/step-${step}"
@@ -24,8 +24,8 @@ lora_checkpoint="${ckpt_folder}/step-${step}.safetensors"
 
 CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment ours \
-    --decode_mode merge \
-    --output_dir ../results/eccv2026_final/ours_dit_merge_eval \
+    --decode_mode direct \
+    --output_dir ../results/eccv2026_final/ours_dit_step_${step}_eval \
     --seed 42 \
     --prediction_type "clean" \
     --tokenAE_arch "dit" \
@@ -33,4 +33,4 @@ CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --lora_checkpoint ${lora_checkpoint} \
     --full_eval \
     --prompt_dataset_path /local/brian/Aesthetic-Train-V2/metadata.csv \
-    --num_prompts 20
+    --num_prompts 50

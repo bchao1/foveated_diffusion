@@ -481,10 +481,12 @@ def run_full_eval(single_prompt_generation_func, pipe, args, output_dir, prompts
         if args.num_prompts is not None and prompt_idx >= args.num_prompts:
             break
         prompt_list.append(prompt)
-    # write prompt and prompt_idx to txt
-    with open(os.path.join(output_dir, "prompt_list.txt"), "w") as f:
-        for prompt_idx, prompt in enumerate(prompt_list):
-            f.write(f"{prompt_idx:010d}: {prompt}\n")
+    # write metadata.csv: full image filename and prompt per row
+    metadata = pd.DataFrame({
+        "image": [f"img_{i:010d}.png" for i in range(len(prompt_list))],
+        "prompt": prompt_list,
+    })
+    metadata.to_csv(os.path.join(output_dir, "metadata.csv"), index=False)
 
 # additional visualizations (different foveation trajectories, runtime comparisons, etc)
 def run_circular_traj(pipe, args, output_dir, token_upsampler, token_downsampler):
