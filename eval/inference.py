@@ -142,6 +142,40 @@ def create_foveation_mask(
     return mask_high.squeeze(0).squeeze(0)
 
 
+def generate_foveation_trajectory_masks(height, width, args, device):
+    """
+    Generate a list of foveation masks for the trajectory grid.
+    Uses args.foveation_trajectory_type: "radius" (vary r at center) or "circular" (center on orbit).
+    Same trajectory is reused for all prompts.
+    """
+    num_cols = getattr(args, "num_cols", 4)
+    orbit_radius = getattr(args, "orbit_radius", 0.25)
+    mask_radius = getattr(args, "mask_radius", 0.30)
+    traj_type = getattr(args, "foveation_trajectory_type", "circular")
+
+    masks = []
+    if traj_type == "radius":
+        r_list = np.linspace(0.1, 1.0, num_cols)
+        for col in range(num_cols):
+            m = create_foveation_mask(
+                height, width, center=(0, 0), r=float(r_list[col]),
+                shape=args.mask_shape, device=device
+            )
+            masks.append(m)
+    else:
+        # circular: mask center moves on orbit
+        angles = [2 * math.pi * (c / num_cols) for c in range(num_cols)]
+        for col in range(num_cols):
+            angle = angles[col]
+            center = (orbit_radius * math.cos(angle), orbit_radius * math.sin(angle))
+            m = create_foveation_mask(
+                height, width, center=center, r=mask_radius,
+                shape=args.mask_shape, device=device
+            )
+            masks.append(m)
+    return masks
+
+
 def make_videos(folder, output_file, fps=5):
     """Combine generated images and masks into a video."""
     try:
@@ -292,6 +326,8 @@ def count_token_ae_params(token_upsampler, token_downsampler):
 def load_token_ae(args, device):
     """Load TokenUpsampler and TokenDownsampler. Supports adapter and flux2 architectures.
     Uses tokenAE_config.yaml from tokenAE_folder when present; otherwise argparse defaults."""
+    if not args.tokenAE_training:
+        return None, None
     # Load config from folder if available
     saved_cfg = _load_token_ae_config_from_folder(args.tokenAE_folder)
     if saved_cfg:
@@ -415,6 +451,7 @@ def run_high_res(pipe, args, output_dir, prompt, prompt_idx, token_upsampler=Non
         cfg_scale=args.guidance_scale,
         foveation_mask=None,
         prediction_type=args.prediction_type,
+        tokenAE_training=args.tokenAE_training,
     )
     image.save(os.path.join(output_dir, f"img_{prompt_idx:010d}.png"))
 
@@ -436,7 +473,8 @@ def run_naive_mixed_res(pipe, args, output_dir, prompt, prompt_idx, token_upsamp
         token_upsampler=token_upsampler,
         token_downsampler=token_downsampler,
         decode_mode=args.decode_mode,
-        prediction_type=args.prediction_type
+        prediction_type=args.prediction_type,
+        tokenAE_training=args.tokenAE_training,
     )
     image.save(os.path.join(output_dir, f"img_{prompt_idx:010d}.png"))
 
@@ -458,7 +496,8 @@ def run_ours(pipe, args, output_dir, prompt, prompt_idx, token_upsampler, token_
         token_upsampler=token_upsampler,
         token_downsampler=token_downsampler,
         decode_mode=args.decode_mode,
-        prediction_type=args.prediction_type
+        prediction_type=args.prediction_type,
+        tokenAE_training=args.tokenAE_training,
     )
     image.save(os.path.join(output_dir, f"img_{prompt_idx:010d}.png"))
 
@@ -538,6 +577,7 @@ def run_circular_traj(pipe, args, output_dir, token_upsampler, token_downsampler
             token_downsampler=token_downsampler,
             decode_mode=args.decode_mode,
             prediction_type=args.prediction_type,
+            tokenAE_training=args.tokenAE_training,
             **vis_kwargs,
         )
         
@@ -585,6 +625,7 @@ def run_vary_radius(pipe, args, output_dir, token_upsampler, token_downsampler):
             token_downsampler=token_downsampler,
             decode_mode=args.decode_mode,
             prediction_type=args.prediction_type,
+            tokenAE_training=args.tokenAE_training,
             **vis_kwargs,
         )
         
@@ -637,6 +678,7 @@ def run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downs
             token_downsampler=token_downsampler,
             decode_mode=args.decode_mode,
             prediction_type=args.prediction_type,
+            tokenAE_training=args.tokenAE_training,
             **vis_kwargs,
         )
         
@@ -654,21 +696,17 @@ def run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downs
 def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token_downsampler):
     """
     Generate a grid of images with different foveation masks for paper figures.
-    - Each row = one prompt (from prompt_dataset_path), fixed seed.
-    - Odd rows (1, 3, ...): trajectory = vary radius (linspace over r with num_cols steps).
-    - Even rows (0, 2, ...): trajectory = circular (mask center moves on orbit, num_cols steps).
-    - Each column = one foveation mask in the trajectory.
+    - Trajectory is fixed by args.foveation_trajectory_type: "radius" or "circular".
+    - One list of foveation masks is generated once and reused for all prompts.
+    - Each row = one prompt (from prompt_dataset_path), each column = one mask in the trajectory.
     - Saves to output_dir/{prompt_idx:03d}/img_{col:04d}.png with foveation outline drawn.
     """
     import imageio
     assert args.prompt_dataset_path, "prompt_dataset_path required for foveation_trajectory_grid"
     assert args.num_prompts is not None and args.num_prompts > 0, "num_prompts required"
-    num_cols = getattr(args, "num_cols", 4)
     prompts = load_prompt_dataset(args.prompt_dataset_path)
     prompts = np.random.choice(prompts, size=args.num_prompts, replace=False)
     print(f"Using {len(prompts)} prompts from {args.prompt_dataset_path}")
-    orbit_radius = getattr(args, "orbit_radius", 0.25)
-    mask_radius = getattr(args, "mask_radius", 0.30)
     outline_width_frac = getattr(args, "outline_width_frac", 0.01)
     outline_color = getattr(args, "outline_color", (255, 0, 0))
     if isinstance(outline_color, str):
@@ -677,30 +715,18 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
     height, width = args.height, args.width
     device = pipe.device
 
+    # Generate fixed foveation trajectory once (list of masks), reuse for all prompts
+    foveation_masks = generate_foveation_trajectory_masks(height, width, args, device)
+    num_cols = len(foveation_masks)
+    print(f"Trajectory type={getattr(args, 'foveation_trajectory_type', 'circular')}, {num_cols} masks")
+
     for prompt_idx, prompt in enumerate(prompts):
         prompt_dir = os.path.join(output_dir, f"{prompt_idx:03d}")
         os.makedirs(prompt_dir, exist_ok=True)
         with open(os.path.join(prompt_dir, "prompt.txt"), "w") as f:
             f.write(prompt)
-        is_radius_row = (prompt_idx % 2) == 1  # odd row = vary radius
-        if is_radius_row:
-            r_list = np.linspace(0.1, 1.0, num_cols)
-        else:
-            # circular: num_cols steps around the orbit
-            angles = [2 * math.pi * (c / num_cols) for c in range(num_cols)]
 
-        for col in range(num_cols):
-            if is_radius_row:
-                foveation_mask = create_foveation_mask(
-                    height, width, center=(0, 0), r=float(r_list[col]), shape=args.mask_shape, device=device
-                )
-            else:
-                angle = angles[col]
-                center = (orbit_radius * math.cos(angle), orbit_radius * math.sin(angle))
-                foveation_mask = create_foveation_mask(
-                    height, width, center=center, r=mask_radius, shape=args.mask_shape, device=device
-                )
-
+        for col, foveation_mask in enumerate(foveation_masks):
             torch.cuda.empty_cache()
             image = pipe(
                 prompt=prompt,
@@ -715,6 +741,7 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
                 token_downsampler=token_downsampler,
                 decode_mode=args.decode_mode,
                 prediction_type=args.prediction_type,
+                tokenAE_training=args.tokenAE_training,
             )
             # Draw foveation outline on image
             image_np = np.array(image)
@@ -853,6 +880,8 @@ if __name__ == "__main__":
     parser.add_argument('--prompt_dataset_path', type=str, help='Path to the prompt dataset as a csv file')
     parser.add_argument('--num_prompts', type=int, default=None, help='Number of prompts to run')
     parser.add_argument('--num_cols', type=int, default=4, help='Number of columns (foveation steps per row) for foveation_trajectory_grid')
+    parser.add_argument('--foveation_trajectory_type', type=str, default='circular', choices=['radius', 'circular'],
+                        help='Trajectory for foveation_trajectory_grid: radius (vary r at center) or circular (center on orbit)')
     parser.add_argument('--outline_width_frac', type=float, default=0.01, help='Foveation outline line width as fraction of image width (default 0.01)')
     parser.add_argument('--outline_color', type=str, default='255,0,0', help='Foveation outline color as R,G,B (default red: 255,0,0)')
 
@@ -903,6 +932,9 @@ if __name__ == "__main__":
                         help='Use time conditioning in DiT token upsampler (true/false).')
     parser.add_argument('--downsampler_dit_use_temb', type=_str_to_bool, default=False,
                         help='Use time conditioning in DiT token downsampler (true/false).')
+    
+    # Eval configuration
+    parser.add_argument('--tokenAE_training', type=_str_to_bool, default=False, help='Train token AE (true/false).')
 
     args = parser.parse_args()
     main(args)

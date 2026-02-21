@@ -17,22 +17,11 @@ downsampler_dit_use_temb="false"
 
 CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment foveation_trajectory_grid \
-    --decode_mode direct \
-    --output_dir ../results/eccv2026_final/foveation_trajectory_naive \
+    --foveation_trajectory_type circular \
+    --decode_mode merge \
+    --output_dir ../results/eccv2026_final/foveation_trajectory_naive_no_tokenAE \
     --seed 42 \
-    --prediction_type "clean" \
-    --tokenAE_arch "dit" \
-    --naive_upsample_mode ${naive_upsample_mode} \
-    --naive_downsample_mode ${naive_downsample_mode} \
-    --upsampler_normalization_type ${upsampler_normalization_type} \
-    --downsampler_normalization_type ${downsampler_normalization_type} \
-    --upsampler_num_res_blocks ${upsampler_num_res_blocks} \
-    --downsampler_num_res_blocks ${downsampler_num_res_blocks} \
-    --upsampler_num_dit_blocks ${upsampler_num_dit_blocks} \
-    --downsampler_num_dit_blocks ${downsampler_num_dit_blocks} \
-    --upsampler_dit_use_temb ${upsampler_dit_use_temb} \
-    --downsampler_dit_use_temb ${downsampler_dit_use_temb} \
-    --full_eval \
+    --tokenAE_training false \
     --prompt_dataset_path /local/brian/Aesthetic-Train-V2/metadata.csv \
-    --num_prompts 6 \
-    --num_cols 6
+    --num_prompts 10 \
+    --num_cols 5
