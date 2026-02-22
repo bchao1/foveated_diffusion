@@ -195,6 +195,8 @@ class WandbModelLogger(ModelLogger):
         return (
             hasattr(pipe, "token_upsampler")
             and hasattr(pipe, "token_downsampler")
+            and hasattr(pipe, "is_foveated_pipeline")
+            and pipe.is_foveated_pipeline
             #and pipe.token_upsampler is not None
             #and pipe.token_downsampler is not None
         )

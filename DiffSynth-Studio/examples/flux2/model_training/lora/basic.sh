@@ -35,5 +35,6 @@ accelerate launch train_foveated.py \
   --save_steps 1000 \
   --task sft \
   --find_unused_parameters \
-  --decode_mode "direct"
+  --decode_mode "direct" \
+  --is_foveated_pipeline false
 cd lora
