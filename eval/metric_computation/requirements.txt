@@ -9,3 +9,4 @@ Pillow==12.0.0
 open_clip_torch>=2.20
 pandas==2.3.3
 tensorboard==2.20.0
+matplotlib==3.10.7

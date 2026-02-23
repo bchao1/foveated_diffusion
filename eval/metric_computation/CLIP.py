@@ -42,9 +42,6 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-# Minimum number of images.
-MIN_IMAGES = 10_000
-
 
 # ---------------------------------------------------------------------------
 # OpenCLIP loading with logging quarantine
@@ -221,11 +218,12 @@ def _load_prompts(generation_dir, args):
     Checked in order:
       1. ``args['prompts']`` -- a list of strings.
       2. ``args['prompts_file']`` -- path to a .txt file (one prompt per line).
-      3. ``generation_dir/prompts.txt`` -- fallback auto-discovery.
+      3. ``generation_dir/prompts.txt`` -- fallback auto-discovery (only when
+         ``generation_dir`` is not None).
 
     Parameters
     ----------
-    generation_dir : str
+    generation_dir : str or None
     args : dict
 
     Returns
@@ -244,7 +242,7 @@ def _load_prompts(generation_dir, args):
 
     # Option 2: explicit prompts file path
     prompts_file = args.get('prompts_file', None)
-    if prompts_file is None:
+    if prompts_file is None and generation_dir is not None:
         # Option 3: auto-discover prompts.txt in generation_dir
         candidate = os.path.join(generation_dir, 'prompts.txt')
         if os.path.isfile(candidate):
@@ -260,26 +258,108 @@ def _load_prompts(generation_dir, args):
         'No prompts found. Provide one of:\n'
         "  1. args['prompts'] -- list of strings\n"
         "  2. args['prompts_file'] -- path to a .txt file (one prompt per line)\n"
-        f"  3. A 'prompts.txt' file in generation_dir ({generation_dir})"
+        + (f"  3. A 'prompts.txt' file in generation_dir ({generation_dir})"
+           if generation_dir is not None else
+           "  3. Pass generation_dir to enable auto-discovery of prompts.txt")
     )
+
+
+# ---------------------------------------------------------------------------
+# Internal batch loop helper
+# ---------------------------------------------------------------------------
+
+def _clip_sim_batch_loop(paths, prompts, model, tokenizer,
+                         image_size, image_mean, image_std, dtype,
+                         batch_size, device,
+                         pil_transform=None, image_transform=None):
+    """Compute mean CLIP cosine similarity for a list of (image, prompt) pairs.
+
+    Parameters
+    ----------
+    paths : list[str]
+        Image file paths.
+    prompts : list[str]
+        Prompt strings, one per image.
+    pil_transform : callable or None
+        Applied to each PIL image before tensor conversion (e.g. crop_and_resize).
+    image_transform : callable or None
+        Applied to the float32 [0, 1] batch tensor ``(B, 3, H, W)`` after
+        stacking and before CLIP preprocessing (e.g. foveation/downsampling).
+
+    Returns
+    -------
+    float
+        Mean cosine similarity.
+    """
+    all_sims = []
+    n = len(paths)
+
+    for start in range(0, n, batch_size):
+        batch_paths = paths[start:start + batch_size]
+        batch_prompts = prompts[start:start + batch_size]
+
+        # Load images as [0, 1] float32, with optional PIL-level transform.
+        imgs = []
+        for p in batch_paths:
+            img_pil = Image.open(p).convert('RGB')
+            if pil_transform is not None:
+                img_pil = pil_transform(img_pil)
+            arr = np.array(img_pil, dtype=np.float32) / 255.0
+            imgs.append(torch.from_numpy(arr).permute(2, 0, 1))
+        imgs = torch.stack(imgs, dim=0).to(device=device, dtype=torch.float32)
+
+        # Optional image transform (foveation/downsampling) on [0, 1] batch.
+        if image_transform is not None:
+            imgs = image_transform(imgs)
+
+        # Preprocess: resize min side, center crop, normalize
+        imgs = _resize_min_side_then_center_crop(
+            imgs, image_size, image_mean, image_std, dtype
+        )
+
+        # Tokenize prompts
+        text = tokenizer(batch_prompts).to(device=device)
+
+        with torch.no_grad():
+            out = model(imgs, text)
+            if isinstance(out, dict) and 'image_features' in out and 'text_features' in out:
+                img_feat = out['image_features']
+                txt_feat = out['text_features']
+            else:
+                img_feat = model.encode_image(imgs)
+                txt_feat = model.encode_text(text)
+
+            img_feat = F.normalize(img_feat, dim=-1)
+            txt_feat = F.normalize(txt_feat, dim=-1)
+            sim = (img_feat * txt_feat).sum(dim=-1).to(torch.float32)  # (B,)
+
+        all_sims.append(sim.cpu())
+
+        end = min(start + batch_size, n)
+        if end % (batch_size * 10) == 0 or end == n:
+            logger.info(f'  {end}/{n} image-text pairs processed')
+
+    return float(torch.cat(all_sims).mean())
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def compute_clip_score(generation_dir, image_dataset_dir, args=None):
+def compute_clip_score(gen_paths, image_dataset_dir=None, args=None,
+                       foveation_mask=None, foveate_real=False, downsample_real=False,
+                       device=None, real_paths=None, real_pil_transform=None,
+                       real_image_transform=None):
     """Compute average CLIP cosine similarity between images and prompts.
 
-    This metric measures prompt alignment: how well the generated images
-    match the text prompts used to generate them.  It does **not** use
-    reference images; ``image_dataset_dir`` is accepted only for API consistency.
+    Runs on generated images (``clipsim_gen``) and optionally on real/reference
+    images (``clipsim_real``) when ``real_paths`` is provided.  Foveation and
+    downsampling are applied to real images only.
 
     Parameters
     ----------
-    generation_dir : str
-        Path to the directory containing generated images.
-        Must contain at least ``MIN_IMAGES`` (10 000) image files.
+    gen_paths : list[str]
+        Ordered list of generated image file paths.
     image_dataset_dir : str or None
         Unused.  Accepted for API consistency.
     args : dict, optional
@@ -313,21 +393,39 @@ def compute_clip_score(generation_dir, image_dataset_dir, args=None):
     Returns
     -------
     dict
-        ``'clipsim'`` (float) -- mean cosine similarity in [-1, 1].
-            Typically 0.2-0.4 for good text-to-image models.
+        ``'clipsim_gen'``  (float) -- mean cosine similarity for generated images.
+        ``'clipsim_real'`` (float) -- mean cosine similarity for real images.
+                           Only present when ``real_paths`` is provided.
+
+    foveation_mask : np.ndarray or None, optional
+        Binary mask ``(H, W)`` where 1 = foveal, 0 = peripheral.
+        Applied to real images when ``foveate_real=True``.  Default: None.
+    foveate_real : bool, optional
+        Apply foveated blending to real images.  Default: False.
+    downsample_real : bool, optional
+        Bicubic 2× downsample real images before CLIP preprocessing.
+        Default: False.
+    device : str or None, optional
+        PyTorch device string.  Default: None (auto-select).
+    real_paths : list[str] or None, optional
+        Ordered list of real/reference image file paths.  When provided,
+        ``clipsim_real`` is computed and included in the result.
+    real_pil_transform : callable or None, optional
+        PIL-level transform applied to each real image before tensor
+        conversion (e.g. ``crop_and_resize`` to normalize resolution).
 
     Raises
     ------
     ValueError
-        If no prompts can be found, or if prompt count != image count,
-        or if generation_dir contains fewer than ``MIN_IMAGES`` images.
+        If no prompts can be found, or if prompt count != image count.
     """
     if args is None:
         args = {}
 
     batch_size  = int(args.get('batch_size', 64))
     num_images  = args.get('num_images', 50000)
-    device      = args.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
+    if device is None:
+        device  = args.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
     model_name  = args.get('model_name', 'ViT-L-14-336-quickgelu')
     pretrained  = args.get('pretrained', 'openai')
     precision   = args.get('precision', 'fp16')
@@ -358,24 +456,19 @@ def compute_clip_score(generation_dir, image_dataset_dir, args=None):
     image_mean = torch.tensor(model.visual.image_mean, device=device).view(3, 1, 1)
     image_std = torch.tensor(model.visual.image_std, device=device).view(3, 1, 1)
 
-    # -- Collect image paths ---------------------------------------------------
-    gen_paths = _list_images(generation_dir)
-
+    # -- Validate image paths --------------------------------------------------
     if len(gen_paths) == 0:
-        raise ValueError(f'No images found in generation_dir: {generation_dir!r}')
-    if len(gen_paths) < MIN_IMAGES:
-        raise ValueError(
-            f'generation_dir must contain at least {MIN_IMAGES} images, '
-            f'found {len(gen_paths)}: {generation_dir!r}'
-        )
+        raise ValueError('gen_paths is empty.')
 
     # -- Load prompts ----------------------------------------------------------
-    prompts = _load_prompts(generation_dir, args)
+    prompts = _load_prompts(None, args)
 
     # -- Optional hard cap on image count --------------------------------------
     if num_images is not None:
         gen_paths = gen_paths[:num_images]
         prompts = prompts[:num_images]
+        if real_paths is not None:
+            real_paths = real_paths[:num_images]
 
     if len(prompts) != len(gen_paths):
         raise ValueError(
@@ -386,52 +479,65 @@ def compute_clip_score(generation_dir, image_dataset_dir, args=None):
     logger.info(f'Generated images : {len(gen_paths)}')
     logger.info(f'Prompts          : {len(prompts)}')
 
-    # -- Compute CLIP similarities in batches ----------------------------------
-    all_sims = []
-    n = len(gen_paths)
+    # -- Compute CLIP score for generated images --------------------------------
+    logger.info('Computing CLIP score for generated images ...')
+    clipsim_gen = _clip_sim_batch_loop(
+        gen_paths, prompts, model, tokenizer,
+        image_size, image_mean, image_std, dtype,
+        batch_size, device,
+    )
 
-    for start in range(0, n, batch_size):
-        batch_paths = gen_paths[start:start + batch_size]
-        batch_prompts = prompts[start:start + batch_size]
+    result = dict(clipsim_gen=clipsim_gen)
 
-        # Load images as [0, 1] float32
-        imgs = [_load_image_01(p) for p in batch_paths]
-        imgs = torch.stack(imgs, dim=0).to(device=device, dtype=torch.float32)
+    # -- Compute CLIP score for real images (if provided) ----------------------
+    if real_paths is not None:
+        if len(real_paths) != len(prompts):
+            raise ValueError(
+                f'Number of real_paths ({len(real_paths)}) does not match '
+                f'number of prompts ({len(prompts)}).'
+            )
 
-        # Preprocess: resize min side, center crop, normalize
-        imgs = _resize_min_side_then_center_crop(
-            imgs, image_size, image_mean, image_std, dtype
+        # Build foveation/downsampling transform for real images ([0, 1] range).
+        # real_image_transform (pre-built per-image transform) takes priority when provided.
+        real_transform = None
+        if real_image_transform is not None:
+            real_transform = real_image_transform
+        elif downsample_real:
+            def real_transform(batch):
+                H, W = batch.shape[2], batch.shape[3]
+                return F.interpolate(
+                    batch, size=(H // 2, W // 2),
+                    mode='bicubic', align_corners=False, antialias=True,
+                ).clamp(0.0, 1.0)
+        elif foveation_mask is not None and foveate_real:
+            _mask = torch.as_tensor(foveation_mask, dtype=torch.float32).to(device)
+            if _mask.dim() == 2:
+                _mask = _mask[None, None]  # (1, 1, H, W)
+            def real_transform(batch):
+                H, W = batch.shape[2], batch.shape[3]
+                mask_hw = F.interpolate(_mask, size=(H, W), mode='bilinear', align_corners=False)
+                low_res = F.interpolate(
+                    batch, size=(H // 2, W // 2),
+                    mode='bicubic', align_corners=False, antialias=True,
+                ).clamp(0.0, 1.0)
+                low_res_up = F.interpolate(
+                    low_res, size=(H, W),
+                    mode='bicubic', align_corners=False, antialias=True,
+                ).clamp(0.0, 1.0)
+                return low_res_up * (1.0 - mask_hw) + batch * mask_hw
+
+        logger.info(f'Real images      : {len(real_paths)}')
+        logger.info('Computing CLIP score for real images ...')
+        clipsim_real = _clip_sim_batch_loop(
+            real_paths, prompts, model, tokenizer,
+            image_size, image_mean, image_std, dtype,
+            batch_size, device,
+            pil_transform=real_pil_transform,
+            image_transform=real_transform,
         )
+        result['clipsim_real'] = clipsim_real
 
-        # Tokenize prompts
-        text = tokenizer(batch_prompts).to(device=device)
-
-        with torch.no_grad():
-            # Forward pass -- model was created with output_dict=True
-            out = model(imgs, text)
-            if isinstance(out, dict) and 'image_features' in out and 'text_features' in out:
-                img_feat = out['image_features']
-                txt_feat = out['text_features']
-            else:
-                img_feat = model.encode_image(imgs)
-                txt_feat = model.encode_text(text)
-
-            # Cosine similarity per pair
-            img_feat = F.normalize(img_feat, dim=-1)
-            txt_feat = F.normalize(txt_feat, dim=-1)
-            sim = (img_feat * txt_feat).sum(dim=-1).to(torch.float32)  # (B,)
-
-        all_sims.append(sim.cpu())
-
-        end = min(start + batch_size, n)
-        if end % (batch_size * 10) == 0 or end == n:
-            logger.info(f'  {end}/{n} image-text pairs processed')
-
-    # -- Aggregate results -----------------------------------------------------
-    sims = torch.cat(all_sims, dim=0)
-    mean_sim = float(sims.mean())
-
-    return dict(clipsim=mean_sim)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -444,7 +550,9 @@ def _print_results(results):
     print('=' * width)
     print(f"{'CLIP Score Results':^{width}}")
     print('=' * width)
-    print(f"  {'CLIP Sim (higher is better)':<30} {results['clipsim']:>10.4f}")
+    print(f"  {'CLIP Sim gen  (higher is better)':<30} {results['clipsim_gen']:>10.4f}")
+    if 'clipsim_real' in results:
+        print(f"  {'CLIP Sim real (higher is better)':<30} {results['clipsim_real']:>10.4f}")
     print('=' * width)
     print()
 
@@ -452,8 +560,6 @@ def _print_results(results):
 if __name__ == '__main__':
     # -- Configure these variables before running ------------------------------
     GEN_DIR = '/path/to/generated/images'    # directory of generated images
-    # image_dataset_dir is unused by CLIP Score; set to None
-    IMAGE_DATASET_DIR = None
 
     ARGS = {
         # Number of images per forward pass.
@@ -474,7 +580,7 @@ if __name__ == '__main__':
         'precision': 'fp16',
 
         # Path to a text file with one prompt per line (sorted order matches images).
-        # Set to None to auto-discover generation_dir/prompts.txt.
+        # Set to None to auto-discover GEN_DIR/prompts.txt.
         'prompts_file': None,
     }
     # --------------------------------------------------------------------------
@@ -485,5 +591,8 @@ if __name__ == '__main__':
         datefmt='%H:%M:%S',
     )
 
-    results = compute_clip_score(GEN_DIR, IMAGE_DATASET_DIR, ARGS)
+    gen_paths = _list_images(GEN_DIR)
+    # Load prompts (auto-discovers GEN_DIR/prompts.txt if prompts_file is not set)
+    ARGS['prompts'] = _load_prompts(GEN_DIR, ARGS)
+    results = compute_clip_score(gen_paths, args=ARGS)
     _print_results(results)
