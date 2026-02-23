@@ -26,7 +26,7 @@ from PIL import Image
 # ---------------------------------------------------------------------------
 
 FIXATION_DURATION = 5.0          # seconds (≥5 as specified)
-FLASH_DURATION_S  = 0.050        # 50 ms per image
+FLASH_DURATION_S  = 0.100        # 100 ms per image
 BG_COLOR          = (-1, -1, -1) # PsychoPy [-1,1] range: black
 
 IMAGE_KEYS = ['high_res', 'naive', 'ours']  # short labels
@@ -263,9 +263,8 @@ def run_experiment(win, trial_dirs, imgs_per_trial, csv_writer, csvfile):
         # select pairs with replacement
         pairs = [random.choice(ALL_PAIRS) for _ in range(imgs_per_trial)]
 
-        show_fixation(win, stims, trial_idx, num_trials)
-
         for pair_idx, (key_a, key_b) in enumerate(pairs):
+            show_fixation(win, stims, trial_idx, num_trials)
             # randomize order
             ordered = [key_a, key_b]
             random.shuffle(ordered)
