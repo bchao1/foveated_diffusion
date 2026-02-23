@@ -836,6 +836,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         soft_foveation_blend: bool = False,
         vis_vlow_x0_folder: Optional[str] = None,
         vis_vlow_x0_steps: Optional[List[int]] = None,
+        full_res_foveation_mask: Optional[torch.Tensor] = None,
     ):
         """
         Generate images with optional foveated rendering.
@@ -1056,12 +1057,16 @@ class Flux2FoveatedImagePipeline(BasePipeline):
             # Step 4: Upsample low-res image and merge
             low_res_image = F.interpolate(low_res_image, size=(height, width), mode='bicubic', align_corners=False)
             
-            high_res_foveation_mask = F.interpolate(
-                foveation_mask[None, None, :, :].float(), 
-                size=(height, width), 
-                mode='bicubic'
-            ).to(latents.dtype).to(latents.device)
-            
+            if full_res_foveation_mask is not None:
+                high_res_foveation_mask = full_res_foveation_mask[None, None, :, :].float()
+            else:
+                high_res_foveation_mask = F.interpolate(
+                    foveation_mask[None, None, :, :].float(), 
+                    size=(height, width), 
+                    mode='bicubic'
+                )
+            high_res_foveation_mask = high_res_foveation_mask.to(latents.dtype).to(latents.device)
+                
             if soft_foveation_blend:
                 # Soft edge: Gaussian falloff over ~upscale_factor pixels at high-res
                 upscale = height / latent_height

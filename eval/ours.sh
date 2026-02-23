@@ -31,8 +31,8 @@ CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
     --full_eval \
-    --full_eval_mask checkerboard \
+    --full_eval_mask square \
     --foveation_outline false \
-    --soft_foveation_blend false \
+    --soft_foveation_blend true \
     --prompt_dataset_path /local/brian/Aesthetic-Train-V2/metadata.csv \
     --num_prompts 50
