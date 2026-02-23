@@ -15,7 +15,6 @@ accelerate launch train_foveated.py \
   --learning_rate 1e-4 \
   --tokenAE_learning_rate 1e-4 \
   --tokenAE_train_steps 0 \
-  --max_training_steps 10000 \
   --num_epochs 1 \
   --remove_prefix_in_ckpt "pipe.dit." \
   --output_path "/local/brian/foveated_diffusion/models/eccv2026_final/$exp_name" \
