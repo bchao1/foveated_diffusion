@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 import json
@@ -42,9 +43,9 @@ def make_per_image_foveation_transform(mask_paths, device, vmin, vmax):
         imgs = list(batch.unbind(0))
         for i in range(B):
             mask_path = mask_paths[state['idx'] + i]
+            img = imgs[i]                                   # (3, H, W)
+            H, W = img.shape[1], img.shape[2]
             if mask_path is not None:
-                img = imgs[i]                               # (3, H, W)
-                H, W = img.shape[1], img.shape[2]
                 mask_arr = np.array(
                     Image.open(mask_path).convert('L'), dtype=np.float32
                 ) / 255.0
@@ -52,16 +53,24 @@ def make_per_image_foveation_transform(mask_paths, device, vmin, vmax):
                 mask_hw = F.interpolate(
                     mask_t, size=(H, W), mode='bilinear', align_corners=False
                 )
-                img4 = img.unsqueeze(0)
-                low_res = F.interpolate(
-                    img4, size=(H // 2, W // 2),
-                    mode='bicubic', align_corners=False, antialias=True,
-                ).clamp(vmin, vmax)
-                low_res_up = F.interpolate(
-                    low_res, size=(H, W),
-                    mode='bicubic', align_corners=False, antialias=True,
-                ).clamp(vmin, vmax)
-                imgs[i] = (low_res_up * (1 - mask_hw) + img4 * mask_hw).squeeze(0)
+            else:
+                # Fallback: center square mask with side = W // 2
+                side = W // 2
+                mask_arr = np.zeros((H, W), dtype=np.float32)
+                top = (H - side) // 2
+                left = (W - side) // 2
+                mask_arr[top:top + side, left:left + side] = 1.0
+                mask_hw = torch.from_numpy(mask_arr).to(batch.device)[None, None]
+            img4 = img.unsqueeze(0)
+            low_res = F.interpolate(
+                img4, size=(H // 2, W // 2),
+                mode='bicubic', align_corners=False, antialias=True,
+            ).clamp(vmin, vmax)
+            low_res_up = F.interpolate(
+                low_res, size=(H, W),
+                mode='bicubic', align_corners=False, antialias=True,
+            ).clamp(vmin, vmax)
+            imgs[i] = (low_res_up * (1 - mask_hw) + img4 * mask_hw).squeeze(0)
         state['idx'] += B
         return torch.stack(imgs)
 
@@ -85,6 +94,8 @@ if __name__ == "__main__":
     parser.add_argument("--debug_num_pairs", type=int, default=1, help="Number of image pairs to visualize in debug mode (default: 1)")
     parser.add_argument("--test", action="store_true", help="Smoke-test: load models, run on dummy data, check shapes, then exit")
     args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
 
     device = args.device if args.device is not None else ('cuda:0' if torch.cuda.is_available() else 'cpu')
 
@@ -207,17 +218,19 @@ if __name__ == "__main__":
 
     # Derive per-image foveation mask paths from generated image filenames.
     # img_XXXXXXXX.png  ->  mask_XXXXXXXX.png  (same directory).
+    # Only needed when foveate_real=True; skip entirely otherwise.
     foveation_mask_paths = []
-    for gp in gen_image_paths:
-        basename = os.path.basename(gp)
-        mask_basename = 'mask_' + basename[4:] if basename.startswith('img_') else 'mask_' + basename
-        mask_path = os.path.join(os.path.dirname(gp), mask_basename)
-        if not os.path.exists(mask_path):
-            print(f"ERROR: Foveation mask not found for {basename}: {mask_path}. "
-                  "Treating foveate_real=False for this image.")
-            foveation_mask_paths.append(None)
-        else:
-            foveation_mask_paths.append(mask_path)
+    if args.foveate_real:
+        for gp in gen_image_paths:
+            basename = os.path.basename(gp)
+            mask_basename = 'mask_' + basename[4:] if basename.startswith('img_') else 'mask_' + basename
+            mask_path = os.path.join(os.path.dirname(gp), mask_basename)
+            if not os.path.exists(mask_path):
+                print(f"WARNING: Foveation mask not found for {basename}: {mask_path}. "
+                      "Using center square mask.")
+                foveation_mask_paths.append(None)
+            else:
+                foveation_mask_paths.append(mask_path)
 
     # Preprocessing transform: crop and resize each real image to 1024x1024
     # before foveation/downsampling and inception feature extraction.
