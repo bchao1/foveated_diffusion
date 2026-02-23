@@ -107,8 +107,8 @@ def create_foveation_mask(
         height, width (int): Full image dimensions (mask is created at token_grid/2 then upsampled).
         center (tuple): (x, y) normalized coordinates in [-0.5, 0.5].
         r (float): For circular: radius relative to half the diagonal. For square: ratio of side to
-            image (1 = full image, 0 = all black).
-        shape (str): "circular" or "square".
+            image (1 = full image, 0 = all black). Ignored for checkerboard.
+        shape (str): "circular", "square", or "checkerboard" (interleaved pattern).
         device: Device for the tensor (default: cpu).
 
     Returns:
@@ -117,6 +117,11 @@ def create_foveation_mask(
     if device is None:
         device = torch.device("cpu")
     high_h, high_w = height // 16, width // 16
+    if shape == "checkerboard":
+        i = torch.arange(high_h, device=device, dtype=torch.long)
+        j = torch.arange(high_w, device=device, dtype=torch.long)
+        ii, jj = torch.meshgrid(i, j, indexing="ij")
+        return ((ii + jj) % 2 == 0).float()
     low_h, low_w = high_h // 2, high_w // 2
     y_range = torch.arange(low_h, device=device, dtype=torch.float32)
     x_range = torch.arange(low_w, device=device, dtype=torch.float32)
@@ -522,19 +527,19 @@ SINGLE_PROMPT_GENERATION_FUNCTIONS = {
 
 # full-prompt generation wrapper. calls the single-prompt generation function for each prompt.
 def run_full_eval(single_prompt_generation_func, pipe, args, output_dir, prompts, token_upsampler=None, token_downsampler=None):
-    """Run full-prompt generation. Passes original square mask (center=0, r=0.5) for naive/ours; None for high_res."""
-    # Original square mask for naive_mixed_res and ours
-    default_square_mask = None
+    """Run full-prompt generation. Passes foveation mask for naive/ours (shape from args.full_eval_mask); None for high_res."""
+    default_mask = None
     if single_prompt_generation_func is not run_high_res:
-        default_square_mask = create_foveation_mask(
-            args.height, args.width, center=(0, 0), r=0.5, shape="square", device=pipe.device
+        mask_shape = getattr(args, "full_eval_mask", "square")
+        default_mask = create_foveation_mask(
+            args.height, args.width, center=(0, 0), r=0.5, shape=mask_shape, device=pipe.device
         )
     prompt_list = []
     for prompt_idx, prompt in enumerate(prompts):
         single_prompt_generation_func(
             pipe, args, output_dir, prompt, prompt_idx,
             token_upsampler, token_downsampler,
-            foveation_mask=default_square_mask,
+            foveation_mask=default_mask,
         )
         if args.num_prompts is not None and prompt_idx >= args.num_prompts:
             break
@@ -1002,6 +1007,8 @@ if __name__ == "__main__":
                         help='Experiment to run')
     parser.add_argument('--full_eval', action='store_true', default=False,
                         help='Run full evaluation on prompt dataset')
+    parser.add_argument('--full_eval_mask', type=str, default='square', choices=['square', 'checkerboard'],
+                        help='Foveation mask for full eval: square (center region) or checkerboard (interleaved)')
     parser.add_argument('--prompt_dataset_path', type=str, help='Path to the prompt dataset as a csv file')
     parser.add_argument('--num_prompts', type=int, default=None, help='Number of prompts to run')
     parser.add_argument('--num_cols', type=int, default=4, help='Number of columns (foveation steps per row) for foveation_trajectory_grid')
