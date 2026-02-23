@@ -595,7 +595,11 @@ def extract_inception_features(image_paths, inception_net, inception_style,
         # Load each image as PIL, apply optional pil_transform before tensor conversion.
         imgs = []
         for p in batch_paths:
-            img_pil = Image.open(p).convert('RGB')
+            try:
+                img_pil = Image.open(p).convert('RGB')
+            except Exception as e:
+                logger.warning(f"Skipping image (failed to load): {p} — {e}")
+                continue
             if pil_transform is not None:
                 img_pil = pil_transform(img_pil)
             arr = np.array(img_pil, dtype=np.float32) / 255.0
@@ -625,7 +629,8 @@ def extract_inception_features(image_paths, inception_net, inception_style,
                 batch_u8 = (batch * 127.5 + 128).clamp(0, 255).to(torch.uint8)
                 feat = inception_net(batch_u8, return_features=True)
                 # Compute class probs via the output layer (matches lakonlab line 714).
-                pred = F.linear(feat, inception_net.output.weight).softmax(dim=1)
+                _base_net = inception_net.module if hasattr(inception_net, 'module') else inception_net
+                pred = F.linear(feat, _base_net.output.weight).softmax(dim=1)
             else:
                 # InceptionV3Features expects float32 [0, 1].
                 batch_01 = (batch + 1.0) / 2.0   # [-1,1] -> [0,1]
