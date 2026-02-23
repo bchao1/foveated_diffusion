@@ -17,6 +17,7 @@ import sys
 import math
 import time
 import random
+import subprocess
 import yaml
 
 import torch
@@ -511,7 +512,7 @@ def load_token_ae(args, device):
     return token_upsampler, token_downsampler
 
 # single-prompt generation (foveation_mask passed in; high_res ignores it)
-def run_high_res(pipe, args, output_dir, prompt, prompt_idx, token_upsampler=None, token_downsampler=None, foveation_mask=None):
+def run_high_res(pipe, args, output_dir, prompt, prompt_idx, token_upsampler=None, token_downsampler=None, foveation_mask=None, full_res_foveation_mask=None):
     """Run baseline full-resolution generation."""
     print(f"Running high-res generation for prompt {prompt_idx:010d}: {prompt}")
     image = pipe(
@@ -597,29 +598,29 @@ def run_full_eval(single_prompt_generation_func, pipe, args, output_dir, prompts
             args.height, args.width, center=(0, 0), r=0.5, shape=mask_shape, device=pipe.device
         )
     prompt_list = []
-    for prompt_idx, prompt in enumerate(prompts):
-        if single_prompt_generation_func is run_high_res:
-            single_prompt_generation_func(
-                pipe, args, output_dir, prompt, prompt_idx,
-                token_upsampler, token_downsampler,
-                foveation_mask=default_mask,
-            )
-        else:
-            single_prompt_generation_func(
-                pipe, args, output_dir, prompt, prompt_idx,
-                token_upsampler, token_downsampler,
-                foveation_mask=default_mask,
-                full_res_foveation_mask=full_res_mask,
-            )
-        if args.num_prompts is not None and prompt_idx >= args.num_prompts:
+    image_names = []
+    subset_idx = getattr(args, "subset_idx", 0)
+    num_subsets = max(1, getattr(args, "num_subsets", 1))
+    for global_idx, prompt in enumerate(prompts):
+        # Respect global num_prompts limit
+        if args.num_prompts is not None and global_idx >= args.num_prompts:
             break
+        # Shard prompts across subsets for distributed inference
+        if (global_idx % num_subsets) != subset_idx:
+            continue
+
+        prompt_idx = global_idx  # keep image ids consistent with single-GPU run
+        single_prompt_generation_func(
+            pipe, args, output_dir, prompt, prompt_idx,
+            token_upsampler, token_downsampler,
+            foveation_mask=default_mask,
+            full_res_foveation_mask=full_res_mask,
+        )
         prompt_list.append(prompt)
+        image_names.append(f"img_{prompt_idx:010d}.png")
     # write metadata.csv: full image filename and prompt per row
-    metadata = pd.DataFrame({
-        "image": [f"img_{i:010d}.png" for i in range(len(prompt_list))],
-        "prompt": prompt_list,
-    })
-    metadata.to_csv(os.path.join(output_dir, "metadata.csv"), index=False)
+    metadata = pd.DataFrame({"image": image_names, "prompt": prompt_list})
+    metadata.to_csv(os.path.join(output_dir, f"metadata_{subset_idx:05d}.csv"), index=False)
 
 
 def run_user_study(pipe, args, output_dir, token_upsampler, token_downsampler):
@@ -1076,7 +1077,7 @@ if __name__ == "__main__":
     # Output configuration
     parser.add_argument('--output_dir', type=str, default='./outputs/flux2_foveated_diffsynth',
                         help='Directory to save generated images')
-    parser.add_argument('--save_vis_vlow_x0', action='store_true',
+    parser.add_argument('--save_vis_vlow_x0', type=_str_to_bool, default=False,
                         help='Save v_low_unpacked and x0_low RGB visualizations to output_dir/vis_vlow_x0 at specific denoising steps.')
     parser.add_argument('--vis_vlow_x0_steps', type=str, default=None,
                         help='Comma-separated step indices to save (e.g. "0,12,25,37,49"). Default: first, 25%%, 50%%, 75%%, last.')
@@ -1084,7 +1085,7 @@ if __name__ == "__main__":
                         help='VAE decode mode: direct or merge')
     parser.add_argument('--prediction_type', type=str, default="clean", choices=["clean", "flow", "refiner"],
                         help='Prediction type for token AE: clean or flow')
-    parser.add_argument('--use_as_refiner', action='store_true', default=False,
+    parser.add_argument('--use_as_refiner', type=_str_to_bool, default=False,
                         help='Use the token upsampler as a refiner')
     
     # Experiment configuration
@@ -1098,6 +1099,10 @@ if __name__ == "__main__":
                         help='Experiment to run')
     parser.add_argument('--full_eval', action='store_true', default=False,
                         help='Run full evaluation on prompt dataset')
+    parser.add_argument('--subset_idx', type=int, default=0,
+                        help='Subset index for distributed full_eval (0 <= subset_idx < num_subsets)')
+    parser.add_argument('--num_subsets', type=int, default=1,
+                        help='Total number of subsets for distributed full_eval')
     parser.add_argument('--full_eval_mask', type=str, default='square', choices=['square', 'checkerboard'],
                         help='Foveation mask for full eval: square (center region) or checkerboard (interleaved)')
     parser.add_argument('--prompt_dataset_path', type=str, help='Path to the prompt dataset as a csv file')
@@ -1121,7 +1126,7 @@ if __name__ == "__main__":
     parser.add_argument('--in_channels', type=int, default=32, help='Token AE in_channels.')
     parser.add_argument('--feature_channels', type=int, default=64, help='Token AE feature_channels.')
     parser.add_argument('--embedding_dim', type=int, default=3072, help='Token AE embedding_dim.')
-    parser.add_argument('--tokenAE_dont_use_learned_components', action='store_true', default=False,
+    parser.add_argument('--tokenAE_dont_use_learned_components', type=_str_to_bool, default=False,
                         help='Do not use learned components for TokenAE')
     parser.add_argument('--upsampler_normalization_type', type=str, default="gn", choices=["ada", "gn", "none"], help="Normalization type for token upsampler.")
     parser.add_argument('--downsampler_normalization_type', type=str, default="none", choices=["ada", "gn", "none"], help="Normalization type for token downsampler.")
@@ -1143,10 +1148,10 @@ if __name__ == "__main__":
     parser.add_argument('--flux2_upsampler_num_pre_upsampler_res_blocks', type=int, default=0)
     parser.add_argument('--flux2_upsampler_naive_upsample_mode', type=str, default=None, choices=["nearest", "bilinear"],
                         help="Add residual path: output = naive_upsample(input) + network_output.")
-    parser.add_argument('--flux2_downsampler_add_attention', action='store_true', default=False)
+    parser.add_argument('--flux2_downsampler_add_attention', type=_str_to_bool, default=False)
     parser.add_argument('--flux2_downsampler_attention_head_dim', type=int, default=None)
     parser.add_argument('--flux2_downsampler_attn_groups', type=int, default=None)
-    parser.add_argument('--flux2_upsampler_add_attention', action='store_true', default=False)
+    parser.add_argument('--flux2_upsampler_add_attention', type=_str_to_bool, default=False)
     parser.add_argument('--flux2_upsampler_attention_head_dim', type=int, default=None)
     parser.add_argument('--flux2_upsampler_attn_groups', type=int, default=None)
 
