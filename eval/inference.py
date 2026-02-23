@@ -187,7 +187,7 @@ def create_foveation_mask_full_res(
     dist_sq = (x_grid - cx) ** 2 + (y_grid - cy) ** 2
     return (dist_sq <= radius_px ** 2).float()
 
-
+def generate_foveation_trajectory_masks(height, width, args, device):
     """
     Generate a list of foveation masks for the trajectory grid.
     Uses args.foveation_trajectory_type: "radius" (vary r at center) or "circular" (center on orbit).
