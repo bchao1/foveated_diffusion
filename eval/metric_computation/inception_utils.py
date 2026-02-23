@@ -525,8 +525,10 @@ def _load_image_tensor(path):
 
 
 def extract_inception_features(image_paths, inception_net, inception_style,
-                                batch_size=64, device='cpu', resize=False):
+                                batch_size=64, device='cpu', resize=False,
+                                image_transform=None, pil_transform=None):
     """Extract Inception pool features and class probabilities for a list of images.
+    Matches https://github.com/Lakonik/piFlow/blob/67431c35d88779088acec23b38773402ace0fd94/lakonlab/evaluation/metrics.py#L292
 
     Preprocessing matches lakonlab's ``InceptionMetrics.extract_features``:
       1. Load image as float32 in [-1, 1] (done in ``_load_image_tensor``).
@@ -562,6 +564,10 @@ def extract_inception_features(image_paths, inception_net, inception_style,
     resize : bool, optional
         If True, resize images to 299x299 via torch F.interpolate bicubic
         with antialias before feeding to the model.  Default: False.
+    image_transform : callable or None, optional
+        If provided, called on each batch tensor ``(B, 3, H, W)`` in ``[-1, 1]``
+        after loading and before optional resize.  Use this to apply foveation
+        masks or spatial downsampling to the images.  Default: None.
 
     Returns
     -------
@@ -586,16 +592,32 @@ def extract_inception_features(image_paths, inception_net, inception_style,
     for start in range(0, n, batch_size):
         batch_paths = image_paths[start:start + batch_size]
 
-        # _load_image_tensor returns (3, H, W) float32 in [-1, 1].
-        imgs = [_load_image_tensor(p) for p in batch_paths]
+        # Load each image as PIL, apply optional pil_transform before tensor conversion.
+        imgs = []
+        for p in batch_paths:
+            img_pil = Image.open(p).convert('RGB')
+            if pil_transform is not None:
+                img_pil = pil_transform(img_pil)
+            arr = np.array(img_pil, dtype=np.float32) / 255.0
+            arr = arr * 2.0 - 1.0
+            imgs.append(torch.from_numpy(arr).permute(2, 0, 1))
+
+        # Resize per image before stacking so variable-size images can be batched.
+        # Must happen here (not after stack) because torch.stack requires equal sizes.
+        if resize:
+            imgs = [
+                F.interpolate(
+                    img.unsqueeze(0), size=(299, 299),
+                    mode='bicubic', align_corners=False, antialias=True,
+                ).clamp(-1, 1).squeeze(0)
+                for img in imgs
+            ]
+
         batch = torch.stack(imgs, dim=0).to(device)   # (B, 3, H, W) in [-1,1]
 
-        # Optional resize to 299x299 (matches lakonlab lines 708-710).
-        if resize:
-            batch = F.interpolate(
-                batch, size=(299, 299), mode='bicubic',
-                align_corners=False, antialias=True
-            ).clamp(min=-1, max=1)
+        # Optional image transform (e.g. foveation mask or spatial downsampling).
+        if image_transform is not None:
+            batch = image_transform(batch)
 
         with torch.no_grad():
             if inception_style == 'StyleGAN':

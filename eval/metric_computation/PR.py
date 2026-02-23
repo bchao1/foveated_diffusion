@@ -32,11 +32,11 @@ Direct execution
 
 import os
 import sys
-import random
 import logging
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 # Local utilities (same directory as this script)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -47,9 +47,6 @@ from inception_utils import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Minimum number of images in each directory.
-MIN_IMAGES = 10_000
 
 
 # ---------------------------------------------------------------------------
@@ -151,23 +148,23 @@ def _compute_pr(real_feats_t, fake_feats_t, k=3,
 # Public API
 # ---------------------------------------------------------------------------
 
-def compute_pr(generation_dir, image_dataset_dir, args=None):
+def compute_pr(gen_paths, real_paths, args=None,
+               foveation_mask=None, foveate_real=False, downsample_real=False,
+               device=None, real_pil_transform=None, real_image_transform=None):
     """Compute Precision and Recall between generated and reference images.
 
     Supports two modes for obtaining reference (real) features:
-      1. **From images**: pass ``image_dataset_dir`` pointing to a directory of images.
+      1. **From images**: pass ``real_paths`` as a list of image file paths.
       2. **From PKL**: pass ``args['reference_pkl']`` with a path or
          ``huggingface://`` URL to a pre-computed reference PKL file.
-         When a reference_pkl is provided, ``image_dataset_dir`` is ignored.
+         When a reference_pkl is provided, ``real_paths`` is ignored.
 
     Parameters
     ----------
-    generation_dir : str
-        Path to the directory containing generated images.
-        Must contain at least ``MIN_IMAGES`` (10 000) image files.
-    image_dataset_dir : str or None
-        Path to the directory containing ground-truth / reference images.
-        Must contain at least ``MIN_IMAGES`` (10 000) image files.
+    gen_paths : list[str]
+        Ordered list of generated image file paths.
+    real_paths : list[str] or None
+        Ordered list of ground-truth / reference image file paths.
         Ignored when ``reference_pkl`` is provided.
     args : dict, optional
         Metric-specific options.  All keys are optional:
@@ -176,7 +173,7 @@ def compute_pr(generation_dir, image_dataset_dir, args=None):
             Number of images per inception forward pass.
 
         ``num_images`` (int or None, default ``50000``)
-            Maximum number of images to use from each directory.
+            Maximum number of images to use.
             ``None`` means all available images are used.
 
         ``device`` (str, default ``'cuda'`` if available else ``'cpu'``)
@@ -197,7 +194,7 @@ def compute_pr(generation_dir, image_dataset_dir, args=None):
         ``reference_pkl`` (str or None, default ``None``)
             Path to a pre-computed reference PKL file containing real image
             features. Supports local paths, ``huggingface://`` URLs, and
-            ``http(s)://`` URLs.  When provided, ``image_dataset_dir`` is ignored.
+            ``http(s)://`` URLs.  When provided, ``real_paths`` is ignored.
             PKL must contain ``'real_feats_np'`` key with shape ``(N, 2048)``.
 
         ``k`` (int, default ``3``)
@@ -209,17 +206,9 @@ def compute_pr(generation_dir, image_dataset_dir, args=None):
         ``col_batch_size`` (int, default ``10000``)
             Batch size for column dimension in pairwise distance computation.
 
-        ``equal`` (bool, default ``False``)
-            When ``True`` and the training directory has *more* images than
-            the generation directory, randomly sub-sample the training images
-            so that both sets have the same size.
-
-        ``seed`` (int, default ``42``)
-            Random seed used for the ``equal`` sub-sampling.
-
         ``generation_feats_pkl`` (str or None, default ``None``)
             If set, path to a PKL file to cache inception features for the
-            generation directory.  When the file exists, features are loaded
+            generated images.  When the file exists, features are loaded
             from it instead of re-extracting; when the file does not exist,
             features are extracted and then saved to this path for future runs.
 
@@ -231,17 +220,30 @@ def compute_pr(generation_dir, image_dataset_dir, args=None):
         ``'recall'``    (float) -- fraction of real images within the
                         generated manifold support (higher is better).
 
-    Raises
-    ------
-    ValueError
-        If either directory contains fewer than ``MIN_IMAGES`` images.
+    foveation_mask : np.ndarray or None, optional
+        Binary mask of shape ``(H, W)`` (same resolution as the images), where
+        1 = high-resolution (foveal) region and 0 = peripheral region.
+        Applied to real images when ``foveate_real=True``.  Default: None.
+    foveate_real : bool, optional
+        When True and ``foveation_mask`` is not None, apply foveated blending to
+        real images: the foveal region (mask=1) is kept at full resolution while
+        the peripheral region (mask=0) is replaced with a bicubic
+        downsample-then-upsample of the full image.  Default: False.
+    downsample_real : bool, optional
+        When True, bicubic 2× downsample each real image from ``(H, W)`` to
+        ``(H/2, W/2)`` before feature extraction.  Overrides
+        ``foveation_mask`` / ``foveate_real``.  Default: False.
+    device : str or None, optional
+        PyTorch device string (e.g. ``'cuda:0'``, ``'cpu'``).  When provided,
+        takes precedence over ``args['device']``.  Default: None (auto-select).
     """
     if args is None:
         args = {}
 
     batch_size      = int(args.get('batch_size', 64))
     num_images      = args.get('num_images', 50000)
-    device          = args.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
+    if device is None:
+        device      = args.get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
     inception_style = args.get('inception_style', 'StyleGAN')
     inception_path  = args.get('inception_path', None)
     resize          = bool(args.get('resize', False))
@@ -249,8 +251,6 @@ def compute_pr(generation_dir, image_dataset_dir, args=None):
     k               = int(args.get('k', 3))
     row_batch_size  = int(args.get('row_batch_size', 10000))
     col_batch_size  = int(args.get('col_batch_size', 10000))
-    equal           = bool(args.get('equal', False))
-    seed            = int(args.get('seed', 42))
     generation_feats_pkl = args.get('generation_feats_pkl', None)
 
     # -- Load inception model --------------------------------------------------
@@ -263,7 +263,7 @@ def compute_pr(generation_dir, image_dataset_dir, args=None):
     )
     inception_net = inception_net.to(device).eval()
 
-    # -- Load reference PKL or collect real image paths ------------------------
+    # -- Load reference PKL or validate real image paths -----------------------
     if reference_pkl is not None:
         logger.info(f'Using reference PKL: {reference_pkl}')
         ref = load_reference_pkl(reference_pkl)
@@ -271,44 +271,17 @@ def compute_pr(generation_dir, image_dataset_dir, args=None):
         logger.info(f'Reference features loaded: {real_feats_np.shape}')
     else:
         real_feats_np = None
-
-    # -- Collect image paths ---------------------------------------------------
-    gen_paths = _list_images(generation_dir)
-
-    if len(gen_paths) == 0:
-        raise ValueError(f'No images found in generation_dir: {generation_dir!r}')
-    if len(gen_paths) < MIN_IMAGES:
-        raise ValueError(
-            f'generation_dir must contain at least {MIN_IMAGES} images, '
-            f'found {len(gen_paths)}: {generation_dir!r}'
-        )
-
-    if reference_pkl is None:
-        real_paths = _list_images(image_dataset_dir)
-        if len(real_paths) == 0:
-            raise ValueError(f'No images found in image_dataset_dir: {image_dataset_dir!r}')
-        if len(real_paths) < MIN_IMAGES:
-            raise ValueError(
-                f'image_dataset_dir must contain at least {MIN_IMAGES} images, '
-                f'found {len(real_paths)}: {image_dataset_dir!r}'
-            )
-
-    # -- Equal subsampling -----------------------------------------------------
-    if reference_pkl is None and equal and len(real_paths) > len(gen_paths):
-        rng = random.Random(seed)
-        real_paths = rng.sample(real_paths, len(gen_paths))
-        logger.info(
-            f'equal=True: sub-sampled training images to {len(real_paths)} '
-            f'(seed={seed})'
-        )
+        if not real_paths:
+            raise ValueError('real_paths is empty and no reference_pkl was provided.')
 
     # -- Optional hard cap on image count --------------------------------------
     if num_images is not None:
         gen_paths = gen_paths[:num_images]
-        if reference_pkl is None:
-            real_paths = real_paths[:num_images]
-        else:
+        if reference_pkl is not None:
             real_feats_np = real_feats_np[:num_images]
+
+    if len(gen_paths) == 0:
+        raise ValueError('gen_paths is empty.')
 
     logger.info(f'Generated images  : {len(gen_paths)}')
     if reference_pkl is None:
@@ -329,10 +302,42 @@ def compute_pr(generation_dir, image_dataset_dir, args=None):
         if generation_feats_pkl:
             save_generation_feats_pkl(generation_feats_pkl, gen_feats, gen_preds)
 
+    # Build real-image transform from foveation flags.
+    # real_image_transform (pre-built per-image transform) takes priority when provided.
+    real_transform = None
+    if real_image_transform is not None:
+        real_transform = real_image_transform
+    elif downsample_real:
+        def real_transform(batch):
+            H, W = batch.shape[2], batch.shape[3]
+            return F.interpolate(
+                batch, size=(H // 2, W // 2),
+                mode='bicubic', align_corners=False, antialias=True,
+            ).clamp(-1.0, 1.0)
+    elif foveation_mask is not None and foveate_real:
+        _mask = torch.as_tensor(foveation_mask, dtype=torch.float32).to(device)
+        if _mask.dim() == 2:
+            _mask = _mask[None, None]  # (1, 1, H_orig, W_orig)
+        def real_transform(batch):
+            H, W = batch.shape[2], batch.shape[3]
+            # Resize mask to match actual batch spatial dims (handles resize=True at 299x299).
+            mask_hw = F.interpolate(_mask, size=(H, W), mode='bilinear', align_corners=False)
+            low_res = F.interpolate(
+                batch, size=(H // 2, W // 2),
+                mode='bicubic', align_corners=False, antialias=True,
+            ).clamp(-1.0, 1.0)
+            low_res_up = F.interpolate(
+                low_res, size=(H, W),
+                mode='bicubic', align_corners=False, antialias=True,
+            ).clamp(-1.0, 1.0)
+            return low_res_up * (1.0 - mask_hw) + batch * mask_hw
+
     if reference_pkl is None:
         logger.info('Extracting features from reference images ...')
         real_feats_np, _ = extract_inception_features(
-            real_paths, inception_net, inception_style, batch_size, device, resize=resize
+            real_paths, inception_net, inception_style, batch_size, device,
+            resize=resize, image_transform=real_transform,
+            pil_transform=real_pil_transform,
         )
 
     # -- Compute Precision and Recall ------------------------------------------
@@ -373,7 +378,7 @@ if __name__ == '__main__':
         # Number of images per inception forward pass.
         'batch_size': 64,
 
-        # Hard cap on images used from each directory.
+        # Hard cap on images used.
         # Standard practice: 50000.  Set to None to use all available images.
         'num_images': 50000,
 
@@ -396,7 +401,7 @@ if __name__ == '__main__':
         'resize': False,
 
         # Pre-computed reference PKL file (optional).
-        # When provided, training_dir is ignored and features are loaded from PKL.
+        # When provided, real_paths is ignored and features are loaded from PKL.
         # Supports local paths, huggingface:// URLs, and http(s):// URLs.
         'reference_pkl': None,
 
@@ -406,13 +411,6 @@ if __name__ == '__main__':
         # Batch sizes for pairwise distance computation.
         'row_batch_size': 10000,
         'col_batch_size': 10000,
-
-        # When True, randomly sub-sample training images to match the count
-        # of generated images (only when training_dir has MORE images).
-        'equal': False,
-
-        # Random seed used for 'equal' sub-sampling.
-        'seed': 42,
 
         # Cache generation inception features to this PKL path (load if exists, else save after extraction).
         'generation_feats_pkl': None,
@@ -425,5 +423,7 @@ if __name__ == '__main__':
         datefmt='%H:%M:%S',
     )
 
-    results = compute_pr(GEN_DIR, IMAGE_DATASET_DIR, ARGS)
+    gen_paths  = _list_images(GEN_DIR)
+    real_paths = _list_images(IMAGE_DATASET_DIR)
+    results = compute_pr(gen_paths, real_paths, ARGS)
     _print_results(results)
