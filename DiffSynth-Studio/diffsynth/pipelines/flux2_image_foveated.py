@@ -36,6 +36,29 @@ from ..models.flux2_vae import Flux2VAE
 from ..models.z_image_text_encoder import ZImageTextEncoder
 
 
+def _gaussian_blur_mask_2d(
+    mask: torch.Tensor,
+    sigma_pixels: float,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Apply separable Gaussian blur to a [1, 1, H, W] mask. sigma_pixels controls falloff width."""
+    # Kernel size odd, ~3 sigma on each side
+    k = max(3, int(math.ceil(3 * sigma_pixels)) * 2 + 1)
+    if k % 2 == 0:
+        k += 1
+    x = torch.arange(k, device=device, dtype=dtype) - (k - 1) / 2.0
+    g = torch.exp(-(x ** 2) / (2 * sigma_pixels ** 2 + 1e-6))
+    g = g / g.sum()
+    # [1, 1, k, 1] and [1, 1, 1, k] for separable conv
+    kernel_h = g.view(1, 1, k, 1)
+    kernel_w = g.view(1, 1, 1, k)
+    pad = k // 2
+    out = F.conv2d(mask, kernel_h, padding=(pad, 0))
+    out = F.conv2d(out, kernel_w, padding=(0, pad))
+    return out
+
+
 class Flux2FoveatedImagePipeline(BasePipeline):
     """
     FLUX2 Foveated Image Generation Pipeline.
@@ -810,6 +833,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         decode_mode: str = "direct",
         prediction_type: str = "clean",
         tokenAE_training: bool = False,
+        soft_foveation_blend: bool = False,
         vis_vlow_x0_folder: Optional[str] = None,
         vis_vlow_x0_steps: Optional[List[int]] = None,
     ):
@@ -823,6 +847,8 @@ class Flux2FoveatedImagePipeline(BasePipeline):
             token_upsampler: Learned upsampler for x0 prediction upsampling.
             token_downsampler: Learned downsampler for latent downsampling.
             decode_mode: "direct" or "merge" for VAE decoding.
+            soft_foveation_blend: If True, apply Gaussian falloff to the foveation mask at merge
+                so the blend is soft-edged over ~upscale_factor pixels (smooth transition).
         """
         self.scheduler.set_timesteps(num_inference_steps, denoising_strength=denoising_strength, dynamic_shift_len=height//16*width//16)
 
@@ -848,6 +874,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
             "seed": seed, "rand_device": rand_device,
             "num_inference_steps": num_inference_steps,
             "foveation_mask": foveation_mask,
+            "soft_foveation_blend": soft_foveation_blend,
         }
         for unit in self.units:
             inputs_shared, inputs_posi, inputs_nega = self.unit_runner(unit, self, inputs_shared, inputs_posi, inputs_nega)
@@ -926,7 +953,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
                 if latent_ids.ndim == 2:
                     latent_ids = latent_ids.unsqueeze(0).expand(batch_size, -1, -1)
             else:
-                latents_input = latents_high_res_step
+                latents_input = latents
                 z_t_low_unpacked = None
                 resolution_mask = None
                 resolution_mask_top_left = None
@@ -977,7 +1004,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
                     pass
             else:
                 # Slice to latent size only
-                noise_pred = noise_pred[:, :latents_high_res_step.size(1), :]
+                noise_pred = noise_pred[:, :latents.size(1), :]
 
             # Scheduler step
             if tokenAE_training:
@@ -1034,6 +1061,14 @@ class Flux2FoveatedImagePipeline(BasePipeline):
                 size=(height, width), 
                 mode='bicubic'
             ).to(latents.dtype).to(latents.device)
+            
+            if soft_foveation_blend:
+                # Soft edge: Gaussian falloff over ~upscale_factor pixels at high-res
+                upscale = height / latent_height
+                high_res_foveation_mask = _gaussian_blur_mask_2d(
+                    high_res_foveation_mask, sigma_pixels=upscale * 2, device=latents.device, dtype=latents.dtype
+                )
+                high_res_foveation_mask = high_res_foveation_mask.clamp(0.0, 1.0)
             
             merged_image = low_res_image * (1 - high_res_foveation_mask) + high_res_image * high_res_foveation_mask
             image = self.vae_output_to_image(merged_image)

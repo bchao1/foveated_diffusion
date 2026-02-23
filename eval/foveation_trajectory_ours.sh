@@ -16,21 +16,27 @@ upsampler_dit_use_temb="false"
 downsampler_dit_use_temb="false"
 
 
-step=4000
+step=10000
 #ckpt_folder="/local/brian/foveated_diffusion/models/flux2_foveation/adapter_arch_bilinear/" # cnn
 ckpt_folder="/local/brian/foveated_diffusion/models/flux2_foveation/dit_tokenAE_1_block_1_head_no_temb/" # dit
 ckpt_folder="/local/brian/foveated_diffusion/models/flux2_foveation/no_tokenAE_test" # new, no tokenAE
 tokenAE_folder="${ckpt_folder}/tokenAE/step-${step}"
 lora_checkpoint="${ckpt_folder}/step-${step}.safetensors"
 
+for rank in 32 64 128; do
+ckpt_folder="/local/brian/foveated_diffusion/models/flux2_foveation/no_tokenAE_rank_${rank}" # new, no tokenAE
+lora_checkpoint="${ckpt_folder}/step-${step}.safetensors"
 CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment foveation_trajectory_grid \
     --foveation_trajectory_type circular \
     --decode_mode merge \
-    --output_dir ../results/eccv2026_final/foveation_trajectory_ours_no_tokenAE \
+    --output_dir ../results/eccv2026_final/foveation_trajectory_ours_step_${step}_no_tokenAE_rank_${rank} \
     --seed 42 \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
     --prompt_dataset_path /local/brian/Aesthetic-Train-V2/metadata.csv \
     --num_prompts 10 \
-    --num_cols 5
+    --num_cols 5 \
+    --foveation_outline false \
+    --soft_foveation_blend false
+done

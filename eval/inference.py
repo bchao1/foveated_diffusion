@@ -107,8 +107,8 @@ def create_foveation_mask(
         height, width (int): Full image dimensions (mask is created at token_grid/2 then upsampled).
         center (tuple): (x, y) normalized coordinates in [-0.5, 0.5].
         r (float): For circular: radius relative to half the diagonal. For square: ratio of side to
-            image (1 = full image, 0 = all black).
-        shape (str): "circular" or "square".
+            image (1 = full image, 0 = all black). Ignored for checkerboard.
+        shape (str): "circular", "square", or "checkerboard" (interleaved pattern).
         device: Device for the tensor (default: cpu).
 
     Returns:
@@ -117,12 +117,17 @@ def create_foveation_mask(
     if device is None:
         device = torch.device("cpu")
     high_h, high_w = height // 16, width // 16
+    if shape == "checkerboard":
+        i = torch.arange(high_h, device=device, dtype=torch.long)
+        j = torch.arange(high_w, device=device, dtype=torch.long)
+        ii, jj = torch.meshgrid(i, j, indexing="ij")
+        return ((ii + jj) % 2 == 0).float()
     low_h, low_w = high_h // 2, high_w // 2
     y_range = torch.arange(low_h, device=device, dtype=torch.float32)
     x_range = torch.arange(low_w, device=device, dtype=torch.float32)
     y_grid, x_grid = torch.meshgrid(y_range, x_range, indexing="ij")
-    cx = (center[0] + 0.5) * low_w
-    cy = (center[1] + 0.5) * low_h
+    cx = int((center[0] + 0.5) * low_w)
+    cy = int((center[1] + 0.5) * low_h)
 
     if shape == "square":
         # r = ratio to image size: 1 = full, 0 = all black. Side length = r * min(low_h, low_w)
@@ -219,6 +224,22 @@ def load_prompt_dataset(prompt_dataset_path):
     for index, row in df.iterrows():
         prompts.append(row['prompt'])
     return prompts
+
+
+def _gaussian_blur_mask_2d(mask_4d, sigma_pixels, device, dtype):
+    """Apply separable Gaussian blur to [1, 1, H, W] mask. Matches pipeline soft blend."""
+    k = max(3, int(math.ceil(3 * sigma_pixels)) * 2 + 1)
+    if k % 2 == 0:
+        k += 1
+    x = torch.arange(k, device=device, dtype=dtype) - (k - 1) / 2.0
+    g = torch.exp(-(x ** 2) / (2 * sigma_pixels ** 2 + 1e-6))
+    g = g / g.sum()
+    kernel_h = g.view(1, 1, k, 1)
+    kernel_w = g.view(1, 1, 1, k)
+    pad = k // 2
+    out = F.conv2d(mask_4d, kernel_h, padding=(pad, 0))
+    out = F.conv2d(out, kernel_w, padding=(0, pad))
+    return out
 
 
 def draw_foveation_outline(
@@ -437,8 +458,8 @@ def load_token_ae(args, device):
     token_downsampler = token_downsampler.to(device).to(torch.bfloat16)
     return token_upsampler, token_downsampler
 
-# single-prompt generation
-def run_high_res(pipe, args, output_dir, prompt, prompt_idx, token_upsampler=None, token_downsampler=None):
+# single-prompt generation (foveation_mask passed in; high_res ignores it)
+def run_high_res(pipe, args, output_dir, prompt, prompt_idx, token_upsampler=None, token_downsampler=None, foveation_mask=None):
     """Run baseline full-resolution generation."""
     print(f"Running high-res generation for prompt {prompt_idx:010d}: {prompt}")
     image = pipe(
@@ -451,15 +472,13 @@ def run_high_res(pipe, args, output_dir, prompt, prompt_idx, token_upsampler=Non
         cfg_scale=args.guidance_scale,
         foveation_mask=None,
         prediction_type=args.prediction_type,
-        tokenAE_training=args.tokenAE_training,
+        tokenAE_training=False,
+        decode_mode="direct"
     )
     image.save(os.path.join(output_dir, f"img_{prompt_idx:010d}.png"))
 
-def run_naive_mixed_res(pipe, args, output_dir, prompt, prompt_idx, token_upsampler, token_downsampler):
-    """Run naive mixed-resolution generation."""
-    foveation_mask = create_foveation_mask(
-        args.height, args.width, center=(0, 0), r=0.5, shape="square", device=pipe.device
-    )
+def run_naive_mixed_res(pipe, args, output_dir, prompt, prompt_idx, token_upsampler, token_downsampler, foveation_mask):
+    """Run naive mixed-resolution generation. foveation_mask must be provided."""
     print(f"Running naive mixed-resolution generation for prompt {prompt_idx:010d}: {prompt}")
     image = pipe(
         prompt=prompt,
@@ -475,14 +494,12 @@ def run_naive_mixed_res(pipe, args, output_dir, prompt, prompt_idx, token_upsamp
         decode_mode=args.decode_mode,
         prediction_type=args.prediction_type,
         tokenAE_training=args.tokenAE_training,
+        soft_foveation_blend=getattr(args, "soft_foveation_blend", False),
     )
     image.save(os.path.join(output_dir, f"img_{prompt_idx:010d}.png"))
 
-def run_ours(pipe, args, output_dir, prompt, prompt_idx, token_upsampler, token_downsampler):
-    """Run our proposed method."""
-    foveation_mask = create_foveation_mask(
-        args.height, args.width, center=(0, 0), r=0.5, shape="square", device=pipe.device
-    )
+def run_ours(pipe, args, output_dir, prompt, prompt_idx, token_upsampler, token_downsampler, foveation_mask):
+    """Run our proposed method. foveation_mask must be provided."""
     print(f"Running our proposed method for prompt {prompt_idx:010d}: {prompt}")
     image = pipe(
         prompt=prompt,
@@ -498,6 +515,7 @@ def run_ours(pipe, args, output_dir, prompt, prompt_idx, token_upsampler, token_
         decode_mode=args.decode_mode,
         prediction_type=args.prediction_type,
         tokenAE_training=args.tokenAE_training,
+        soft_foveation_blend=getattr(args, "soft_foveation_blend", False),
     )
     image.save(os.path.join(output_dir, f"img_{prompt_idx:010d}.png"))
 
@@ -509,13 +527,19 @@ SINGLE_PROMPT_GENERATION_FUNCTIONS = {
 
 # full-prompt generation wrapper. calls the single-prompt generation function for each prompt.
 def run_full_eval(single_prompt_generation_func, pipe, args, output_dir, prompts, token_upsampler=None, token_downsampler=None):
-    """Run full-prompt generation."""
-    # TODO: parallelize over GPUs
+    """Run full-prompt generation. Passes foveation mask for naive/ours (shape from args.full_eval_mask); None for high_res."""
+    default_mask = None
+    if single_prompt_generation_func is not run_high_res:
+        mask_shape = getattr(args, "full_eval_mask", "square")
+        default_mask = create_foveation_mask(
+            args.height, args.width, center=(0, 0), r=0.5, shape=mask_shape, device=pipe.device
+        )
     prompt_list = []
     for prompt_idx, prompt in enumerate(prompts):
         single_prompt_generation_func(
             pipe, args, output_dir, prompt, prompt_idx,
-            token_upsampler, token_downsampler
+            token_upsampler, token_downsampler,
+            foveation_mask=default_mask,
         )
         if args.num_prompts is not None and prompt_idx >= args.num_prompts:
             break
@@ -526,6 +550,85 @@ def run_full_eval(single_prompt_generation_func, pipe, args, output_dir, prompts
         "prompt": prompt_list,
     })
     metadata.to_csv(os.path.join(output_dir, "metadata.csv"), index=False)
+
+
+def run_user_study(pipe, args, output_dir, token_upsampler, token_downsampler):
+    """
+    Sample prompts from the prompt file; for each prompt, randomly sample a foveation mask,
+    then call all three single-prompt generation functions (high_res, naive_mixed_res, ours)
+    with the same seed and prompt. Only 'ours' uses LoRA; baseline and naive use base DiT.
+    Runs high_res and naive for all prompts first (no LoRA), then loads LoRA once and runs
+    ours for all prompts. Saves three images, upsampled mask, and fixation point per prompt.
+    """
+    import imageio
+    assert args.prompt_dataset_path, "prompt_dataset_path required for user_study"
+    num_prompts = getattr(args, "num_prompts", None) or 5
+    all_prompts = load_prompt_dataset(args.prompt_dataset_path)
+    k = min(num_prompts, len(all_prompts))
+    prompts = random.sample(all_prompts, k)
+    height, width = args.height, args.width
+    device = pipe.device
+    print(f"Running user study with {len(prompts)} prompts, same seed={args.seed} (LoRA only for 'ours')")
+
+    pipe.clear_lora(verbose=0)
+    # Collect (subdir, prompt, foveation_mask, center) for second pass
+    items = []
+
+    for idx, prompt in enumerate(prompts):
+        subdir = os.path.join(output_dir, f"{idx:05d}")
+        os.makedirs(subdir, exist_ok=True)
+        with open(os.path.join(subdir, "prompt.txt"), "w") as f:
+            f.write(prompt)
+        center = (random.uniform(-0.3, 0.3), random.uniform(-0.3, 0.3))
+        r = 0.33 # one third of the image size (fovea 5% v.s. blend 15%)
+        shape = "circular"
+        foveation_mask = create_foveation_mask(height, width, center=center, r=r, shape=shape, device=device)
+        items.append((subdir, prompt, foveation_mask, center))
+
+        run_high_res(pipe, args, subdir, prompt, 0, token_upsampler, token_downsampler, foveation_mask=None)
+        os.rename(
+            os.path.join(subdir, "img_0000000000.png"),
+            os.path.join(subdir, "img_high_res.png"),
+        )
+        run_naive_mixed_res(pipe, args, subdir, prompt, 0, token_upsampler, token_downsampler, foveation_mask=foveation_mask)
+        os.rename(
+            os.path.join(subdir, "img_0000000000.png"),
+            os.path.join(subdir, "img_naive.png"),
+        )
+
+        mask_high = F.interpolate(
+            foveation_mask.unsqueeze(0).unsqueeze(0).float().cpu(),
+            size=(height, width),
+            mode="nearest",
+        ).squeeze().numpy()
+        mask_uint8 = (np.clip(mask_high, 0.0, 1.0) * 255).astype(np.uint8)
+        imageio.imwrite(os.path.join(subdir, "mask.png"), mask_uint8)
+
+        cx_px = (center[0] + 0.5) * width
+        cy_px = (center[1] + 0.5) * height
+        dot_radius = max(2, int(0.01 * min(width, height)))
+        y = np.arange(height, dtype=np.float64)[:, None]
+        x = np.arange(width, dtype=np.float64)[None, :]
+        dist_sq = (x - cx_px) ** 2 + (y - cy_px) ** 2
+        in_circle = dist_sq <= (dot_radius ** 2)
+        fixation_img = np.zeros((height, width, 3), dtype=np.uint8)
+        fixation_img[in_circle] = [255, 0, 0]
+        imageio.imwrite(os.path.join(subdir, "fixation_point.png"), fixation_img)
+        print(f"Saved {idx:05d}/ (img_high_res.png, img_naive.png, mask.png, fixation_point.png)")
+
+    if args.lora_checkpoint is not None:
+        pipe.load_lora(pipe.dit, args.lora_checkpoint)
+    for idx, (subdir, prompt, foveation_mask, _) in enumerate(items):
+        run_ours(pipe, args, subdir, prompt, 0, token_upsampler, token_downsampler, foveation_mask=foveation_mask)
+        os.rename(
+            os.path.join(subdir, "img_0000000000.png"),
+            os.path.join(subdir, "img_ours.png"),
+        )
+        print(f"Saved {idx:05d}/ img_ours.png")
+    if args.lora_checkpoint is not None:
+        pipe.clear_lora(verbose=0)
+    print(f"Done. User study under {output_dir}")
+
 
 # additional visualizations (different foveation trajectories, runtime comparisons, etc)
 def run_circular_traj(pipe, args, output_dir, token_upsampler, token_downsampler):
@@ -578,6 +681,7 @@ def run_circular_traj(pipe, args, output_dir, token_upsampler, token_downsampler
             decode_mode=args.decode_mode,
             prediction_type=args.prediction_type,
             tokenAE_training=args.tokenAE_training,
+            soft_foveation_blend=getattr(args, "soft_foveation_blend", False),
             **vis_kwargs,
         )
         
@@ -626,6 +730,7 @@ def run_vary_radius(pipe, args, output_dir, token_upsampler, token_downsampler):
             decode_mode=args.decode_mode,
             prediction_type=args.prediction_type,
             tokenAE_training=args.tokenAE_training,
+            soft_foveation_blend=getattr(args, "soft_foveation_blend", False),
             **vis_kwargs,
         )
         
@@ -679,6 +784,7 @@ def run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downs
             decode_mode=args.decode_mode,
             prediction_type=args.prediction_type,
             tokenAE_training=args.tokenAE_training,
+            soft_foveation_blend=getattr(args, "soft_foveation_blend", False),
             **vis_kwargs,
         )
         
@@ -742,22 +848,41 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
                 decode_mode=args.decode_mode,
                 prediction_type=args.prediction_type,
                 tokenAE_training=args.tokenAE_training,
+                soft_foveation_blend=getattr(args, "soft_foveation_blend", False),
             )
-            # Draw foveation outline on image
+            # Optionally draw foveation outline on image
             image_np = np.array(image)
             if image_np.ndim == 2:
                 image_np = np.stack([image_np] * 3, axis=-1)
-            draw_foveation_outline(
-                image_np,
-                foveation_mask,
-                height,
-                width,
-                outline_width_frac=outline_width_frac,
-                color=outline_color,
-            )
+            if getattr(args, "foveation_outline", True):
+                draw_foveation_outline(
+                    image_np,
+                    foveation_mask,
+                    height,
+                    width,
+                    outline_width_frac=outline_width_frac,
+                    color=outline_color,
+                )
             out_path = os.path.join(prompt_dir, f"img_{col:04d}.png")
             imageio.imwrite(out_path, image_np)
-            print(f"Saved {prompt_idx:03d}/img_{col:04d}.png")
+            # Save upsampled foveation mask used for this image (post-blur if soft_foveation_blend)
+            mask_high = F.interpolate(
+                foveation_mask.unsqueeze(0).unsqueeze(0).float().to(device),
+                size=(height, width),
+                mode="bicubic",
+            )
+            if getattr(args, "soft_foveation_blend", False):
+                latent_h, latent_w = height // 16, width // 16
+                upscale = height / latent_h
+                mask_high = _gaussian_blur_mask_2d(
+                    mask_high, upscale * 2, device=device, dtype=mask_high.dtype
+                )
+            mask_high = mask_high.squeeze().cpu().numpy()
+            mask_high = np.clip(mask_high, 0.0, 1.0)
+            mask_uint8 = (mask_high * 255).astype(np.uint8)
+            mask_path = os.path.join(prompt_dir, f"mask_{col:04d}.png")
+            imageio.imwrite(mask_path, mask_uint8)
+            print(f"Saved {prompt_idx:03d}/img_{col:04d}.png, {prompt_idx:03d}/mask_{col:04d}.png")
     print(f"Done. Grid saved under {output_dir}")
 
 
@@ -780,10 +905,12 @@ def main(args):
     # Load pipeline
     pipe = load_pipeline(args)
 
-    # Load LoRA checkpoint
-    if args.lora_checkpoint is not None:
-        pipe.load_lora(pipe.dit,args.lora_checkpoint)
+    # Load LoRA checkpoint (skip for user_study: LoRA loaded only for "ours" inside run_user_study)
+    if args.lora_checkpoint is not None and args.experiment != "user_study":
+        pipe.load_lora(pipe.dit, args.lora_checkpoint)
         print(f"Loaded LoRA checkpoint from {args.lora_checkpoint}")
+    elif args.lora_checkpoint is not None and args.experiment == "user_study":
+        print("User study: LoRA will be loaded only for 'ours' runs (baseline and naive use base DiT)")
     else:
         print("No LoRA checkpoint provided, using base model")
     
@@ -819,6 +946,8 @@ def main(args):
         run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downsampler)
     elif args.experiment == "foveation_trajectory_grid":
         run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token_downsampler)
+    elif args.experiment == "user_study":
+        run_user_study(pipe, args, output_dir, token_upsampler, token_downsampler)
     else:
         print(f"Unknown experiment: {args.experiment}")
         return
@@ -873,10 +1002,13 @@ if __name__ == "__main__":
                             "high_res", "naive_mixed_res", "ours",
                             "circular_traj", "vary_radius",
                             "runtime", "foveation_trajectory_grid",
+                            "user_study",
                         ],
                         help='Experiment to run')
     parser.add_argument('--full_eval', action='store_true', default=False,
                         help='Run full evaluation on prompt dataset')
+    parser.add_argument('--full_eval_mask', type=str, default='square', choices=['square', 'checkerboard'],
+                        help='Foveation mask for full eval: square (center region) or checkerboard (interleaved)')
     parser.add_argument('--prompt_dataset_path', type=str, help='Path to the prompt dataset as a csv file')
     parser.add_argument('--num_prompts', type=int, default=None, help='Number of prompts to run')
     parser.add_argument('--num_cols', type=int, default=4, help='Number of columns (foveation steps per row) for foveation_trajectory_grid')
@@ -884,6 +1016,8 @@ if __name__ == "__main__":
                         help='Trajectory for foveation_trajectory_grid: radius (vary r at center) or circular (center on orbit)')
     parser.add_argument('--outline_width_frac', type=float, default=0.01, help='Foveation outline line width as fraction of image width (default 0.01)')
     parser.add_argument('--outline_color', type=str, default='255,0,0', help='Foveation outline color as R,G,B (default red: 255,0,0)')
+    parser.add_argument('--foveation_outline', type=_str_to_bool, default=False, help='Do not draw foveation border on foveation_trajectory_grid images (save plain image)')
+    parser.add_argument('--soft_foveation_blend', type=_str_to_bool, default=False, help='Use soft-edged (Gaussian falloff) blend when merging low-res and high-res in decode')
 
     
     # Circular experiment specific

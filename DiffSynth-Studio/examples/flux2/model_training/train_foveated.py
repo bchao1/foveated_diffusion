@@ -131,6 +131,7 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         prediction_type="clean",
         tokenAE_training=False, # no tokenAE at all
         detach_z_mix=False,
+        is_foveated_pipeline=True,
     ):
         super().__init__()
         # Load models
@@ -138,6 +139,8 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         tokenizer_config = self.parse_path_or_model_id(tokenizer_path, default_value=ModelConfig(model_id="black-forest-labs/FLUX.2-klein-base-4B", origin_file_pattern="tokenizer/"))
         self.pipe = Flux2FoveatedImagePipeline.from_pretrained(torch_dtype=torch.bfloat16, device=device, model_configs=model_configs, tokenizer_config=tokenizer_config)
         self.pipe = self.split_pipeline_units(task, self.pipe, trainable_models, lora_base_model)
+        self.pipe.is_foveated_pipeline = is_foveated_pipeline
+        print("<Flux2FoveatedImageTrainingModule> ===> Is foveated pipeline: {}".format(self.pipe.is_foveated_pipeline))
 
         # set token upsampler and downsampler (register as our children so they're in the module tree for optimizer/grads)
         self.pipe.token_upsampler = token_upsampler
@@ -480,6 +483,8 @@ def flux2_parser():
     parser.add_argument("--use_as_refiner", type=_str_to_bool, default=False,
                         help="Use the token upsampler as a refiner (true/false).")
     
+    # Foveated pipeline arguments
+    parser.add_argument("--is_foveated_pipeline", type=_str_to_bool, default=True, help="Is foveated pipeline (true/false).")
 
     return parser
 
@@ -532,6 +537,7 @@ if __name__ == "__main__":
         device=accelerator.device,
         prediction_type=args.prediction_type,
         detach_z_mix=args.detach_z_mix,
+        is_foveated_pipeline=args.is_foveated_pipeline,
     )
     # Create logger (WandB or standard)
     if args.use_wandb:
