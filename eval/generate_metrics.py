@@ -1,3 +1,7 @@
+"""Compute FID, Precision/Recall, and CLIP scores between a set of generated images and their
+corresponding real images from the training dataset. Inception features for both sets are cached
+to disk so subsequent runs skip re-extraction."""
+import logging
 import os
 import sys
 import json
@@ -10,8 +14,20 @@ from argparse import ArgumentParser
 from PIL import Image
 import pandas as pd
 import matplotlib.pyplot as plt
+import pickle
+from metric_computation.FID import compute_fid
+from metric_computation.PR import compute_pr
+from metric_computation.CLIP import compute_clip_score, _load_openclip
+from metric_computation.inception_utils import load_inception, extract_inception_features
+
+GEN_H = 1024  # generation (and real-image preprocessing) height
+GEN_W = 1024  # generation (and real-image preprocessing) width
+
 
 def crop_and_resize(image, target_height, target_width):
+    """Crop and resize a PIL image to the target size while preserving aspect ratio. 
+    This is maintained consistent with the pre-processing step for model training.
+    """
     width, height = image.size
     scale = max(target_width / width, target_height / height)
     image = torchvision.transforms.functional.resize(
@@ -34,6 +50,9 @@ def make_per_image_foveation_transform(mask_paths, device, vmin, vmax):
 
     Each call processes the next len(batch) masks in order, then advances
     the internal counter by that amount.
+
+    Mask images are assumed to already be at the same resolution as the input
+    batch images; no resizing is applied.
     """
     state = {'idx': 0}
 
@@ -42,51 +61,56 @@ def make_per_image_foveation_transform(mask_paths, device, vmin, vmax):
         imgs = list(batch.unbind(0))
         for i in range(B):
             mask_path = mask_paths[state['idx'] + i]
+            img = imgs[i]                                   # (3, H, W)
+            H, W = img.shape[1], img.shape[2]
             if mask_path is not None:
-                img = imgs[i]                               # (3, H, W)
-                H, W = img.shape[1], img.shape[2]
                 mask_arr = np.array(
                     Image.open(mask_path).convert('L'), dtype=np.float32
                 ) / 255.0
-                mask_t = torch.from_numpy(mask_arr).to(batch.device)[None, None]
-                mask_hw = F.interpolate(
-                    mask_t, size=(H, W), mode='bilinear', align_corners=False
-                )
-                img4 = img.unsqueeze(0)
-                low_res = F.interpolate(
-                    img4, size=(H // 2, W // 2),
-                    mode='bicubic', align_corners=False, antialias=True,
-                ).clamp(vmin, vmax)
-                low_res_up = F.interpolate(
-                    low_res, size=(H, W),
-                    mode='bicubic', align_corners=False, antialias=True,
-                ).clamp(vmin, vmax)
-                imgs[i] = (low_res_up * (1 - mask_hw) + img4 * mask_hw).squeeze(0)
+                mask_hw = torch.from_numpy(mask_arr).to(batch.device)[None, None]
+            else:
+                # Fallback: center square mask with side = W // 2
+                side = W // 2
+                mask_arr = np.zeros((H, W), dtype=np.float32)
+                top = (H - side) // 2
+                left = (W - side) // 2
+                mask_arr[top:top + side, left:left + side] = 1.0
+                mask_hw = torch.from_numpy(mask_arr).to(batch.device)[None, None]
+            img4 = img.unsqueeze(0)
+            low_res = F.interpolate(
+                img4, size=(H // 2, W // 2),
+                mode='bicubic', align_corners=False, antialias=True,
+            ).clamp(vmin, vmax)
+            low_res_up = F.interpolate(
+                low_res, size=(H, W),
+                mode='bicubic', align_corners=False, antialias=True,
+            ).clamp(vmin, vmax)
+            imgs[i] = (low_res_up * (1 - mask_hw) + img4 * mask_hw).squeeze(0)
         state['idx'] += B
         return torch.stack(imgs)
 
     return transform
 
-
-from metric_computation.FID import compute_fid
-from metric_computation.PR import compute_pr
-from metric_computation.CLIP import compute_clip_score, _load_openclip
-from metric_computation.inception_utils import load_inception
-
 if __name__ == "__main__":
     parser = ArgumentParser()
     parser.add_argument("--generated_images_dir", type=str, default=None, help="Path to the generated images directory")
-    parser.add_argument("--images_dataset_path", type=str, default=None, help="Path to the images dataset (must contain metadata.jsonl)")
+    parser.add_argument("--images_dataset_path", type=str, default=None, help="Path to the images dataset (must contain metadata_test.csv)")
     parser.add_argument("--metric_output_dir", type=str, default=None, help="Path to save the metric results JSON")
-    parser.add_argument("--device", type=str, default=None, help="PyTorch device string (e.g. 'cuda:0', 'cpu'). Defaults to cuda:0 if available, else cpu.")
+    parser.add_argument("--device", type=str, default=None, help="Comma-separated PyTorch device strings (e.g. 'cuda:0,cuda:1'). Multiple GPUs use DataParallel. Defaults to cuda:0 if available, else cpu.")
     parser.add_argument("--foveate_real", action="store_true", help="Apply per-image foveation mask (mask_*.png) to real images before computing metrics")
     parser.add_argument("--downsample_real", action="store_true", help="Bicubic 2x downsample real images before computing metrics")
     parser.add_argument("--debug", action="store_true", help="Enable debug visualizations")
     parser.add_argument("--debug_num_pairs", type=int, default=1, help="Number of image pairs to visualize in debug mode (default: 1)")
     parser.add_argument("--test", action="store_true", help="Smoke-test: load models, run on dummy data, check shapes, then exit")
+    parser.add_argument("--batch_size", type=int, default=64, help="Batch size for Inception and CLIP feature extraction (default: 64)")
     args = parser.parse_args()
 
-    device = args.device if args.device is not None else ('cuda:0' if torch.cuda.is_available() else 'cpu')
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
+
+    _raw_device = args.device if args.device is not None else ('cuda:0' if torch.cuda.is_available() else 'cpu')
+    devices = [d.strip() for d in _raw_device.split(',')]
+    device = devices[0]
+    gpu_ids = [int(d.split(':')[1]) for d in devices if d.startswith('cuda:') and ':' in d]
 
     if args.test:
         B = 4
@@ -173,55 +197,69 @@ if __name__ == "__main__":
             gen_image_paths.append(gen_image_path)
             prompts.append(prompt)
 
-    # Training dataset metadata from images_dataset_path/metadata.jsonl (keys: "file_name", "text").
-    training_metadata_path = os.path.join(images_dataset_path, "metadata.jsonl")
-    if not os.path.exists(training_metadata_path):
-        raise FileNotFoundError(f"Training metadata not found: {training_metadata_path}")
-    training_metadata = pd.read_json(training_metadata_path, lines=True)
+    # Test-set metadata from images_dataset_path/metadata_test.csv (columns: "image", "prompt").
+    # "image" is a relative path; absolute path = images_dataset_path/image.
+    # "prompt" values have surrounding double-quotes as part of the stored string;
+    # internal double-quotes are represented as "" (RFC 4180 CSV, handled by pandas).
+    test_metadata_path = os.path.join(images_dataset_path, "metadata_test.csv")
+    if not os.path.exists(test_metadata_path):
+        raise FileNotFoundError(f"Test metadata not found: {test_metadata_path}")
+    test_metadata = pd.read_csv(test_metadata_path)
 
-    # Normalize training metadata text: strip surrounding double-quotes and unescape \".
-    # In metadata.jsonl the text field is stored as: "A photo of \"Alice\""
-    # while prompt_list.txt stores the raw prompt: A photo of "Alice"
-    def _norm_jsonl_prompt(s):
+    def _norm_csv_prompt(s):
         s = s.strip()
         if s.startswith('"') and s.endswith('"'):
             s = s[1:-1]
-        return s.replace('\\"', '"')
+        return s
 
-    training_metadata["_text_norm"] = training_metadata["text"].apply(_norm_jsonl_prompt)
+    test_metadata["_prompt_norm"] = test_metadata["prompt"].apply(_norm_csv_prompt)
 
     print(f"Number of generated images: {len(gen_image_paths)}")
     print(f"Number of prompts: {len(prompts)}")
-    print(f"Number of training images: {len(training_metadata)}")
+    print(f"Number of test images: {len(test_metadata)}")
 
     # For each generated image, find the corresponding real image via prompt matching.
     real_image_paths = []
     image_pairs = {"generated": [], "target": []}
     for gen_path, prompt in zip(gen_image_paths, prompts):
-        target_image = training_metadata[training_metadata["_text_norm"] == prompt]["file_name"].values[0]
-        print(f"Generated image: {os.path.basename(gen_path)}, Target image: {target_image}")
-        real_image_paths.append(os.path.join(images_dataset_path, target_image))
+        img_path = test_metadata[test_metadata["_prompt_norm"] == prompt]["image"].values[0]
+        print(f"Generated image: {os.path.basename(gen_path)}, Target image: {img_path}")
+        real_image_paths.append(os.path.join(images_dataset_path, img_path))
         if args.debug and len(image_pairs["generated"]) < args.debug_num_pairs:
             image_pairs["generated"].append(imageio.imread(gen_path))
-            image_pairs["target"].append(imageio.imread(os.path.join(images_dataset_path, target_image)))
+            image_pairs["target"].append(imageio.imread(os.path.join(images_dataset_path, img_path)))
+
+    # Filter out pairs where the real image cannot be loaded (e.g. truncated or too large).
+    _valid_gen, _valid_real, _valid_prompts = [], [], []
+    for gp, rp, pr in zip(gen_image_paths, real_image_paths, prompts):
+        try:
+            Image.open(rp).load()
+            _valid_gen.append(gp)
+            _valid_real.append(rp)
+            _valid_prompts.append(pr)
+        except Exception as e:
+            print(f"WARNING: Skipping pair — cannot load real image {os.path.basename(rp)}: {e}")
+    gen_image_paths, real_image_paths, prompts = _valid_gen, _valid_real, _valid_prompts
 
     # Derive per-image foveation mask paths from generated image filenames.
     # img_XXXXXXXX.png  ->  mask_XXXXXXXX.png  (same directory).
+    # Only needed when foveate_real=True; skip entirely otherwise.
     foveation_mask_paths = []
-    for gp in gen_image_paths:
-        basename = os.path.basename(gp)
-        mask_basename = 'mask_' + basename[4:] if basename.startswith('img_') else 'mask_' + basename
-        mask_path = os.path.join(os.path.dirname(gp), mask_basename)
-        if not os.path.exists(mask_path):
-            print(f"ERROR: Foveation mask not found for {basename}: {mask_path}. "
-                  "Treating foveate_real=False for this image.")
-            foveation_mask_paths.append(None)
-        else:
-            foveation_mask_paths.append(mask_path)
+    if args.foveate_real:
+        for gp in gen_image_paths:
+            basename = os.path.basename(gp)
+            mask_basename = 'mask_' + basename[4:] if basename.startswith('img_') else 'mask_' + basename
+            mask_path = os.path.join(os.path.dirname(gp), mask_basename)
+            if not os.path.exists(mask_path):
+                print(f"WARNING: Foveation mask not found for {basename}: {mask_path}. "
+                      "Using center square mask.")
+                foveation_mask_paths.append(None)
+            else:
+                foveation_mask_paths.append(mask_path)
 
     # Preprocessing transform: crop and resize each real image to 1024x1024
     # before foveation/downsampling and inception feature extraction.
-    pil_transform = lambda img: crop_and_resize(img, 1024, 1024)
+    pil_transform = lambda img: crop_and_resize(img, GEN_H, GEN_W)
 
     # Image size check: sample first matched pair to warn about resolution mismatches.
     # When downsample_real=True, generated images are expected to be at half the
@@ -239,8 +277,9 @@ if __name__ == "__main__":
                 print(f"WARNING: generated image size {_gs} != real image size {_rs}. "
                       "Metrics may be invalid.")
 
-    # cache generated image Inception features so FID and PR share one extraction pass
-    gen_feats_cache = os.path.join(metric_output_dir, "gen_feats_cache.pkl")
+    # Cache paths for Inception features (shared across FID and PR).
+    gen_feats_cache  = os.path.join(metric_output_dir, "gen_feats_cache.pkl")
+    real_feats_cache = os.path.join(metric_output_dir, "real_feats_cache.pkl")
 
     # Each metric gets a fresh transform instance so the per-image counter starts at 0.
     def _make_fov_transform(vmin, vmax):
@@ -248,12 +287,32 @@ if __name__ == "__main__":
             return make_per_image_foveation_transform(foveation_mask_paths, device, vmin, vmax)
         return None
 
-    # TODO: compute aggregated metrics here
+    # Pre-extract real image Inception features once; FID and PR both read from this cache.
+    if not os.path.isfile(real_feats_cache):
+        inception_net, inception_style = load_inception(
+            {'type': 'StyleGAN'}, metric='FID', map_location='cpu')
+        inception_net = inception_net.to(device).eval()
+        if len(gpu_ids) > 1:
+            inception_net = torch.nn.DataParallel(inception_net, device_ids=gpu_ids)
+        real_feats, _ = extract_inception_features(
+            real_image_paths, inception_net, inception_style,
+            batch_size=args.batch_size, device=device, resize=False,
+            image_transform=_make_fov_transform(-1, 1),
+            pil_transform=pil_transform,
+        )
+        real_mean = np.mean(real_feats, axis=0)
+        real_cov  = np.cov(real_feats, rowvar=False)
+        with open(real_feats_cache, 'wb') as f:
+            pickle.dump(dict(mean=real_mean, cov=real_cov,
+                             real_feats_np=real_feats,
+                             num_real_feeded=len(real_image_paths)), f)
+
     fid_results  = compute_fid(gen_image_paths, real_image_paths,
                                 args={
                                     "generation_feats_pkl": gen_feats_cache,
-                                    "reference_pkl": None,  # always use real_image_paths, not ImageNet PKL
-                                    "resize": False,        # real images are already 1024x1024 after pil_transform
+                                    "reference_pkl": real_feats_cache,
+                                    "resize": False,
+                                    "batch_size": args.batch_size,
                                 },
                                 foveate_real=args.foveate_real,
                                 downsample_real=args.downsample_real,
@@ -263,7 +322,9 @@ if __name__ == "__main__":
     pr_results   = compute_pr(gen_image_paths, real_image_paths,
                                args={
                                    "generation_feats_pkl": gen_feats_cache,
-                                   "resize": False,         # real images are already 1024x1024 after pil_transform
+                                   "reference_pkl": real_feats_cache,
+                                   "resize": False,
+                                   "batch_size": args.batch_size,
                                },
                                foveate_real=args.foveate_real,
                                downsample_real=args.downsample_real,
@@ -271,7 +332,7 @@ if __name__ == "__main__":
                                real_image_transform=_make_fov_transform(-1, 1),
                                device=device)
     clip_results = compute_clip_score(gen_image_paths,
-                                       args={"prompts": prompts},
+                                       args={"prompts": prompts, "batch_size": args.batch_size},
                                        foveate_real=args.foveate_real,
                                        downsample_real=args.downsample_real,
                                        device=device,

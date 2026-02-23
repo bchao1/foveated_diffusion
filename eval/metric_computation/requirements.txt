@@ -1,12 +1,12 @@
 # eval_metrics — standalone image/video evaluation metrics
 # Install with:  pip install -r requirements.txt
 
-torch==2.9.1
-torchvision==0.24.1
-numpy==2.2.6
-scipy==1.15.3
-Pillow==12.0.0
+torch==2.4.0
+torchvision==0.19.0
+numpy==1.24.4
+scipy==1.10.1
+Pillow==10.3.0
 open_clip_torch>=2.20
-pandas==2.3.3
-tensorboard==2.20.0
-matplotlib==3.10.7
+pandas==2.0.3
+tensorboard==2.14.0
+matplotlib==3.7.5
