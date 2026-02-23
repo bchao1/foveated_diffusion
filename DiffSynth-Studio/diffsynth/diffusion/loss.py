@@ -20,6 +20,23 @@ def _create_random_foveation_mask(h: int, w: int, device, dtype=torch.float32, c
     return (dist_sq <= radius_px**2).to(device)
 
 
+def _create_fixed_foveation_mask(h: int, w: int, device, dtype=torch.float32, center=(0.0, 0.0), r=0.5):
+    """
+    Create a fixed circular foveation mask for training.
+    Same geometry as _create_random_foveation_mask but center and radius are fixed.
+    center in normalized coords (-0.5, 0.5), r relative to half-diagonal.
+    """
+    cx = (center[0] + 0.5) * w
+    cy = (center[1] + 0.5) * h
+    diagonal = (h**2 + w**2) ** 0.5
+    radius_px = r * (diagonal / 2.0)
+    y = torch.arange(h, device=device, dtype=dtype)
+    x = torch.arange(w, device=device, dtype=dtype)
+    yy, xx = torch.meshgrid(y, x, indexing="ij")
+    dist_sq = (xx - cx) ** 2 + (yy - cy) ** 2
+    return (dist_sq <= radius_px**2).to(device)
+
+
 def FlowMatchSFTLoss(pipe: BasePipeline, **inputs):
     max_timestep_boundary = int(inputs.get("max_timestep_boundary", 1) * len(pipe.scheduler.timesteps))
     min_timestep_boundary = int(inputs.get("min_timestep_boundary", 0) * len(pipe.scheduler.timesteps))
@@ -65,11 +82,14 @@ def FoveatedFlowMatchSFTLoss(pipe: BasePipeline, **inputs):
     )
 
     if has_foveated_forward and has_token_ae:
-        # Generate random foveation mask for this step (latent resolution)
+        # Generate foveation mask for this step (latent resolution): random or fixed from inputs
         height = inputs["height"]
         width = inputs["width"]
         h, w = height // 16, width // 16
-        foveation_mask = _create_random_foveation_mask(h, w, pipe.device, pipe.torch_dtype)
+        if inputs.get("fixed_foveation_mask", False):
+            foveation_mask = _create_fixed_foveation_mask(h, w, pipe.device, pipe.torch_dtype, center=(0.0, 0.0), r=0.5)
+        else:
+            foveation_mask = _create_random_foveation_mask(h, w, pipe.device, pipe.torch_dtype)
         inputs["foveation_mask"] = foveation_mask
         prediction_type = inputs.get("prediction_type", "clean")
         noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id, prediction_type)
@@ -111,12 +131,15 @@ def FoveatedFlowMatchNoTokenAESFTLoss(pipe: BasePipeline, **inputs):
     )
 
     if has_foveated_forward:
-        # Generate random foveation mask for this step (latent resolution)
+        # Generate foveation mask for this step (latent resolution): random or fixed from inputs
         height = inputs["height"]
         width = inputs["width"]
         batch_size, _, channels = inputs["latents"].shape
         h, w = height // 16, width // 16
-        foveation_mask = _create_random_foveation_mask(h, w, pipe.device, pipe.torch_dtype)
+        if inputs.get("fixed_foveation_mask", False):
+            foveation_mask = _create_fixed_foveation_mask(h, w, pipe.device, pipe.torch_dtype, center=(0.0, 0.0), r=0.5)
+        else:
+            foveation_mask = _create_random_foveation_mask(h, w, pipe.device, pipe.torch_dtype)
 
         # contruct merged training target
         h_2, w_2 = h // 2, w // 2
@@ -184,11 +207,14 @@ def FoveatedDistillLoss(pipe: BasePipeline, **inputs):
     )
 
     if has_foveated_forward and has_token_ae:
-        # Generate random foveation mask for this step (latent resolution)
+        # Generate foveation mask for this step (latent resolution): random or fixed from inputs
         height = inputs["height"]
         width = inputs["width"]
         h, w = height // 16, width // 16
-        foveation_mask = _create_random_foveation_mask(h, w, pipe.device, pipe.torch_dtype)
+        if inputs.get("fixed_foveation_mask", False):
+            foveation_mask = _create_fixed_foveation_mask(h, w, pipe.device, pipe.torch_dtype, center=(0.0, 0.0), r=0.5)
+        else:
+            foveation_mask = _create_random_foveation_mask(h, w, pipe.device, pipe.torch_dtype)
         prediction_type = inputs.get("prediction_type", "clean")
 
         # unfoveated training target

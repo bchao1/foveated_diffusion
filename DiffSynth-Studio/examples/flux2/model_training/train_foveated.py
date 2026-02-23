@@ -132,6 +132,7 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         tokenAE_training=False, # no tokenAE at all
         detach_z_mix=False,
         is_foveated_pipeline=True,
+        fixed_foveation_mask=False,
     ):
         super().__init__()
         # Load models
@@ -141,6 +142,9 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         self.pipe = self.split_pipeline_units(task, self.pipe, trainable_models, lora_base_model)
         self.pipe.is_foveated_pipeline = is_foveated_pipeline
         print("<Flux2FoveatedImageTrainingModule> ===> Is foveated pipeline: {}".format(self.pipe.is_foveated_pipeline))
+        self.fixed_foveation_mask = fixed_foveation_mask
+        if fixed_foveation_mask:
+            print("<Flux2FoveatedImageTrainingModule> ===> Using fixed foveation mask (center=0, radius=0.5)")
 
         # set token upsampler and downsampler (register as our children so they're in the module tree for optimizer/grads)
         self.pipe.token_upsampler = token_upsampler
@@ -243,6 +247,7 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
             "use_gradient_checkpointing_offload": self.use_gradient_checkpointing_offload,
             "prediction_type": self.prediction_type,
             "tokenAE_training": self.tokenAE_training,
+            "fixed_foveation_mask": getattr(self, "fixed_foveation_mask", False),
         }
         inputs_shared = self.parse_extra_inputs(data, self.extra_inputs, inputs_shared)
         return inputs_shared, inputs_posi, inputs_nega
@@ -485,6 +490,8 @@ def flux2_parser():
     
     # Foveated pipeline arguments
     parser.add_argument("--is_foveated_pipeline", type=_str_to_bool, default=True, help="Is foveated pipeline (true/false).")
+    parser.add_argument("--fixed_foveation_mask", action="store_true",
+                        help="Use fixed center (0,0) radius 0.5 circular mask during foveated training instead of randomly sampled masks.")
 
     return parser
 
@@ -538,6 +545,7 @@ if __name__ == "__main__":
         prediction_type=args.prediction_type,
         detach_z_mix=args.detach_z_mix,
         is_foveated_pipeline=args.is_foveated_pipeline,
+        fixed_foveation_mask=getattr(args, "fixed_foveation_mask", False),
     )
     # Create logger (WandB or standard)
     if args.use_wandb:
