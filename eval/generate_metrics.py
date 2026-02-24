@@ -174,28 +174,27 @@ if __name__ == "__main__":
         raise FileNotFoundError(f"Images dataset path {images_dataset_path} does not exist")
     os.makedirs(metric_output_dir, exist_ok=True)
 
-    # Load prompts and image names from prompt_list.txt.
-    # Each valid line has the format: "<image_name>: <prompt>"
-    # The corresponding image file is img_<image_name>.png in generated_images_dir.
-    # Lines that don't contain ": " are skipped.
-    prompt_list_path = os.path.join(generated_images_dir, "prompt_list.txt")
-    if not os.path.exists(prompt_list_path):
-        raise FileNotFoundError(f"prompt_list.txt not found: {prompt_list_path}")
+    # Load generated image paths and prompts from metadata_*.csv files in generated_images_dir.
+    # Files are sorted to ensure deterministic order; all CSVs have "image" and "prompt" columns.
+    csv_files = sorted(
+        os.path.join(generated_images_dir, f)
+        for f in os.listdir(generated_images_dir)
+        if f.startswith('metadata_') and f.endswith('.csv')
+    )
+    if not csv_files:
+        raise FileNotFoundError(f"No metadata_*.csv files found in: {generated_images_dir}")
+
+    gen_df = pd.concat([pd.read_csv(f) for f in csv_files], ignore_index=True)
 
     gen_image_paths = []
     prompts = []
-    with open(prompt_list_path, 'r') as f:
-        for line in f:
-            line = line.rstrip('\n')
-            if ': ' not in line:
-                continue  # skip invalid lines
-            image_name, prompt = line.split(': ', 1)
-            gen_image_path = os.path.join(generated_images_dir, f'img_{image_name.strip()}.png')
-            if not os.path.exists(gen_image_path):
-                print(f"WARNING: Generated image not found: {gen_image_path}. Skipping.")
-                continue
-            gen_image_paths.append(gen_image_path)
-            prompts.append(prompt)
+    for _, row in gen_df.iterrows():
+        gen_image_path = os.path.join(generated_images_dir, row["image"])
+        if not os.path.exists(gen_image_path):
+            print(f"WARNING: Generated image not found: {gen_image_path}. Skipping.")
+            continue
+        gen_image_paths.append(gen_image_path)
+        prompts.append(row["prompt"])
 
     # Test-set metadata from images_dataset_path/metadata_test.csv (columns: "image", "prompt").
     # "image" is a relative path; absolute path = images_dataset_path/image.
@@ -206,14 +205,6 @@ if __name__ == "__main__":
         raise FileNotFoundError(f"Test metadata not found: {test_metadata_path}")
     test_metadata = pd.read_csv(test_metadata_path)
 
-    def _norm_csv_prompt(s):
-        s = s.strip()
-        if s.startswith('"') and s.endswith('"'):
-            s = s[1:-1]
-        return s
-
-    test_metadata["_prompt_norm"] = test_metadata["prompt"].apply(_norm_csv_prompt)
-
     print(f"Number of generated images: {len(gen_image_paths)}")
     print(f"Number of prompts: {len(prompts)}")
     print(f"Number of test images: {len(test_metadata)}")
@@ -222,7 +213,12 @@ if __name__ == "__main__":
     real_image_paths = []
     image_pairs = {"generated": [], "target": []}
     for gen_path, prompt in zip(gen_image_paths, prompts):
-        img_path = test_metadata[test_metadata["_prompt_norm"] == prompt]["image"].values[0]
+        matches = test_metadata[test_metadata["prompt"] == prompt]
+        if len(matches) == 0:
+            print(f"ERROR: No matching real image found for generation prompt: {repr(prompt)}")
+            print(f"  Sample test prompts (first 3): {[repr(p) for p in test_metadata['prompt'].tolist()[:3]]}")
+            raise IndexError(f"No test image matched prompt: {repr(prompt)}")
+        img_path = matches["image"].values[0]
         print(f"Generated image: {os.path.basename(gen_path)}, Target image: {img_path}")
         real_image_paths.append(os.path.join(images_dataset_path, img_path))
         if args.debug and len(image_pairs["generated"]) < args.debug_num_pairs:

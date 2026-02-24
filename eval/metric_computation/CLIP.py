@@ -87,8 +87,8 @@ def _load_openclip(model_name='ViT-L-14-336-quickgelu',
                    precision='fp16'):
     """Load an OpenCLIP model and tokenizer with caching.
 
-    Matches lakonlab's load_openclip (lines 202-221).
-
+    Matches lakonlab's load_openclip (lines 202-221). https://github.com/Lakonik/piFlow/blob/422954182a10f27eb05458bb5a43f1518817cf70/lakonlab/evaluation/metrics.py#L202
+    
     Parameters
     ----------
     model_name : str
@@ -164,8 +164,8 @@ def _resize_min_side_then_center_crop(imgs, image_size, image_mean, image_std, d
     """Resize so min(H,W) == image_size, center crop, normalize, cast dtype.
 
     Matches lakonlab's CLIPSimilarity._resize_min_side_then_center_crop
-    (lines 1200-1231).
-
+    (lines 1200-1231). https://github.com/Lakonik/piFlow/blob/422954182a10f27eb05458bb5a43f1518817cf70/lakonlab/evaluation/metrics.py#L1200
+    
     Parameters
     ----------
     imgs : torch.Tensor
@@ -273,7 +273,8 @@ def _clip_sim_batch_loop(paths, prompts, model, tokenizer,
                          batch_size, device,
                          pil_transform=None, image_transform=None):
     """Compute mean CLIP cosine similarity for a list of (image, prompt) pairs.
-
+    Matches https://github.com/Lakonik/piFlow/blob/422954182a10f27eb05458bb5a43f1518817cf70/lakonlab/evaluation/metrics.py#L1234
+    
     Parameters
     ----------
     paths : list[str]
