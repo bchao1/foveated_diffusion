@@ -331,14 +331,23 @@ if __name__ == "__main__":
                                real_pil_transform=pil_transform,
                                real_image_transform=_make_fov_transform(-1, 1),
                                device=device)
-    clip_results = compute_clip_score(gen_image_paths,
-                                       args={"prompts": prompts, "batch_size": args.batch_size},
-                                       foveate_real=args.foveate_real,
-                                       downsample_real=args.downsample_real,
-                                       device=device,
-                                       real_paths=real_image_paths,
-                                       real_pil_transform=pil_transform,
-                                       real_image_transform=_make_fov_transform(0, 1))
+    gt_clip_path = os.path.join(metric_output_dir, "gt_clip.json")
+    if os.path.isfile(gt_clip_path):
+        with open(gt_clip_path) as f:
+            clipsim_real = json.load(f)["clipsim_real"]
+        clip_results = compute_clip_score(gen_image_paths,
+                                           args={"prompts": prompts, "batch_size": args.batch_size},
+                                           device=device)
+        clip_results["clipsim_real"] = clipsim_real
+    else:
+        clip_results = compute_clip_score(gen_image_paths,
+                                           args={"prompts": prompts, "batch_size": args.batch_size},
+                                           foveate_real=args.foveate_real,
+                                           downsample_real=args.downsample_real,
+                                           device=device,
+                                           real_paths=real_image_paths,
+                                           real_pil_transform=pil_transform,
+                                           real_image_transform=_make_fov_transform(0, 1))
 
     print(f"FID: {fid_results['fid']:.4f}  |  mean_dist: {fid_results['mean_dist']:.4f}  |  cov_dist: {fid_results['cov_dist']:.4f}")
     print(f"Precision: {pr_results['precision']:.5f}  |  Recall: {pr_results['recall']:.5f}")

@@ -300,12 +300,18 @@ def _clip_sim_batch_loop(paths, prompts, model, tokenizer,
 
         # Load images as [0, 1] float32, with optional PIL-level transform.
         imgs = []
-        for p in batch_paths:
-            img_pil = Image.open(p).convert('RGB')
+        valid_prompts = []
+        for p, prompt in zip(batch_paths, batch_prompts):
+            try:
+                img_pil = Image.open(p).convert('RGB')
+            except Exception as e:
+                logger.warning(f"Skipping image (failed to load): {p} — {e}")
+                continue
             if pil_transform is not None:
                 img_pil = pil_transform(img_pil)
             arr = np.array(img_pil, dtype=np.float32) / 255.0
             imgs.append(torch.from_numpy(arr).permute(2, 0, 1))
+            valid_prompts.append(prompt)
         imgs = torch.stack(imgs, dim=0).to(device=device, dtype=torch.float32)
 
         # Optional image transform (foveation/downsampling) on [0, 1] batch.
@@ -318,7 +324,7 @@ def _clip_sim_batch_loop(paths, prompts, model, tokenizer,
         )
 
         # Tokenize prompts
-        text = tokenizer(batch_prompts).to(device=device)
+        text = tokenizer(valid_prompts).to(device=device)
 
         with torch.no_grad():
             out = model(imgs, text)
