@@ -87,8 +87,8 @@ def _load_openclip(model_name='ViT-L-14-336-quickgelu',
                    precision='fp16'):
     """Load an OpenCLIP model and tokenizer with caching.
 
-    Matches lakonlab's load_openclip (lines 202-221).
-
+    Matches lakonlab's load_openclip (lines 202-221). https://github.com/Lakonik/piFlow/blob/422954182a10f27eb05458bb5a43f1518817cf70/lakonlab/evaluation/metrics.py#L202
+    
     Parameters
     ----------
     model_name : str
@@ -164,8 +164,8 @@ def _resize_min_side_then_center_crop(imgs, image_size, image_mean, image_std, d
     """Resize so min(H,W) == image_size, center crop, normalize, cast dtype.
 
     Matches lakonlab's CLIPSimilarity._resize_min_side_then_center_crop
-    (lines 1200-1231).
-
+    (lines 1200-1231). https://github.com/Lakonik/piFlow/blob/422954182a10f27eb05458bb5a43f1518817cf70/lakonlab/evaluation/metrics.py#L1200
+    
     Parameters
     ----------
     imgs : torch.Tensor
@@ -273,7 +273,8 @@ def _clip_sim_batch_loop(paths, prompts, model, tokenizer,
                          batch_size, device,
                          pil_transform=None, image_transform=None):
     """Compute mean CLIP cosine similarity for a list of (image, prompt) pairs.
-
+    Matches https://github.com/Lakonik/piFlow/blob/422954182a10f27eb05458bb5a43f1518817cf70/lakonlab/evaluation/metrics.py#L1234
+    
     Parameters
     ----------
     paths : list[str]
@@ -300,12 +301,18 @@ def _clip_sim_batch_loop(paths, prompts, model, tokenizer,
 
         # Load images as [0, 1] float32, with optional PIL-level transform.
         imgs = []
-        for p in batch_paths:
-            img_pil = Image.open(p).convert('RGB')
+        valid_prompts = []
+        for p, prompt in zip(batch_paths, batch_prompts):
+            try:
+                img_pil = Image.open(p).convert('RGB')
+            except Exception as e:
+                logger.warning(f"Skipping image (failed to load): {p} — {e}")
+                continue
             if pil_transform is not None:
                 img_pil = pil_transform(img_pil)
             arr = np.array(img_pil, dtype=np.float32) / 255.0
             imgs.append(torch.from_numpy(arr).permute(2, 0, 1))
+            valid_prompts.append(prompt)
         imgs = torch.stack(imgs, dim=0).to(device=device, dtype=torch.float32)
 
         # Optional image transform (foveation/downsampling) on [0, 1] batch.
@@ -318,7 +325,7 @@ def _clip_sim_batch_loop(paths, prompts, model, tokenizer,
         )
 
         # Tokenize prompts
-        text = tokenizer(batch_prompts).to(device=device)
+        text = tokenizer(valid_prompts).to(device=device)
 
         with torch.no_grad():
             out = model(imgs, text)
