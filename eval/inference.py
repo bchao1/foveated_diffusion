@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../image_generation"
 
 from diffsynth.pipelines.flux2_image_foveated import Flux2FoveatedImagePipeline
 from diffsynth.pipelines.flux2_image import Flux2ImagePipeline, ModelConfig
+from diffsynth.core import load_state_dict
 
 import pandas as pd
 
@@ -691,6 +692,12 @@ def run_user_study(pipe, args, output_dir, token_upsampler, token_downsampler):
 
     if args.lora_checkpoint is not None:
         pipe.load_lora(pipe.dit, args.lora_checkpoint)
+        print(f"Loaded LoRA checkpoint from {args.lora_checkpoint}")
+    if args.dit_checkpoint is not None:
+        state_dict = load_state_dict(args.dit_checkpoint, torch_dtype=torch.bfloat16)
+        pipe.dit.load_state_dict(state_dict)
+        print(f"Loaded DiT checkpoint from {args.dit_checkpoint}")
+        
     for idx, (subdir, prompt, foveation_mask, full_res_foveation_mask, _) in enumerate(items):
         run_ours(pipe, args, subdir, prompt, 0, token_upsampler, token_downsampler, foveation_mask=foveation_mask, full_res_foveation_mask=full_res_foveation_mask)
         os.rename(
@@ -1016,6 +1023,17 @@ def main(args):
         print("User study: LoRA will be loaded only for 'ours' runs (baseline and naive use base DiT)")
     else:
         print("No LoRA checkpoint provided, using base model")
+
+    
+    # Load DiT checkpoint 
+    if args.dit_checkpoint is not None and args.experiment != "user_study":
+        state_dict = load_state_dict(args.dit_checkpoint, torch_dtype=torch.bfloat16)
+        pipe.dit.load_state_dict(state_dict)
+        print(f"Loaded DiT checkpoint from {args.dit_checkpoint}")
+    elif args.dit_checkpoint is not None and args.experiment == "user_study":
+        print("User study: DiT will be loaded only for 'ours' runs (baseline and naive use base DiT)")
+    else:
+        print("No DiT checkpoint provided, using base model")
     
     # Load TokenAE
     if args.experiment == "high_res":
@@ -1073,7 +1091,9 @@ if __name__ == "__main__":
     parser.add_argument('--tokenAE_arch', type=str, default="adapter", choices=["adapter", "flux2", "dit"],
                         help='TokenAE architecture: adapter (CNN), flux2 (Flux2 token AE), dit (DiT block up/down). Overridden by tokenAE_config.yaml when loading from tokenAE_folder.')
     parser.add_argument('--lora_checkpoint', default=None, type=str, help='Path to the LoRA .safetensors checkpoint')
-    
+
+    # DiT checkpoint
+    parser.add_argument('--dit_checkpoint', default=None, type=str, help='Path to the DiT checkpoint')
     
     # Generation parameters
     parser.add_argument('--height', type=int, default=1024, help='Image height')

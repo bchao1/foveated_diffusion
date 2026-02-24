@@ -261,6 +261,7 @@ def generate_baseline_comparison_grid(
     padding_frac=0.02,
     downsample_factor=None,
     image_name_template="img_{:010d}.png",
+    num_rows=None,
 ):
     """
     Stack images from multiple baseline folders into an interleaved grid.
@@ -275,11 +276,6 @@ def generate_baseline_comparison_grid(
     """
     import imageio
 
-    if total_images % num_cols != 0:
-        raise ValueError(f"total_images ({total_images}) must be divisible by num_cols ({num_cols})")
-    num_baselines = len(baselines)
-    num_row_groups = total_images // num_cols
-    total_rows = num_row_groups * num_baselines
     factor = downsample_factor if downsample_factor is not None else num_cols
 
     # Load one image to get dimensions, then get downsampled size
@@ -297,38 +293,107 @@ def generate_baseline_comparison_grid(
     C = sample_small.shape[2]
     pad_px = int(padding_frac * W_small)
 
-    row_images = []
-    for r in range(total_rows):
-        baseline_idx = r % num_baselines
-        group = r // num_baselines
-        start = group * num_cols
-        end = start + num_cols
-        folder = os.path.join(base_dir, baselines[baseline_idx])
-        parts = []
-        for i in range(start, end):
-            path = os.path.join(folder, image_name_template.format(i))
-            img = imageio.imread(path)
-            if img.ndim == 2:
-                img = np.expand_dims(img, axis=-1)
-            if factor > 1:
-                img = _downsample_by_factor(img, factor)
-            parts.append(img)
-        # Horizontal stack with padding between images
-        row_parts = [parts[0]]
-        for p in parts[1:]:
-            row_parts.append(np.full((H_small, pad_px, C), 255, dtype=parts[0].dtype))
-            row_parts.append(p)
-        row_img = np.concatenate(row_parts, axis=1)
-        row_images.append(row_img)
+    # If num_rows is not specified, keep the original behavior for backwards compatibility:
+    # each row has num_cols images from a single baseline, rows are interleaved by baseline.
+    if num_rows is None:
+        if total_images % num_cols != 0:
+            raise ValueError(f"total_images ({total_images}) must be divisible by num_cols ({num_cols})")
+        num_baselines = len(baselines)
+        num_row_groups = total_images // num_cols
+        total_rows = num_row_groups * num_baselines
 
-    # Vertical stack with padding between rows
-    row_w = row_images[0].shape[1]
-    pad_row = np.full((pad_px, row_w, C), 255, dtype=row_images[0].dtype)
-    grid_parts = [row_images[0]]
-    for r in row_images[1:]:
-        grid_parts.append(pad_row)
-        grid_parts.append(r)
-    grid = np.concatenate(grid_parts, axis=0)
+        row_images = []
+        for r in range(total_rows):
+            baseline_idx = r % num_baselines
+            group = r // num_baselines
+            start = group * num_cols
+            end = start + num_cols
+            folder = os.path.join(base_dir, baselines[baseline_idx])
+            parts = []
+            for i in range(start, end):
+                path = os.path.join(folder, image_name_template.format(i))
+                img = imageio.imread(path)
+                if img.ndim == 2:
+                    img = np.expand_dims(img, axis=-1)
+                if factor > 1:
+                    img = _downsample_by_factor(img, factor)
+                parts.append(img)
+            # Horizontal stack with padding between images
+            row_parts = [parts[0]]
+            for p in parts[1:]:
+                row_parts.append(np.full((H_small, pad_px, C), 255, dtype=parts[0].dtype))
+                row_parts.append(p)
+            row_img = np.concatenate(row_parts, axis=1)
+            row_images.append(row_img)
+
+        # Vertical stack with padding between rows
+        row_w = row_images[0].shape[1]
+        pad_row = np.full((pad_px, row_w, C), 255, dtype=row_images[0].dtype)
+        grid_parts = [row_images[0]]
+        for r in row_images[1:]:
+            grid_parts.append(pad_row)
+            grid_parts.append(r)
+        grid = np.concatenate(grid_parts, axis=0)
+    else:
+        # New layout: each prompt is a horizontal baseline triplet; we place two triplets per row
+        # (left and right), so the final grid has N rows and 6 columns in total when len(baselines) == 3.
+        num_prompts = 2 * num_rows
+        if total_images < num_prompts:
+            raise ValueError(
+                f"total_images ({total_images}) must be at least 2 * num_rows ({num_prompts}) "
+                "to create two prompt triplets per row."
+            )
+
+        # Pre-load all triplets (one per prompt index)
+        triplets = []
+        for idx in range(num_prompts):
+            imgs = []
+            for baseline in baselines:
+                folder = os.path.join(base_dir, baseline)
+                path = os.path.join(folder, image_name_template.format(idx))
+                img = imageio.imread(path)
+                if img.ndim == 2:
+                    img = np.expand_dims(img, axis=-1)
+                if factor > 1:
+                    img = _downsample_by_factor(img, factor)
+                imgs.append(img)
+            # Stack baselines horizontally to form a single prompt triplet
+            triplet_parts = [imgs[0]]
+            for img in imgs[1:]:
+                triplet_parts.append(np.full((H_small, pad_px, C), 255, dtype=imgs[0].dtype))
+                triplet_parts.append(img)
+            triplet_img = np.concatenate(triplet_parts, axis=1)
+            triplets.append(triplet_img)
+
+        # Build rows: two prompt triplets per row, stacked horizontally
+        row_images = []
+        for r in range(num_rows):
+            left = triplets[2 * r]
+            right = triplets[2 * r + 1]
+            # Make sure widths match by padding if necessary
+            max_w = max(left.shape[1], right.shape[1])
+            if left.shape[1] < max_w:
+                left = np.concatenate(
+                    [left, np.full((left.shape[0], max_w - left.shape[1], C), 255, dtype=left.dtype)],
+                    axis=1,
+                )
+            if right.shape[1] < max_w:
+                right = np.concatenate(
+                    [right, np.full((right.shape[0], max_w - right.shape[1], C), 255, dtype=right.dtype)],
+                    axis=1,
+                )
+            col_pad = np.full((H_small, pad_px, C), 255, dtype=left.dtype)
+            row_img = np.concatenate([left, col_pad, right], axis=1)
+            row_images.append(row_img)
+
+        # Vertical stack with padding between rows
+        row_w = row_images[0].shape[1]
+        pad_row = np.full((pad_px, row_w, C), 255, dtype=row_images[0].dtype)
+        grid_parts = [row_images[0]]
+        for r in row_images[1:]:
+            grid_parts.append(pad_row)
+            grid_parts.append(r)
+        grid = np.concatenate(grid_parts, axis=0)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
     imageio.imwrite(output_path, grid)
@@ -344,14 +409,19 @@ def generate_foveation_trajectory_figure(
     output_path=None,
     padding_frac=0.02,
     downsample_factor=None,
+    num_rows=None,
     image_name_glob="img_*.png",
 ):
     """
     Generate a figure showing foveation trajectory sequences.
     - subfolder_indices: single int or list of ints (e.g. 0 or [0, 1, 2] for 000, 001, 002).
     - For each subfolder index: row 1 from base_dir/row1_name/{subfolder}/, row 2 from base_dir/row2_name/{subfolder}/.
-    - All img_*.png in each subfolder are stacked horizontally; rows stacked vertically with same padding between rows.
-    - Same padding logic as baseline grid: padding_frac * image width between images and between rows.
+    - Default behavior (num_rows is None): all img_*.png in each subfolder are stacked horizontally; rows stacked
+      vertically with the same padding between rows.
+    - New behavior (num_rows is not None): build a 6-column grid where each column is a foveation trajectory over
+      time. Images from row1_name and row2_name are interleaved in columns (row1, row2, row1, row2, row1, row2) for
+      the first three subfolder indices. Each column shows num_rows evenly sampled frames from its trajectory,
+      aligned across the pair for each subfolder.
     """
     import glob
     import imageio
@@ -392,39 +462,118 @@ def generate_foveation_trajectory_figure(
     pad_px = int(padding_frac * W)
     dtype = sample_imgs[0].dtype
 
-    row_blocks = []
-    row_w_max = 0
-    for idx in subfolder_indices:
-        subfolder = f"{idx:03d}"
-        dir1 = os.path.join(base_dir, row1_name, subfolder)
-        dir2 = os.path.join(base_dir, row2_name, subfolder)
-        for d in (dir1, dir2):
-            if not os.path.isdir(d):
-                raise FileNotFoundError(f"Folder not found: {d}")
-        row1_imgs = load_row_images(dir1, factor)
-        row2_imgs = load_row_images(dir2, factor)
-        row1 = horizontal_stack(row1_imgs, H, W, pad_px, C, dtype)
-        row2 = horizontal_stack(row2_imgs, H, W, pad_px, C, dtype)
-        row_w_max = max(row_w_max, row1.shape[1], row2.shape[1])
-        row_blocks.append((row1, row2))
+    if num_rows is None:
+        # Original behavior: horizontal trajectories stacked as rows.
+        row_blocks = []
+        row_w_max = 0
+        for idx in subfolder_indices:
+            subfolder = f"{idx:03d}"
+            dir1 = os.path.join(base_dir, row1_name, subfolder)
+            dir2 = os.path.join(base_dir, row2_name, subfolder)
+            for d in (dir1, dir2):
+                if not os.path.isdir(d):
+                    raise FileNotFoundError(f"Folder not found: {d}")
+            row1_imgs = load_row_images(dir1, factor)
+            row2_imgs = load_row_images(dir2, factor)
+            row1 = horizontal_stack(row1_imgs, H, W, pad_px, C, dtype)
+            row2 = horizontal_stack(row2_imgs, H, W, pad_px, C, dtype)
+            row_w_max = max(row_w_max, row1.shape[1], row2.shape[1])
+            row_blocks.append((row1, row2))
 
-    # Pad rows to same width and stack vertically with padding between rows
-    pad_row_template = None
-    grid_parts = []
-    for row1, row2 in row_blocks:
-        if row1.shape[1] < row_w_max:
-            row1 = np.concatenate([row1, np.full((row1.shape[0], row_w_max - row1.shape[1], C), 255, dtype=dtype)], axis=1)
-        if row2.shape[1] < row_w_max:
-            row2 = np.concatenate([row2, np.full((row2.shape[0], row_w_max - row2.shape[1], C), 255, dtype=dtype)], axis=1)
-        if pad_row_template is None:
-            pad_row_template = np.full((pad_px, row_w_max, C), 255, dtype=dtype)
-        grid_parts.append(row1)
-        grid_parts.append(pad_row_template)
-        grid_parts.append(row2)
-        grid_parts.append(pad_row_template)
-    if grid_parts:
-        grid_parts = grid_parts[:-1]  # drop trailing padding between blocks
-    grid = np.concatenate(grid_parts, axis=0) if grid_parts else np.zeros((0, 0, C), dtype=dtype)
+        # Pad rows to same width and stack vertically with padding between rows
+        pad_row_template = None
+        grid_parts = []
+        for row1, row2 in row_blocks:
+            if row1.shape[1] < row_w_max:
+                row1 = np.concatenate(
+                    [row1, np.full((row1.shape[0], row_w_max - row1.shape[1], C), 255, dtype=dtype)],
+                    axis=1,
+                )
+            if row2.shape[1] < row_w_max:
+                row2 = np.concatenate(
+                    [row2, np.full((row2.shape[0], row_w_max - row2.shape[1], C), 255, dtype=dtype)],
+                    axis=1,
+                )
+            if pad_row_template is None:
+                pad_row_template = np.full((pad_px, row_w_max, C), 255, dtype=dtype)
+            grid_parts.append(row1)
+            grid_parts.append(pad_row_template)
+            grid_parts.append(row2)
+            grid_parts.append(pad_row_template)
+        if grid_parts:
+            grid_parts = grid_parts[:-1]  # drop trailing padding between blocks
+        grid = np.concatenate(grid_parts, axis=0) if grid_parts else np.zeros((0, 0, C), dtype=dtype)
+    else:
+        # New behavior: each column is a trajectory; interleave row1/row2 columns
+        # for the first three subfolder indices, giving 6 columns total.
+        if len(subfolder_indices) < 3:
+            raise ValueError(
+                f"Need at least 3 subfolder indices for 3 interleaved trajectory pairs, "
+                f"got {len(subfolder_indices)}."
+            )
+        use_indices = subfolder_indices[:3]
+
+        columns = []
+
+        for idx in use_indices:
+            subfolder = f"{idx:03d}"
+            dir1 = os.path.join(base_dir, row1_name, subfolder)
+            dir2 = os.path.join(base_dir, row2_name, subfolder)
+            for d in (dir1, dir2):
+                if not os.path.isdir(d):
+                    raise FileNotFoundError(f"Folder not found: {d}")
+
+            row1_imgs = load_row_images(dir1, factor)
+            row2_imgs = load_row_images(dir2, factor)
+
+            if len(row1_imgs) != len(row2_imgs):
+                raise ValueError(
+                    f"Mismatch in number of frames between {dir1} ({len(row1_imgs)}) and "
+                    f"{dir2} ({len(row2_imgs)})."
+                )
+            num_frames = len(row1_imgs)
+            if num_frames < num_rows:
+                raise ValueError(
+                    f"Not enough frames in {dir1} / {dir2} for num_rows={num_rows}: only {num_frames} frames."
+                )
+
+            if num_frames == num_rows:
+                frame_indices = list(range(num_rows))
+            else:
+                frame_indices = np.linspace(0, num_frames - 1, num_rows, dtype=int)
+
+            col1_frames = [row1_imgs[i] for i in frame_indices]
+            col2_frames = [row2_imgs[i] for i in frame_indices]
+
+            def vertical_stack(frames):
+                col_w = frames[0].shape[1]
+                parts = [frames[0]]
+                for f in frames[1:]:
+                    parts.append(np.full((pad_px, col_w, C), 255, dtype=dtype))
+                    parts.append(f)
+                return np.concatenate(parts, axis=0)
+
+            col1 = vertical_stack(col1_frames)
+            col2 = vertical_stack(col2_frames)
+            columns.extend([col1, col2])
+
+        # Pad columns to same height and stack horizontally with padding between columns
+        if columns:
+            max_h = max(col.shape[0] for col in columns)
+            padded_columns = []
+            for col in columns:
+                if col.shape[0] < max_h:
+                    pad = np.full((max_h - col.shape[0], col.shape[1], C), 255, dtype=dtype)
+                    col = np.concatenate([col, pad], axis=0)
+                padded_columns.append(col)
+
+            grid_parts = [padded_columns[0]]
+            for col in padded_columns[1:]:
+                grid_parts.append(np.full((max_h, pad_px, C), 255, dtype=dtype))
+                grid_parts.append(col)
+            grid = np.concatenate(grid_parts, axis=1)
+        else:
+            grid = np.zeros((0, 0, C), dtype=dtype)
 
     if output_path is None:
         output_path = os.path.join(base_dir, "foveation_trajectory_figure.png")
@@ -442,10 +591,16 @@ if __name__ == "__main__":
     parser.add_argument("--padding-frac", type=float, default=0.02, help="Padding between images as fraction of image width")
     parser.add_argument("--downsample", type=int, default=None, help="Downsample factor for foveation_trajectory (optional)")
 
-    # baselines figure-specific arguments
+    # baselines / foveation_trajectory figure-specific arguments
     parser.add_argument("--baselines", type=str, nargs="+", default=["baseline_eval", "naive_eval", "ours_dit_eval"], help="Baseline folder names for baselines figure")
     parser.add_argument("--total-images", type=int, default=20, help="Number of images per baseline")
     parser.add_argument("--num-cols", type=int, default=4, help="Number of images per row")
+    parser.add_argument(
+        "--num-rows",
+        type=int,
+        default=None,
+        help="Number of rows for baselines (two prompt triplets per row) or foveation_trajectory (frames per trajectory column)",
+    )
 
     # foveation_trajectory figure-specific arguments
     parser.add_argument("--row1-name", type=str, default="foveation_trajectory_naive", help="Folder name for row 1 of foveation_trajectory (under base-dir)")
@@ -472,6 +627,7 @@ if __name__ == "__main__":
             num_cols=args.num_cols,
             output_path=args.output or os.path.join(base_dir, "baselines.png"),
             padding_frac=getattr(args, "padding_frac", 0.02),
+            num_rows=args.num_rows,
         )
     elif args.figure == "foveation_trajectory":
         base_dir = args.base_dir or default_base
@@ -483,6 +639,7 @@ if __name__ == "__main__":
             output_path=args.output,
             padding_frac=args.padding_frac,
             downsample_factor=args.downsample,
+            num_rows=args.num_rows,
         )
     else:
         raise ValueError(f"Invalid figure: {args.figure}")
