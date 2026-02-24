@@ -8,9 +8,9 @@ lora_checkpoint="${base_dir}/${model_name}/step-${step}.safetensors"
 
 CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment user_study \
-    --prompt_dataset_path /local/brian/Aesthetic-Train-V2/metadata.csv \
+    --prompt_dataset_path user_study_prompts.csv \
     --num_prompts 50 \
-    --output_dir ../results/eccv2026_final/user_study \
+    --output_dir ../results/eccv2026_final/user_study_v2 \
     --seed 42 \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \

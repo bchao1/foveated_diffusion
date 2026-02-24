@@ -25,5 +25,5 @@ CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --prompt_dataset_path /local/brian/Aesthetic-Train-V2/metadata.csv \
     --num_prompts 10 \
     --num_cols 5 \
-    --foveation_outline false \
-    --soft_foveation_blend false
+    --foveation_outline true \
+    --soft_foveation_blend true

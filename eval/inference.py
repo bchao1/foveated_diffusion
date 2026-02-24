@@ -668,12 +668,13 @@ def run_user_study(pipe, args, output_dir, token_upsampler, token_downsampler):
             os.path.join(subdir, "img_naive.png"),
         )
 
-        mask_high = F.interpolate(
-            foveation_mask.unsqueeze(0).unsqueeze(0).float().cpu(),
-            size=(height, width),
-            mode="nearest",
-        ).squeeze().numpy()
-        mask_uint8 = (np.clip(mask_high, 0.0, 1.0) * 255).astype(np.uint8)
+        # Save full-res mask (optionally blurred to match pipeline merge)
+        mask_to_save = full_res_foveation_mask.unsqueeze(0).unsqueeze(0).float().to(device)
+        if getattr(args, "soft_foveation_blend", False):
+            latent_h = height // 16
+            upscale = height / latent_h
+            mask_to_save = _gaussian_blur_mask_2d(mask_to_save, upscale, device=device, dtype=mask_to_save.dtype)
+        mask_uint8 = (np.clip(mask_to_save.squeeze().cpu().numpy(), 0.0, 1.0) * 255).astype(np.uint8)
         imageio.imwrite(os.path.join(subdir, "mask.png"), mask_uint8)
 
         cx_px = (center[0] + 0.5) * width
@@ -728,8 +729,12 @@ def run_circular_traj(pipe, args, output_dir, token_upsampler, token_downsampler
         full_res_foveation_mask = create_foveation_mask_full_res(
             args.height, args.width, center=center, r=mask_radius, shape=args.mask_shape, device=pipe.device
         )
-        # Save debug visualizations
-        save_image(foveation_mask.unsqueeze(0).unsqueeze(0), os.path.join(output_dir, f"foveation_mask_{i:03d}.png"))
+        # Save full-res mask (optionally blurred to match pipeline merge)
+        mask_to_save = full_res_foveation_mask.unsqueeze(0).unsqueeze(0).float().to(pipe.device)
+        if getattr(args, "soft_foveation_blend", False):
+            upscale = args.height / (args.height // 16)
+            mask_to_save = _gaussian_blur_mask_2d(mask_to_save, upscale, pipe.device, mask_to_save.dtype)
+        save_image(mask_to_save, os.path.join(output_dir, f"foveation_mask_{i:03d}.png"))
         
         # Run diffusion pipeline
         torch.cuda.empty_cache()
@@ -784,7 +789,12 @@ def run_vary_radius(pipe, args, output_dir, token_upsampler, token_downsampler):
         full_res_foveation_mask = create_foveation_mask_full_res(
             args.height, args.width, center=(0, 0), r=r, shape=args.mask_shape, device=pipe.device
         )
-        save_image(foveation_mask.unsqueeze(0).unsqueeze(0), os.path.join(output_dir, f"foveation_mask_{r_idx_str}.png"))
+        # Save full-res mask (optionally blurred to match pipeline merge)
+        mask_to_save = full_res_foveation_mask.unsqueeze(0).unsqueeze(0).float().to(pipe.device)
+        if getattr(args, "soft_foveation_blend", False):
+            upscale = args.height / (args.height // 16)
+            mask_to_save = _gaussian_blur_mask_2d(mask_to_save, upscale, pipe.device, mask_to_save.dtype)
+        save_image(mask_to_save, os.path.join(output_dir, f"foveation_mask_{r_idx_str}.png"))
         
         # Run pipeline
         torch.cuda.empty_cache()
@@ -844,7 +854,12 @@ def run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downs
         full_res_foveation_mask = create_foveation_mask_full_res(
             args.height, args.width, center=(0, 0), r=r, shape=args.mask_shape, device=pipe.device
         )
-        save_image(foveation_mask.unsqueeze(0).unsqueeze(0), os.path.join(output_dir, f"foveation_mask_{r_idx_str}.png"))
+        # Save full-res mask (optionally blurred to match pipeline merge)
+        mask_to_save = full_res_foveation_mask.unsqueeze(0).unsqueeze(0).float().to(pipe.device)
+        if getattr(args, "soft_foveation_blend", False):
+            upscale = args.height / (args.height // 16)
+            mask_to_save = _gaussian_blur_mask_2d(mask_to_save, upscale, pipe.device, mask_to_save.dtype)
+        save_image(mask_to_save, os.path.join(output_dir, f"foveation_mask_{r_idx_str}.png"))
         
         # Run pipeline
         torch.cuda.empty_cache()
@@ -949,7 +964,7 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
             if getattr(args, "foveation_outline", True):
                 draw_foveation_outline(
                     image_np,
-                    foveation_mask,
+                    full_res_foveation_masks[col],
                     height,
                     width,
                     outline_width_frac=outline_width_frac,
@@ -957,17 +972,13 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
                 )
             out_path = os.path.join(prompt_dir, f"img_{col:04d}.png")
             imageio.imwrite(out_path, image_np)
-            # Save upsampled foveation mask used for this image (post-blur if soft_foveation_blend)
-            mask_high = F.interpolate(
-                foveation_mask.unsqueeze(0).unsqueeze(0).float().to(device),
-                size=(height, width),
-                mode="bicubic",
-            )
+            # Save full-res foveation mask (optionally blurred to match pipeline merge)
+            mask_high = full_res_foveation_masks[col].unsqueeze(0).unsqueeze(0).float().to(device)
             if getattr(args, "soft_foveation_blend", False):
                 latent_h, latent_w = height // 16, width // 16
                 upscale = height / latent_h
                 mask_high = _gaussian_blur_mask_2d(
-                    mask_high, upscale * 2, device=device, dtype=mask_high.dtype
+                    mask_high, upscale, device=device, dtype=mask_high.dtype
                 )
             mask_high = mask_high.squeeze().cpu().numpy()
             mask_high = np.clip(mask_high, 0.0, 1.0)
