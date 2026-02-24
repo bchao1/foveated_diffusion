@@ -26,7 +26,7 @@ from PIL import Image
 # ---------------------------------------------------------------------------
 
 FIXATION_DURATION = 5.0          # seconds (≥5 as specified)
-FLASH_DURATION_S  = 0.150        # 150 ms per image
+FLASH_DURATION_S  = 0.500        # 500 ms per image
 INTER_IMAGE_FIXATION_S = 1.0    # fixation shown between img1 and img2
 BG_COLOR          = (-1, -1, -1) # PsychoPy [-1,1] range: black
 
