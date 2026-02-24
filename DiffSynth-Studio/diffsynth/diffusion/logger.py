@@ -195,8 +195,10 @@ class WandbModelLogger(ModelLogger):
         return (
             hasattr(pipe, "token_upsampler")
             and hasattr(pipe, "token_downsampler")
-            and pipe.token_upsampler is not None
-            and pipe.token_downsampler is not None
+            and hasattr(pipe, "is_foveated_pipeline")
+            and pipe.is_foveated_pipeline
+            #and pipe.token_upsampler is not None
+            #and pipe.token_downsampler is not None
         )
 
     def _log_variance_correction(self, accelerator: Accelerator, model: torch.nn.Module):
@@ -279,7 +281,8 @@ class WandbModelLogger(ModelLogger):
                 inputs_shared["foveation_mask"] = foveation_mask
                 inputs = dict(inputs_shared, **inputs_posi)
                 prediction_type = self.validation_kwargs.get("prediction_type", "clean")
-                noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id, prediction_type)
+                tokenAE_training = self.validation_kwargs.get("tokenAE_training", False)
+                noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id, prediction_type, tokenAE_training)
                 target_vis = _unpatchify_for_vis(training_target, latent_height, latent_width)
                 pred_vis = _unpatchify_for_vis(noise_pred, latent_height, latent_width)
                 l2_error = (target_vis - pred_vis).pow(2).sum(dim=1, keepdim=True).sqrt()
