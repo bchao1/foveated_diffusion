@@ -28,9 +28,9 @@ if __name__ == "__main__":
     parser.add_argument("--no-real", dest="real", action="store_false",
                         help="images_dir contains generated images. Saves gen_feats_cache.pkl.")
     parser.add_argument("--foveate_real", action="store_true",
-                        help="Apply per-image foveation to real images (requires --masks_dir).")
+                        help="Apply per-image foveation to real images. Images without a mask fall back to a center-square mask.")
     parser.add_argument("--masks_dir", type=str, default=None,
-                        help="Directory of mask_*.png files matched positionally to sorted images in images_dir.")
+                        help="Directory of mask_*.png files matched positionally to sorted images in images_dir. Optional; missing masks use center-square fallback.")
     parser.add_argument("--downsample_real", action="store_true",
                         help="Bicubic 2x downsample images before feature extraction.")
     parser.add_argument("--device", type=str, default=None,
@@ -41,8 +41,6 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.INFO, format='%(message)s')
 
-    if args.foveate_real and args.real and args.masks_dir is None:
-        parser.error("--masks_dir is required when --foveate_real and --real are both set.")
 
     _raw_device = args.device if args.device is not None else ('cuda:0' if torch.cuda.is_available() else 'cpu')
     devices = [d.strip() for d in _raw_device.split(',')]
@@ -73,25 +71,20 @@ if __name__ == "__main__":
         pil_transform = lambda img: crop_and_resize(img, GEN_H, GEN_W)
 
         if args.foveate_real:
-            # Build mask path list by positional matching with sorted masks in masks_dir.
-            mask_files = sorted(
-                os.path.join(args.masks_dir, f)
-                for f in os.listdir(args.masks_dir)
-                if f.startswith('mask_') and f.endswith('.png')
-            )
-            if len(mask_files) != len(image_paths):
-                raise ValueError(
-                    f"Number of masks ({len(mask_files)}) != number of images ({len(image_paths)}). "
-                    "Ensure masks_dir has one mask per image in sorted order."
+            if args.masks_dir is None:
+                print("WARNING: --masks_dir not provided with --foveate_real. Using center square mask for all images.")
+                mask_paths = [None] * len(image_paths)
+            else:
+                mask_files = sorted(
+                    os.path.join(args.masks_dir, f)
+                    for f in os.listdir(args.masks_dir)
+                    if f.startswith('mask_') and f.endswith('.png')
                 )
-            # Validate mask paths; missing files become None (center-square fallback).
-            mask_paths = []
-            for mp in mask_files:
-                if os.path.isfile(mp):
-                    mask_paths.append(mp)
-                else:
-                    print(f"WARNING: mask not found: {mp}. Using center square mask.")
-                    mask_paths.append(None)
+                mask_paths = [mp if os.path.isfile(mp) else None for mp in mask_files[:len(image_paths)]]
+                if len(mask_paths) < len(image_paths):
+                    n_missing = len(image_paths) - len(mask_paths)
+                    print(f"WARNING: {n_missing} image(s) have no mask in masks_dir. Using center square mask.")
+                    mask_paths += [None] * n_missing
             image_transform = make_per_image_foveation_transform(mask_paths, device, vmin=-1, vmax=1)
 
         elif args.downsample_real:

@@ -26,7 +26,8 @@ from PIL import Image
 # ---------------------------------------------------------------------------
 
 FIXATION_DURATION = 5.0          # seconds (≥5 as specified)
-FLASH_DURATION_S  = 0.050        # 50 ms per image
+FLASH_DURATION_S  = 0.150        # 150 ms per image
+INTER_IMAGE_FIXATION_S = 1.0    # fixation shown between img1 and img2
 BG_COLOR          = (-1, -1, -1) # PsychoPy [-1,1] range: black
 
 IMAGE_KEYS = ['high_res', 'naive', 'ours']  # short labels
@@ -176,18 +177,25 @@ def show_fixation(win, stims, trial_idx, num_trials):
         countdown_stim.draw()
         progress.draw()
         win.flip()
-        # check for escape during fixation
-        keys = event.getKeys(keyList=['escape'])
-        if keys:
-            core.quit()
-        core.wait(1.0)
+        # poll escape every 0.1s so exit is responsive during the countdown
+        for _ in range(10):
+            if event.getKeys(keyList=['escape']):
+                core.quit()
+            core.wait(0.1)
 
 
-def flash_pair(win, stim1, stim2, flash_frames):
-    """Flash stim1 then stim2, each for flash_frames monitor frames."""
+def flash_pair(win, stim1, fixation_stim, stim2, flash_frames):
+    """Flash stim1, show fixation for 1s, then flash stim2."""
     for _ in range(flash_frames):
         stim1.draw()
         win.flip()
+    # 1-second fixation between the two images
+    t_start = core.getTime()
+    while core.getTime() - t_start < INTER_IMAGE_FIXATION_S:
+        fixation_stim.draw()
+        win.flip()
+        if event.getKeys(keyList=['escape']):
+            core.quit()
     for _ in range(flash_frames):
         stim2.draw()
         win.flip()
@@ -195,8 +203,11 @@ def flash_pair(win, stim1, stim2, flash_frames):
     win.flip()
 
 
-def ask_question(win, question_text, q_num, num_questions, pair_idx, imgs_per_trial):
-    """Show a question and wait for a '1' or '2' keypress. Returns '1' or '2'."""
+def ask_question(win, question_text, q_num, num_questions, pair_idx, imgs_per_trial, allow_repeat=False):
+    """Show a question and wait for a keypress.
+
+    Returns '1', '2', or 'r' (only when allow_repeat=True and R is pressed).
+    """
     progress_text = f'Comparison {pair_idx + 1} of {imgs_per_trial}  |  Question {q_num} of {num_questions}'
     progress = visual.TextStim(
         win,
@@ -216,9 +227,12 @@ def ask_question(win, question_text, q_num, num_questions, pair_idx, imgs_per_tr
         wrapWidth=900,
         alignText='center',
     )
+    options_text = 'Press  1  for  FIRST       Press  2  for  SECOND'
+    if allow_repeat:
+        options_text += '       Press  R  to  repeat'
     options = visual.TextStim(
         win,
-        text='Press  1  for  FIRST       Press  2  for  SECOND',
+        text=options_text,
         pos=(0, -60),
         color='lightgray',
         height=28,
@@ -230,14 +244,17 @@ def ask_question(win, question_text, q_num, num_questions, pair_idx, imgs_per_tr
     options.draw()
     win.flip()
 
+    key_list = ['1', '2', 'escape'] + (['r'] if allow_repeat else [])
     event.clearEvents()
     while True:
-        keys = event.getKeys(keyList=['1', '2', 'escape'])
+        keys = event.getKeys(keyList=key_list)
         if 'escape' in keys:
             core.quit()
         for k in keys:
             if k in ('1', '2'):
                 return k
+            if k == 'r':
+                return 'r'
         core.wait(0.005)
 
 
@@ -263,17 +280,42 @@ def run_experiment(win, trial_dirs, imgs_per_trial, csv_writer, csvfile):
         # select pairs with replacement
         pairs = [random.choice(ALL_PAIRS) for _ in range(imgs_per_trial)]
 
-        show_fixation(win, stims, trial_idx, num_trials)
-
         for pair_idx, (key_a, key_b) in enumerate(pairs):
-            # randomize order
+            show_fixation(win, stims, trial_idx, num_trials)
+            # randomize order (fixed for this pair even on repeat)
             ordered = [key_a, key_b]
             random.shuffle(ordered)
             img1_key, img2_key = ordered
 
-            flash_pair(win, stims[img1_key], stims[img2_key], flash_frames)
+            # flash loop: R on first question repeats fixation + flash
+            while True:
+                flash_pair(win, stims[img1_key], stims['fixation'], stims[img2_key], flash_frames)
+                first_response = ask_question(
+                    win, QUESTIONS[0][1],
+                    q_num=1,
+                    num_questions=len(QUESTIONS),
+                    pair_idx=pair_idx,
+                    imgs_per_trial=imgs_per_trial,
+                    allow_repeat=True,
+                )
+                if first_response != 'r':
+                    break
+                show_fixation(win, stims, trial_idx, num_trials)
 
-            for q_label, q_text in QUESTIONS:
+            # record first question response
+            csv_writer.writerow({
+                'trial_dir':  trial_dir.name,
+                'pair_index': pair_idx,
+                'img1':       img1_key,
+                'img2':       img2_key,
+                'prompt':     prompt,
+                'question':   QUESTIONS[0][0],
+                'response':   first_response,
+            })
+            csvfile.flush()
+
+            # remaining questions (no repeat option)
+            for q_label, q_text in QUESTIONS[1:]:
                 response = ask_question(
                     win, q_text,
                     q_num=QUESTIONS.index((q_label, q_text)) + 1,
