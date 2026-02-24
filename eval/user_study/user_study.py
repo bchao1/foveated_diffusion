@@ -57,9 +57,23 @@ def parse_args():
                         help='Number of randomly selected trials (default: 5)')
     parser.add_argument('--imgs_per_trial', type=int, default=3,
                         help='Image pairs per trial (default: 3)')
-    parser.add_argument('--output', type=str, default='user_study_results.csv',
-                        help='Output CSV file path (default: user_study_results.csv)')
+    parser.add_argument('--output_dir', type=str, default='.',
+                        help='Directory to save result CSVs (default: current directory)')
     return parser.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Output path helpers
+# ---------------------------------------------------------------------------
+
+def next_participant_path(output_dir):
+    """Return the path for the next participant CSV (participant_0.csv, participant_1.csv, ...)."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    participant_id = 0
+    while (output_dir / f'participant_{participant_id}.csv').exists():
+        participant_id += 1
+    return output_dir / f'participant_{participant_id}.csv'
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +381,8 @@ def main():
     args = parse_args()
 
     trial_dirs = load_trial_dirs(args.user_study_dir, args.num_trials)
+    output_path = next_participant_path(args.output_dir)
+    print(f'Saving results to: {output_path}')
 
     win = visual.Window(
         fullscr=True,
@@ -376,7 +392,7 @@ def main():
     )
 
     try:
-        with open(args.output, 'w', newline='') as csvfile:
+        with open(output_path, 'w', newline='') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=CSV_FIELDNAMES)
             writer.writeheader()
             csvfile.flush()
