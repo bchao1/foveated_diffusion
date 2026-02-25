@@ -37,10 +37,10 @@ run_subset() {
 CUDA_VISIBLE_DEVICES=9 python inference.py \
     --experiment ours \
     --decode_mode merge \
-    --output_dir ../results/eccv2026_final/ours_full_dit_eval \
+    --output_dir ../results/eccv2026_final/ours_fixed_mask_eval \
     --seed 42 \
     --tokenAE_training false \
-    --dit_checkpoint "${dit_checkpoint}" \
+    --lora_checkpoint ${lora_checkpoint} \
     --full_eval \
     --full_eval_mask square \
     --foveation_outline false \

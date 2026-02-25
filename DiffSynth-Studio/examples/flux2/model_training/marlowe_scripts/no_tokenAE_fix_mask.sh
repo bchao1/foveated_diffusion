@@ -36,5 +36,5 @@ accelerate launch train_foveated.py \
   --task sft_no_tokenAE \
   --find_unused_parameters \
   --decode_mode "merge" \
-  --fixed_foveation_mask
+  --foveated_training_mode fixed
 cd lora
