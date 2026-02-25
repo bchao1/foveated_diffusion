@@ -25,27 +25,18 @@ run_subset() {
         --subset_idx "${subset_idx}"
 }
 
-run_subset 0 0 &
-run_subset 1 1 &
-run_subset 2 2 &
-run_subset 3 3 &
-run_subset 4 4 &
-run_subset 5 5 &
-run_subset 6 6 &
-run_subset 7 7 &
-
-exit
 
 CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment naive_mixed_res \
     --decode_mode merge \
     --tokenAE_training false \
-    --output_dir ../results/eccv2026_final/naive_merge_eval \
+    --output_dir ../results/eccv2026_final_v2/naive_eval \
     --seed 42 \
     --lora_checkpoint "${lora_checkpoint}" \
     --full_eval \
     --full_eval_mask square \
-    --foveation_outline false \
+    --foveation_outline true \
     --soft_foveation_blend true \
-    --prompt_dataset_path /local/brian/Aesthetic-Train-V2/metadata.csv \
-    --num_prompts 50 
+    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/100_cinematic_prompts.csv \
+    --num_prompts 100 \
+    --mask_radius 0.5

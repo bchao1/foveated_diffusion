@@ -22,24 +22,13 @@ run_subset() {
         --subset_idx "${subset_idx}"
 }
 
-run_subset 0 0 &
-run_subset 1 1 &
-run_subset 2 2 &
-run_subset 3 3 &
-run_subset 4 4 &
-run_subset 5 5 &
-run_subset 6 6 &
-run_subset 7 7 &
-
-exit 
-
 CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment high_res \
     --decode_mode direct \
     --tokenAE_training false \
-    --output_dir ../results/eccv2026_final/baseline_eval \
+    --output_dir ../results/eccv2026_final_v2/baseline_eval \
     --seed 42 \
     --lora_checkpoint "${lora_checkpoint}" \
     --full_eval \
-    --prompt_dataset_path /local/brian/Aesthetic-Train-V2/metadata.csv \
-    --num_prompts 50
+    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/100_cinematic_prompts.csv \
+    --num_prompts 100
