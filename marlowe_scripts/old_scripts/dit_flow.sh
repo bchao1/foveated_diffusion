@@ -1,7 +1,7 @@
-exp_name="no_tokenAE_rank_32"
+exp_name="dit_flow"
 root_folder="/scratch/m000051-pm05/brianchc_2"
 
-accelerate launch train_foveated.py \
+accelerate launch \
   --config_file /users/brianchc/accelerate_config.yaml \
   /users/brianchc/foveated_diffusion/DiffSynth-Studio/examples/flux2/model_training/train_foveated.py \
   --dataset_base_path "${root_folder}/Aesthetic-Train-V2" \
@@ -14,8 +14,8 @@ accelerate launch train_foveated.py \
   --tokenizer_path "black-forest-labs/FLUX.2-klein-base-4B:tokenizer/" \
   --learning_rate 1e-4 \
   --tokenAE_learning_rate 1e-4 \
-  --tokenAE_train_steps 0 \
-  --num_epochs 1 \
+  --tokenAE_train_steps 1000 \
+  --num_epochs 10 \
   --remove_prefix_in_ckpt "pipe.dit." \
   --output_path "${root_folder}/foveated_diffusion/experiments/${exp_name}" \
   --lora_base_model "dit" \
@@ -33,7 +33,14 @@ accelerate launch train_foveated.py \
   --validation_width 1024 \
   --num_validation_images 1 \
   --save_steps 1000 \
-  --task sft_no_tokenAE \
+  --task sft \
   --find_unused_parameters \
-  --decode_mode "merge"
-cd lora
+  --tokenAE_arch "dit" \
+  --naive_upsample_mode "bilinear" \
+  --naive_downsample_mode "bilinear" \
+  --upsampler_num_dit_blocks 1 \
+  --downsampler_num_dit_blocks 1 \
+  --upsampler_dit_use_temb "false" \
+  --downsampler_dit_use_temb "false" \
+  --prediction_type "flow" \
+  --use_as_refiner "false"

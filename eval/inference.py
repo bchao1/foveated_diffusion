@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../image_generation"
 
 from diffsynth.pipelines.flux2_image_foveated import Flux2FoveatedImagePipeline
 from diffsynth.pipelines.flux2_image import Flux2ImagePipeline, ModelConfig
+from diffsynth.core import load_state_dict
 
 import pandas as pd
 
@@ -187,10 +188,168 @@ def create_foveation_mask_full_res(
     dist_sq = (x_grid - cx) ** 2 + (y_grid - cy) ** 2
     return (dist_sq <= radius_px ** 2).float()
 
+
+def _polygon_vertices(shape_name: str, scale: float, center=(0.0, 0.0)):
+    """
+    Vertices of a polygon in normalized coords [-0.5, 0.5], centered at center.
+    scale: half-diagonal radius (same meaning as circular r).
+    shape_name: "triangle", "square", "hexagon", "star".
+    Returns list of (x, y) in normalized coordinates.
+    """
+    cx, cy = center
+    if shape_name == "triangle":
+        n = 3
+        angles = [2 * math.pi * (i / n) - math.pi / 2 for i in range(n)]  # one vertex up
+        return [(cx + scale * math.cos(a), cy + scale * math.sin(a)) for a in angles]
+    if shape_name == "square":
+        n = 4
+        angles = [2 * math.pi * (i / n) - math.pi / 4 for i in range(n)]
+        return [(cx + scale * math.cos(a), cy + scale * math.sin(a)) for a in angles]
+    if shape_name == "hexagon":
+        n = 6
+        angles = [2 * math.pi * (i / n) - math.pi / 6 for i in range(n)]
+        return [(cx + scale * math.cos(a), cy + scale * math.sin(a)) for a in angles]
+    if shape_name == "star":
+        # 5-pointed star: 5 outer + 5 inner (inner at scale * 0.4, rotated by pi/5)
+        outer = [2 * math.pi * (i / 5) - math.pi / 2 for i in range(5)]
+        inner = [2 * math.pi * (i / 5) - math.pi / 2 + math.pi / 5 for i in range(5)]
+        verts = []
+        for i in range(5):
+            verts.append((cx + scale * math.cos(outer[i]), cy + scale * math.sin(outer[i])))
+            verts.append((cx + scale * 0.4 * math.cos(inner[i]), cy + scale * 0.4 * math.sin(inner[i])))
+        return verts
+    raise ValueError("shape_name must be triangle, square, hexagon, or star")
+
+
+def _point_in_polygon(x: float, y: float, vertices: list) -> bool:
+    """Ray-casting: odd number of crossings with polygon edges => inside."""
+    n = len(vertices)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = vertices[i]
+        xj, yj = vertices[j]
+        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi + 1e-10) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
+def _rasterize_polygon_mask(height: int, width: int, vertices_norm: list, device) -> torch.Tensor:
+    """
+    Rasterize a polygon (vertices in normalized coords [-0.5, 0.5]) to a binary mask (height, width).
+    Uses matplotlib.path.Path if available for speed; otherwise fallback to per-pixel ray casting.
+    """
+    y_range = torch.arange(height, device=device, dtype=torch.float32)
+    x_range = torch.arange(width, device=device, dtype=torch.float32)
+    yy, xx = torch.meshgrid(y_range, x_range, indexing="ij")
+    x_norm = (xx + 0.5) / width - 0.5
+    y_norm = (yy + 0.5) / height - 0.5
+    try:
+        from matplotlib.path import Path
+        p = Path(vertices_norm)
+        xy = np.stack([x_norm.cpu().numpy().ravel(), y_norm.cpu().numpy().ravel()], axis=1)
+        inside = p.contains_points(xy)
+        mask = torch.from_numpy(inside.astype(np.float32)).reshape(height, width).to(device)
+    except ImportError:
+        mask = torch.zeros(height, width, device=device, dtype=torch.float32)
+        for i in range(height):
+            for j in range(width):
+                if _point_in_polygon(float(x_norm[i, j]), float(y_norm[i, j]), vertices_norm):
+                    mask[i, j] = 1.0
+    return mask
+
+
+def _create_polygon_mask_trajectory(height: int, width: int, shape_name: str, center: tuple, scale: float, device):
+    """Create token-grid and full-res masks for a single polygon. scale in [0,1] like circular r (relative to half-diagonal)."""
+    vertices = _polygon_vertices(shape_name, scale, center=center)
+    full_res = _rasterize_polygon_mask(height, width, vertices, device)
+    high_h, high_w = height // 16, width // 16
+    token_mask = F.interpolate(
+        full_res.unsqueeze(0).unsqueeze(0), size=(high_h, high_w), mode="nearest"
+    ).squeeze(0).squeeze(0)
+    return token_mask, full_res
+
+
+def _sample_nonoverlapping_circles(rng, num_circles: int, r_lo: float, r_hi: float, gap: float = 0.02):
+    """
+    Sample num_circles (2 or 3) circles that are non-overlapping and distributed across
+    the image. Uses fixed zones (quadrants + center) so centers are spread; then
+    assigns radii and shrinks if needed to enforce non-overlap.
+    Returns list of (cx_norm, cy_norm, r) in normalized coords; r relative to half-diagonal.
+    """
+    # Zones (x_min, x_max, y_min, y_max) in normalized coords to spread centers across the image
+    zones = [
+        (-0.42, -0.12, -0.42, -0.12),   # top-left
+        (0.12, 0.42, -0.42, -0.12),     # top-right
+        (-0.42, -0.12, 0.12, 0.42),     # bottom-left
+        (0.12, 0.42, 0.12, 0.42),       # bottom-right
+        (-0.18, 0.18, -0.18, 0.18),     # center
+    ]
+    zone_order = rng.permutation(len(zones))
+    chosen_zones = [zone_order[i] for i in range(num_circles)]
+    centers = []
+    for zi in chosen_zones:
+        xmin, xmax, ymin, ymax = zones[zi]
+        cx = float(rng.uniform(xmin, xmax))
+        cy = float(rng.uniform(ymin, ymax))
+        centers.append((cx, cy))
+    # Sample radii (in half-diagonal units). Convert to normalized distance for check:
+    # half-diagonal in norm coords = sqrt(2)/2 for unit square, so r_norm = r * sqrt(2)/2.
+    radii = [float(rng.uniform(r_lo, r_hi)) for _ in range(num_circles)]
+    r_to_norm = math.sqrt(2) / 2.0
+    gap_norm = gap
+    for _ in range(30):
+        overlap = False
+        for i in range(num_circles):
+            for j in range(i + 1, num_circles):
+                cix, ciy = centers[i]
+                cjx, cjy = centers[j]
+                d_norm = math.sqrt((cix - cjx) ** 2 + (ciy - cjy) ** 2)
+                need_norm = (radii[i] + radii[j]) * r_to_norm + gap_norm
+                if d_norm < need_norm and d_norm > 1e-6:
+                    overlap = True
+                    # shrink radii so (r_i + r_j) * r_to_norm + gap = d_norm
+                    max_sum_r = (d_norm - gap_norm) / r_to_norm
+                    scale = max_sum_r / (radii[i] + radii[j])
+                    radii[i] = min(radii[i], radii[i] * scale)
+                    radii[j] = min(radii[j], radii[j] * scale)
+                elif d_norm < 1e-6:
+                    radii[i] = r_lo
+                    radii[j] = r_lo
+                    overlap = True
+        if not overlap:
+            break
+    return [(centers[i][0], centers[i][1], max(r_lo, radii[i])) for i in range(num_circles)]
+
+
+def _create_multi_circle_mask(height: int, width: int, circles: list, device) -> torch.Tensor:
+    """
+    circles: list of (cx_norm, cy_norm, r) in normalized coords and r relative to half-diagonal.
+    Returns binary mask (height, width) as union of circles.
+    """
+    y_range = torch.arange(height, device=device, dtype=torch.float32)
+    x_range = torch.arange(width, device=device, dtype=torch.float32)
+    yy, xx = torch.meshgrid(y_range, x_range, indexing="ij")
+    diagonal = (height ** 2 + width ** 2) ** 0.5
+    mask = torch.zeros(height, width, device=device, dtype=torch.float32)
+    for (cx_norm, cy_norm, r) in circles:
+        cx = (cx_norm + 0.5) * width
+        cy = (cy_norm + 0.5) * height
+        radius_px = r * (diagonal / 2.0)
+        dist_sq = (xx - cx) ** 2 + (yy - cy) ** 2
+        mask = torch.maximum(mask, (dist_sq <= radius_px ** 2).float())
+    return mask
+
+
 def generate_foveation_trajectory_masks(height, width, args, device):
     """
     Generate a list of foveation masks for the trajectory grid.
-    Uses args.foveation_trajectory_type: "radius" (vary r at center) or "circular" (center on orbit).
+    Uses args.foveation_trajectory_type:
+      - "radius": vary r at center
+      - "circular": center on orbit
+      - "polygons": sequence of triangle/square/hexagon/star with random center and scale
+      - "multi_circle": each mask is 2-3 disjoint circles with varying position and size
     Same trajectory is reused for all prompts.
     Returns (masks, full_res_masks) where full_res_masks are at (height, width) with same geometry.
     """
@@ -201,18 +360,53 @@ def generate_foveation_trajectory_masks(height, width, args, device):
 
     masks = []
     full_res_masks = []
+    rng = np.random.default_rng(getattr(args, "seed", 0))
+
     if traj_type == "radius":
         r_list = np.linspace(0.1, 1.0, num_cols)
         for col in range(num_cols):
             r = float(r_list[col])
             m = create_foveation_mask(
                 height, width, center=(0, 0), r=r,
-                shape=args.mask_shape, device=device
+                shape=getattr(args, "mask_shape", "circular"), device=device
             )
             m_full = create_foveation_mask_full_res(
                 height, width, center=(0, 0), r=r,
-                shape=args.mask_shape, device=device
+                shape=getattr(args, "mask_shape", "circular"), device=device
             )
+            masks.append(m)
+            full_res_masks.append(m_full)
+    elif traj_type == "polygons":
+        # Sequence of masks with arbitrary sampled shapes: triangle, square, hexagon, 5-pointed star
+        shape_choices = ["triangle", "square", "hexagon", "star"]
+        center_range = getattr(args, "polygon_center_range", 0.25)
+        scale_lo = 0.3 #getattr(args, "polygon_scale_lo", 0.3)
+        scale_hi = 0.4 #getattr(args, "polygon_scale_hi", 0.4)
+        for col in range(num_cols):
+            shape_name = shape_choices[col % len(shape_choices)]
+            cx = float(rng.uniform(-center_range, center_range))
+            cy = float(rng.uniform(-center_range, center_range))
+            scale = float(rng.uniform(scale_lo, scale_hi))
+            m, m_full = _create_polygon_mask_trajectory(
+                height, width, shape_name, (cx, cy), scale, device
+            )
+            masks.append(m)
+            full_res_masks.append(m_full)
+    elif traj_type == "multi_circle":
+        # Sequence of masks; each mask is 2-3 non-overlapping circles distributed across the image
+        num_circles_lo = 2
+        num_circles_hi = 4  # 2 or 3
+        r_lo = 0.3 #getattr(args, "multi_circle_r_lo", 0.2)
+        r_hi = 0.4 #getattr(args, "multi_circle_r_hi", 0.4)
+        gap = 0.1 #getattr(args, "multi_circle_gap", 0.02)
+        for col in range(num_cols):
+            num_circles = int(rng.integers(num_circles_lo, num_circles_hi))
+            circles = _sample_nonoverlapping_circles(rng, num_circles, r_lo, r_hi, gap=gap)
+            m_full = _create_multi_circle_mask(height, width, circles, device)
+            high_h, high_w = height // 16, width // 16
+            m = F.interpolate(
+                m_full.unsqueeze(0).unsqueeze(0), size=(high_h, high_w), mode="nearest"
+            ).squeeze(0).squeeze(0)
             masks.append(m)
             full_res_masks.append(m_full)
     else:
@@ -223,11 +417,11 @@ def generate_foveation_trajectory_masks(height, width, args, device):
             center = (orbit_radius * math.cos(angle), orbit_radius * math.sin(angle))
             m = create_foveation_mask(
                 height, width, center=center, r=mask_radius,
-                shape=args.mask_shape, device=device
+                shape=getattr(args, "mask_shape", "circular"), device=device
             )
             m_full = create_foveation_mask_full_res(
                 height, width, center=center, r=mask_radius,
-                shape=args.mask_shape, device=device
+                shape=getattr(args, "mask_shape", "circular"), device=device
             )
             masks.append(m)
             full_res_masks.append(m_full)
@@ -591,11 +785,12 @@ def run_full_eval(single_prompt_generation_func, pipe, args, output_dir, prompts
     full_res_mask = None
     if single_prompt_generation_func is not run_high_res:
         mask_shape = getattr(args, "full_eval_mask", "square")
+        r = getattr(args, "mask_radius", 0.5)
         default_mask = create_foveation_mask(
-            args.height, args.width, center=(0, 0), r=0.5, shape=mask_shape, device=pipe.device
+            args.height, args.width, center=(0, 0), r=r, shape=mask_shape, device=pipe.device
         )
         full_res_mask = create_foveation_mask_full_res(
-            args.height, args.width, center=(0, 0), r=0.5, shape=mask_shape, device=pipe.device
+            args.height, args.width, center=(0, 0), r=r, shape=mask_shape, device=pipe.device
         )
     prompt_list = []
     image_names = []
@@ -691,6 +886,12 @@ def run_user_study(pipe, args, output_dir, token_upsampler, token_downsampler):
 
     if args.lora_checkpoint is not None:
         pipe.load_lora(pipe.dit, args.lora_checkpoint)
+        print(f"Loaded LoRA checkpoint from {args.lora_checkpoint}")
+    if args.dit_checkpoint is not None:
+        state_dict = load_state_dict(args.dit_checkpoint, torch_dtype=torch.bfloat16)
+        pipe.dit.load_state_dict(state_dict)
+        print(f"Loaded DiT checkpoint from {args.dit_checkpoint}")
+        
     for idx, (subdir, prompt, foveation_mask, full_res_foveation_mask, _) in enumerate(items):
         run_ours(pipe, args, subdir, prompt, 0, token_upsampler, token_downsampler, foveation_mask=foveation_mask, full_res_foveation_mask=full_res_foveation_mask)
         os.rename(
@@ -1016,6 +1217,17 @@ def main(args):
         print("User study: LoRA will be loaded only for 'ours' runs (baseline and naive use base DiT)")
     else:
         print("No LoRA checkpoint provided, using base model")
+
+    
+    # Load DiT checkpoint 
+    if args.dit_checkpoint is not None and args.experiment != "user_study":
+        state_dict = load_state_dict(args.dit_checkpoint, torch_dtype=torch.bfloat16)
+        pipe.dit.load_state_dict(state_dict)
+        print(f"Loaded DiT checkpoint from {args.dit_checkpoint}")
+    elif args.dit_checkpoint is not None and args.experiment == "user_study":
+        print("User study: DiT will be loaded only for 'ours' runs (baseline and naive use base DiT)")
+    else:
+        print("No DiT checkpoint provided, using base model")
     
     # Load TokenAE
     if args.experiment == "high_res":
@@ -1073,7 +1285,9 @@ if __name__ == "__main__":
     parser.add_argument('--tokenAE_arch', type=str, default="adapter", choices=["adapter", "flux2", "dit"],
                         help='TokenAE architecture: adapter (CNN), flux2 (Flux2 token AE), dit (DiT block up/down). Overridden by tokenAE_config.yaml when loading from tokenAE_folder.')
     parser.add_argument('--lora_checkpoint', default=None, type=str, help='Path to the LoRA .safetensors checkpoint')
-    
+
+    # DiT checkpoint
+    parser.add_argument('--dit_checkpoint', default=None, type=str, help='Path to the DiT checkpoint')
     
     # Generation parameters
     parser.add_argument('--height', type=int, default=1024, help='Image height')
@@ -1119,8 +1333,9 @@ if __name__ == "__main__":
     parser.add_argument('--prompt_dataset_path', type=str, help='Path to the prompt dataset as a csv file')
     parser.add_argument('--num_prompts', type=int, default=None, help='Number of prompts to run')
     parser.add_argument('--num_cols', type=int, default=4, help='Number of columns (foveation steps per row) for foveation_trajectory_grid')
-    parser.add_argument('--foveation_trajectory_type', type=str, default='circular', choices=['radius', 'circular'],
-                        help='Trajectory for foveation_trajectory_grid: radius (vary r at center) or circular (center on orbit)')
+    parser.add_argument('--foveation_trajectory_type', type=str, default='circular',
+                        choices=['radius', 'circular', 'polygons', 'multi_circle'],
+                        help='Trajectory for foveation_trajectory_grid: radius, circular, polygons (triangle/square/hexagon/star), or multi_circle (2-3 disjoint circles per mask)')
     parser.add_argument('--outline_width_frac', type=float, default=0.01, help='Foveation outline line width as fraction of image width (default 0.01)')
     parser.add_argument('--outline_color', type=str, default='255,0,0', help='Foveation outline color as R,G,B (default red: 255,0,0)')
     parser.add_argument('--foveation_outline', type=_str_to_bool, default=False, help='Do not draw foveation border on foveation_trajectory_grid images (save plain image)')
