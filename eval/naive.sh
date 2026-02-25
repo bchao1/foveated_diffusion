@@ -22,17 +22,18 @@ run_subset() {
         --soft_foveation_blend true \
         --prompt_dataset_path /local/brian/Aesthetic-Train-V2/metadata_test.csv \
         --num_subsets "${num_subsets}" \
-        --subset_idx "${subset_idx}"
+        --subset_idx "${subset_idx}" \
+        --mask_radius 0.5
 }
 
 
 CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment naive_mixed_res \
     --decode_mode merge \
-    --tokenAE_training false \
     --output_dir ../results/eccv2026_final_v2/naive_eval \
     --seed 42 \
-    --lora_checkpoint "${lora_checkpoint}" \
+    --tokenAE_training false \
+    --lora_checkpoint ${lora_checkpoint} \
     --full_eval \
     --full_eval_mask square \
     --foveation_outline true \

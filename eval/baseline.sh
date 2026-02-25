@@ -25,10 +25,10 @@ run_subset() {
 CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment high_res \
     --decode_mode direct \
-    --tokenAE_training false \
     --output_dir ../results/eccv2026_final_v2/baseline_eval \
     --seed 42 \
-    --lora_checkpoint "${lora_checkpoint}" \
+    --tokenAE_training false \
+    --lora_checkpoint ${lora_checkpoint} \
     --full_eval \
     --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/100_cinematic_prompts.csv \
     --num_prompts 100
