@@ -785,11 +785,12 @@ def run_full_eval(single_prompt_generation_func, pipe, args, output_dir, prompts
     full_res_mask = None
     if single_prompt_generation_func is not run_high_res:
         mask_shape = getattr(args, "full_eval_mask", "square")
+        r = getattr(args, "mask_radius", 0.5)
         default_mask = create_foveation_mask(
-            args.height, args.width, center=(0, 0), r=0.5, shape=mask_shape, device=pipe.device
+            args.height, args.width, center=(0, 0), r=r, shape=mask_shape, device=pipe.device
         )
         full_res_mask = create_foveation_mask_full_res(
-            args.height, args.width, center=(0, 0), r=0.5, shape=mask_shape, device=pipe.device
+            args.height, args.width, center=(0, 0), r=r, shape=mask_shape, device=pipe.device
         )
     prompt_list = []
     image_names = []

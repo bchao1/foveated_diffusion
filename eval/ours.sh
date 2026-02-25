@@ -4,7 +4,6 @@ export DIFFSYNTH_SKIP_DOWNLOAD=True
 step=10000
 ckpt_folder="/local/brian/foveated_diffusion/models/eccv2026_final/rank_32_fov/"
 lora_checkpoint="${ckpt_folder}/step-${step}.safetensors"
-dit_checkpoint="/local/brian/foveated_diffusion/models/eccv2026_final/full_dit_fov/step-11000.safetensors"
 
 # Number of subsets for distributed full_eval (e.g. number of GPUs)
 
@@ -18,7 +17,7 @@ run_subset() {
     CUDA_VISIBLE_DEVICES=$gpu_id python inference.py \
         --experiment ours \
         --decode_mode merge \
-        --output_dir ../results/eccv2026_final/ours_avg_latents_eval \
+        --output_dir ../results/eccv2026_final/test \
         --seed 42 \
         --tokenAE_training false \
         --lora_checkpoint "${lora_checkpoint}" \
@@ -37,7 +36,7 @@ run_subset() {
 CUDA_VISIBLE_DEVICES=9 python inference.py \
     --experiment ours \
     --decode_mode merge \
-    --output_dir ../results/eccv2026_final/ours_fixed_mask_eval \
+    --output_dir ../results/eccv2026_final/ours_test \
     --seed 42 \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
@@ -47,3 +46,4 @@ CUDA_VISIBLE_DEVICES=9 python inference.py \
     --soft_foveation_blend true \
     --prompt_dataset_path /local/brian/Aesthetic-Train-V2/metadata.csv \
     --num_prompts 50 \
+    --mask_radius 0.5
