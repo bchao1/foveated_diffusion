@@ -317,8 +317,9 @@ def run_experiment(win, trial_dirs, imgs_per_trial, csv_writer, csvfile):
         # pre-load all images
         stims = load_image_stims(win, trial_dir, display_size)
 
-        # select pairs with replacement
-        pairs = [random.choice(ALL_PAIRS) for _ in range(imgs_per_trial)]
+        # practice trials use exactly 1 pair; real trials use imgs_per_trial
+        num_pairs = 1 if is_practice else imgs_per_trial
+        pairs = [random.choice(ALL_PAIRS) for _ in range(num_pairs)]
 
         for pair_idx, (key_a, key_b) in enumerate(pairs):
             show_fixation(win, stims, trial_idx, num_trials)
