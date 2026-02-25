@@ -247,12 +247,11 @@ def ask_question(win, question_text, q_num, num_questions, pair_idx, imgs_per_tr
     if is_practice:
         practice_banner = visual.TextStim(
             win,
-            text='This is a practice round. Response will not be recorded.',
-            pos=(0, win.size[1] // 2 - 80),
-            color=(1.0, 0.8, 0.0),  # yellow-orange
-            height=22,
+            text='PRACTICE ROUND — responses will not be recorded',
+            pos=(0, 180),
+            color='yellow',
+            height=26,
             bold=True,
-            anchorVert='top',
             alignText='center',
         )
     question = visual.TextStim(
@@ -318,8 +317,9 @@ def run_experiment(win, trial_dirs, imgs_per_trial, csv_writer, csvfile):
         # pre-load all images
         stims = load_image_stims(win, trial_dir, display_size)
 
-        # select pairs with replacement
-        pairs = [random.choice(ALL_PAIRS) for _ in range(imgs_per_trial)]
+        # practice trials use exactly 1 pair; real trials use imgs_per_trial
+        num_pairs = 1 if is_practice else imgs_per_trial
+        pairs = [random.choice(ALL_PAIRS) for _ in range(num_pairs)]
 
         for pair_idx, (key_a, key_b) in enumerate(pairs):
             show_fixation(win, stims, trial_idx, num_trials)
