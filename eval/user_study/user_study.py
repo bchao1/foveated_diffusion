@@ -26,7 +26,8 @@ from PIL import Image
 # ---------------------------------------------------------------------------
 
 FIXATION_DURATION = 5.0          # seconds (≥5 as specified)
-FLASH_DURATION_S  = 0.500        # 500 ms per image
+FLASH_DURATION_S  = 1.500        # 1500 ms per image
+NUM_PRACTICE_TRIALS = 2          # first N trials are practice; responses not recorded
 INTER_IMAGE_FIXATION_S = 1.0    # fixation shown between img1 and img2
 BG_COLOR          = (-1, -1, -1) # PsychoPy [-1,1] range: black
 
@@ -228,7 +229,8 @@ def flash_pair(win, stim1, fixation_stim, stim2, flash_frames):
     win.flip()
 
 
-def ask_question(win, question_text, q_num, num_questions, pair_idx, imgs_per_trial, allow_repeat=False):
+def ask_question(win, question_text, q_num, num_questions, pair_idx, imgs_per_trial,
+                 allow_repeat=False, is_practice=False):
     """Show a question and wait for a keypress.
 
     Returns '1', '2', or 'r' (only when allow_repeat=True and R is pressed).
@@ -242,6 +244,17 @@ def ask_question(win, question_text, q_num, num_questions, pair_idx, imgs_per_tr
         height=22,
         anchorVert='top',
     )
+    if is_practice:
+        practice_banner = visual.TextStim(
+            win,
+            text='This is a practice round. Response will not be recorded.',
+            pos=(0, win.size[1] // 2 - 80),
+            color=(1.0, 0.8, 0.0),  # yellow-orange
+            height=22,
+            bold=True,
+            anchorVert='top',
+            alignText='center',
+        )
     question = visual.TextStim(
         win,
         text=question_text,
@@ -265,6 +278,8 @@ def ask_question(win, question_text, q_num, num_questions, pair_idx, imgs_per_tr
     )
 
     progress.draw()
+    if is_practice:
+        practice_banner.draw()
     question.draw()
     options.draw()
     win.flip()
@@ -294,6 +309,7 @@ def run_experiment(win, trial_dirs, imgs_per_trial, csv_writer, csvfile):
     show_instructions(win)
 
     for trial_idx, trial_dir in enumerate(trial_dirs, start=1):
+        is_practice = trial_idx <= NUM_PRACTICE_TRIALS
         prompt = read_prompt(trial_dir)
 
         # compute display size from the first image in this trial
@@ -322,22 +338,24 @@ def run_experiment(win, trial_dirs, imgs_per_trial, csv_writer, csvfile):
                     pair_idx=pair_idx,
                     imgs_per_trial=imgs_per_trial,
                     allow_repeat=True,
+                    is_practice=is_practice,
                 )
                 if first_response != 'r':
                     break
                 show_fixation(win, stims, trial_idx, num_trials)
 
-            # record first question response
-            csv_writer.writerow({
-                'trial_dir':  trial_dir.name,
-                'pair_index': pair_idx,
-                'img1':       img1_key,
-                'img2':       img2_key,
-                'prompt':     prompt,
-                'question':   QUESTIONS[0][0],
-                'response':   first_response,
-            })
-            csvfile.flush()
+            # record first question response (skipped for practice trials)
+            if not is_practice:
+                csv_writer.writerow({
+                    'trial_dir':  trial_dir.name,
+                    'pair_index': pair_idx,
+                    'img1':       img1_key,
+                    'img2':       img2_key,
+                    'prompt':     prompt,
+                    'question':   QUESTIONS[0][0],
+                    'response':   first_response,
+                })
+                csvfile.flush()
 
             # remaining questions (no repeat option)
             for q_label, q_text in QUESTIONS[1:]:
@@ -347,17 +365,19 @@ def run_experiment(win, trial_dirs, imgs_per_trial, csv_writer, csvfile):
                     num_questions=len(QUESTIONS),
                     pair_idx=pair_idx,
                     imgs_per_trial=imgs_per_trial,
+                    is_practice=is_practice,
                 )
-                csv_writer.writerow({
-                    'trial_dir':  trial_dir.name,
-                    'pair_index': pair_idx,
-                    'img1':       img1_key,
-                    'img2':       img2_key,
-                    'prompt':     prompt,
-                    'question':   q_label,
-                    'response':   response,
-                })
-                csvfile.flush()
+                if not is_practice:
+                    csv_writer.writerow({
+                        'trial_dir':  trial_dir.name,
+                        'pair_index': pair_idx,
+                        'img1':       img1_key,
+                        'img2':       img2_key,
+                        'prompt':     prompt,
+                        'question':   q_label,
+                        'response':   response,
+                    })
+                    csvfile.flush()
 
     # end screen
     end = visual.TextStim(
