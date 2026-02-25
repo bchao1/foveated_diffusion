@@ -11,13 +11,13 @@ lora_checkpoint="${ckpt_folder}/step-${step}.safetensors"
 # e.g. run_subset 0; run_subset 1; run_subset 2; run_subset 3
 # or: run_subset 0 4 && run_subset 1 4 && run_subset 2 4 && run_subset 3 4
 run_subset() {
-    num_subsets=1
+    num_subsets=8
     local gpu_id="$1"
     local subset_idx="$2"
     CUDA_VISIBLE_DEVICES=$gpu_id python inference.py \
         --experiment ours \
         --decode_mode merge \
-        --output_dir ../results/eccv2026_final/test \
+        --output_dir /local/brian/foveated_diffusion/results/ours_eval \
         --seed 42 \
         --tokenAE_training false \
         --lora_checkpoint "${lora_checkpoint}" \
@@ -25,15 +25,25 @@ run_subset() {
         --full_eval_mask square \
         --foveation_outline false \
         --soft_foveation_blend true \
-        --prompt_dataset_path /local/brian/Aesthetic-Train-V2/metadata.csv \
-        --num_prompts 50 \
+        --prompt_dataset_path /local/brian/Aesthetic-Train-V2/metadata_test.csv \
         --num_subsets "${num_subsets}" \
-        --subset_idx "${subset_idx}"
+        --subset_idx "${subset_idx}" \
+        --mask_radius 0.5
 }
+
+run_subset 0 0 &
+run_subset 1 1 &
+run_subset 2 2 &
+run_subset 3 3 &
+run_subset 4 4 &
+run_subset 5 5 &
+run_subset 6 6 &
+run_subset 7 7 &
+exit
 
 
 # Normal run
-CUDA_VISIBLE_DEVICES=9 python inference.py \
+CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment ours \
     --decode_mode merge \
     --output_dir ../results/eccv2026_final_v2/ours_eval \
