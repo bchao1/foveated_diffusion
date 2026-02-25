@@ -34,6 +34,11 @@ Here is the list of the categories and specific subject matters I just mentioned
 * **Subjects interacting with props:** A person holding a coffee cup, eating with a fork, or playing an instrument.
 * **Foreground vs. Background interactions:** A tourist posing in front of a monument or building, where the scale of the person relative to the pathway and structure must align.
 
+
+### Selected examples
+- 8, 10, 29, 30, 35, 49, 61, 63, 90, 65
+- potentially: 7, 11, 21, 50, 66, 75, 82, 85, 88
+
 ## Scripts
 
 - `inference.py` — generate images from a model checkpoint.

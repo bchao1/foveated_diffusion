@@ -2,8 +2,8 @@ export DIFFSYNTH_MODEL_BASE_PATH="/miele/brian/modelscope"
 export DIFFSYNTH_SKIP_DOWNLOAD=True
 cd ..
 
-exp_name="rank_32_fixed_mask"
-accelerate launch --gpu_ids 9 train_foveated.py \
+exp_name="rank_32_saliency"
+accelerate launch train_foveated.py \
   --dataset_base_path /local/brian/Aesthetic-Train-V2/ \
   --dataset_metadata_path /local/brian/Aesthetic-Train-V2/metadata_train.csv \
   --max_pixels 1048576 \
@@ -36,5 +36,5 @@ accelerate launch --gpu_ids 9 train_foveated.py \
   --task sft_no_tokenAE \
   --find_unused_parameters \
   --decode_mode "merge" \
-  --foveated_training_mode fixed
+  --foveated_training_mode saliency
 cd lora

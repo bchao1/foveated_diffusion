@@ -13,11 +13,11 @@ run_subset() {
         --experiment naive_mixed_res \
         --decode_mode merge \
         --tokenAE_training false \
-        --output_dir /local/brian/foveated_diffusion/results/naive_mixed_res_eval \
+        --output_dir /local/brian/foveated_diffusion/results/naive_mixed_res_circle_eval \
         --seed 42 \
         --lora_checkpoint "${lora_checkpoint}" \
         --full_eval \
-        --full_eval_mask square \
+        --full_eval_mask circular \
         --foveation_outline false \
         --soft_foveation_blend true \
         --prompt_dataset_path /local/brian/Aesthetic-Train-V2/metadata_test.csv \

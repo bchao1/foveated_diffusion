@@ -252,6 +252,129 @@ def _downsample_by_factor(arr, factor):
     return out
 
 
+def stack_images(
+    images,
+    output_path,
+    axis="horizontal",
+    pad_px=10,
+):
+    """
+    Stack a list of images vertically or horizontally with padding and save.
+
+    Args:
+        images: List of numpy arrays (H, W) or (H, W, C). 2D arrays are treated as grayscale (single channel).
+        output_path: Path to save the stacked image (e.g. .png).
+        axis: "horizontal" or "h" to stack left-to-right; "vertical" or "v" to stack top-to-bottom.
+        pad_px: Padding in pixels between adjacent images (default 10).
+
+    Returns:
+        The stacked image array (before saving).
+    """
+    import imageio
+
+    if not images:
+        raise ValueError("images must be a non-empty list")
+
+    # Normalize to (H, W, C) and common dtype
+    normalized = []
+    for img in images:
+        img = np.asarray(img)
+        if img.ndim == 2:
+            img = np.expand_dims(img, axis=-1)
+        normalized.append(img)
+
+    dtype = normalized[0].dtype
+    C = max(im.shape[2] for im in normalized)
+
+    # Ensure all have same number of channels (pad grayscale to 3 if needed for save)
+    for i in range(len(normalized)):
+        if normalized[i].shape[2] != C:
+            normalized[i] = np.repeat(normalized[i], C, axis=2)
+
+    axis = axis.lower()
+    if axis in ("horizontal", "h"):
+        # Stack horizontally: same height, pad_px between images
+        max_h = max(im.shape[0] for im in normalized)
+        parts = []
+        for k, im in enumerate(normalized):
+            if k > 0:
+                parts.append(np.full((max_h, pad_px, C), 255, dtype=dtype))
+            if im.shape[0] < max_h:
+                pad = np.full((max_h - im.shape[0], im.shape[1], C), 255, dtype=dtype)
+                im = np.concatenate([im, pad], axis=0)
+            parts.append(im)
+        stacked = np.concatenate(parts, axis=1)
+    elif axis in ("vertical", "v"):
+        # Stack vertically: same width, pad_px between images
+        max_w = max(im.shape[1] for im in normalized)
+        parts = []
+        for k, im in enumerate(normalized):
+            if k > 0:
+                parts.append(np.full((pad_px, max_w, C), 255, dtype=dtype))
+            if im.shape[1] < max_w:
+                pad = np.full((im.shape[0], max_w - im.shape[1], C), 255, dtype=dtype)
+                im = np.concatenate([im, pad], axis=1)
+            parts.append(im)
+        stacked = np.concatenate(parts, axis=0)
+    else:
+        raise ValueError(f"axis must be 'horizontal'/'h' or 'vertical'/'v', got {axis!r}")
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
+    imageio.imwrite(output_path, stacked)
+    print(f"Saved: {output_path}")
+    return stacked
+
+
+def folder_to_video(
+    folder_path,
+    output_path=None,
+    fps=10,
+    image_glob="*.png",
+):
+    """
+    Load images from a folder (sorted by filename), merge into a video, and save in the same folder.
+
+    Args:
+        folder_path: Directory containing image files.
+        output_path: Output video path. If None, saves to folder_path/video.mp4.
+        fps: Frames per second (default 10).
+        image_glob: Glob pattern for image files (default "*.png"), e.g. "*.jpg" or "img_*.png".
+
+    Returns:
+        The path to the saved video file.
+    """
+    import glob
+    import imageio
+
+    folder_path = os.path.abspath(folder_path)
+    if not os.path.isdir(folder_path):
+        raise FileNotFoundError(f"Folder not found: {folder_path}")
+
+    pattern = os.path.join(folder_path, image_glob)
+    paths = sorted(glob.glob(pattern))
+    if not paths:
+        raise FileNotFoundError(f"No images matching {image_glob!r} in {folder_path}")
+
+    if output_path is None:
+        output_path = os.path.join(folder_path, "video.mp4")
+    else:
+        output_path = os.path.abspath(output_path)
+
+    images = []
+    for p in paths:
+        img = imageio.imread(p)
+        if img.ndim == 2:
+            img = np.expand_dims(img, axis=-1)
+        images.append(img)
+
+    with imageio.get_writer(output_path, fps=fps) as writer:
+        for img in images:
+            writer.append_data(img)
+
+    print(f"Saved: {output_path} ({len(images)} frames @ {fps} fps)")
+    return output_path
+
+
 def generate_baseline_comparison_grid(
     base_dir,
     baselines,
@@ -262,6 +385,7 @@ def generate_baseline_comparison_grid(
     downsample_factor=None,
     image_name_template="img_{:010d}.png",
     num_rows=None,
+    image_ids=None,
 ):
     """
     Stack images from multiple baseline folders into an interleaved grid.
@@ -270,7 +394,11 @@ def generate_baseline_comparison_grid(
     - Then stacking is performed on the downsampled images (padding = padding_frac * downsampled image width).
     - Reads images from base_dir / baseline / image_name_template for each baseline.
     - Each row has num_cols images from one baseline; rows are interleaved by baseline.
-    - total_images must be divisible by num_cols.
+    - total_images must be divisible by num_cols (when num_rows is None).
+    - When num_rows is not None:
+        * We form 2 * num_rows prompt indices.
+        * By default, these indices are sampled in a fixed, deterministic way from [0, total_images).
+        * If image_ids is provided, those indices are used instead (and must have length 2 * num_rows).
 
     Returns the final image array and saves to output_path.
     """
@@ -338,15 +466,31 @@ def generate_baseline_comparison_grid(
         # New layout: each prompt is a horizontal baseline triplet; we place two triplets per row
         # (left and right), so the final grid has N rows and 6 columns in total when len(baselines) == 3.
         num_prompts = 2 * num_rows
-        if total_images < num_prompts:
-            raise ValueError(
-                f"total_images ({total_images}) must be at least 2 * num_rows ({num_prompts}) "
-                "to create two prompt triplets per row."
-            )
 
-        # Pre-load all triplets (one per prompt index)
+        # Determine which global image indices to use for each prompt slot.
+        if image_ids is not None:
+            if len(image_ids) != num_prompts:
+                raise ValueError(
+                    f"image_ids must have length 2 * num_rows ({num_prompts}), "
+                    f"got {len(image_ids)}."
+                )
+            indices = list(image_ids)
+        else:
+            if total_images < num_prompts:
+                raise ValueError(
+                    f"total_images ({total_images}) must be at least 2 * num_rows ({num_prompts}) "
+                    "to create two prompt triplets per row."
+                )
+            # Fixed, deterministic sampling of indices across [0, total_images).
+            # This provides a stable subset of examples for the paper figures.
+            if total_images == num_prompts:
+                indices = list(range(num_prompts))
+            else:
+                indices = np.linspace(0, total_images - 1, num_prompts, dtype=int).tolist()
+
+        # Pre-load all triplets (one per chosen prompt index)
         triplets = []
-        for idx in range(num_prompts):
+        for idx in indices:
             imgs = []
             for baseline in baselines:
                 folder = os.path.join(base_dir, baseline)
@@ -461,6 +605,7 @@ def generate_foveation_trajectory_figure(
     C = sample_imgs[0].shape[2]
     pad_px = int(padding_frac * W)
     dtype = sample_imgs[0].dtype
+    print(pad_px)
 
     if num_rows is None:
         # Original behavior: horizontal trajectories stacked as rows.
@@ -506,12 +651,12 @@ def generate_foveation_trajectory_figure(
     else:
         # New behavior: each column is a trajectory; interleave row1/row2 columns
         # for the first three subfolder indices, giving 6 columns total.
-        if len(subfolder_indices) < 3:
-            raise ValueError(
-                f"Need at least 3 subfolder indices for 3 interleaved trajectory pairs, "
-                f"got {len(subfolder_indices)}."
-            )
-        use_indices = subfolder_indices[:3]
+        #if len(subfolder_indices) < 3:
+        #    raise ValueError(
+        #        f"Need at least 3 subfolder indices for 3 interleaved trajectory pairs, "
+        #        f"got {len(subfolder_indices)}."
+        #    )
+        use_indices = subfolder_indices[:1]
 
         columns = []
 
@@ -585,7 +730,7 @@ def generate_foveation_trajectory_figure(
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="Generate paper figures")
-    parser.add_argument("figure", type=str, choices=["runtime", "runtime_quality", "baselines", "foveation_trajectory"])
+    parser.add_argument("figure", type=str, choices=["runtime", "runtime_quality", "baselines", "foveation_trajectory", "stack", "video"])
     parser.add_argument("--output", "-o", type=str, default=None, help="Output path for the figure")
     parser.add_argument("--base-dir", type=str, default=None, help="Base dir (default: ../results/eccv2026_final)")
     parser.add_argument("--padding-frac", type=float, default=0.02, help="Padding between images as fraction of image width")
@@ -601,6 +746,27 @@ if __name__ == "__main__":
         default=None,
         help="Number of rows for baselines (two prompt triplets per row) or foveation_trajectory (frames per trajectory column)",
     )
+
+    parser.add_argument(
+        "--image-ids",
+        type=int,
+        nargs="+",
+        default=None,
+        help=(
+            "Explicit image indices to use for baseline figure when num-rows is provided. "
+            "Length must be exactly 2 * num-rows (left/right triplets per row)."
+        ),
+    )
+
+    # stack figure: list of images, axis, pad_px
+    parser.add_argument("--images", type=str, nargs="+", default=None, help="Image paths for stack figure (required when figure=stack)")
+    parser.add_argument("--axis", type=str, default="horizontal", choices=["horizontal", "h", "vertical", "v"], help="Stack direction for stack figure: horizontal or vertical")
+    parser.add_argument("--pad-px", type=int, default=10, help="Padding in pixels between images for stack figure")
+
+    # video figure: folder of images -> video
+    parser.add_argument("--folder", type=str, default=None, help="Folder of images for video figure (required when figure=video)")
+    parser.add_argument("--fps", type=float, default=10, help="Frames per second for output video")
+    parser.add_argument("--image-glob", type=str, default="*.png", help="Glob for image files in folder (default: *.png)")
 
     # foveation_trajectory figure-specific arguments
     parser.add_argument("--row1-name", type=str, default="foveation_trajectory_naive", help="Folder name for row 1 of foveation_trajectory (under base-dir)")
@@ -628,6 +794,7 @@ if __name__ == "__main__":
             output_path=args.output or os.path.join(base_dir, "baselines.png"),
             padding_frac=getattr(args, "padding_frac", 0.02),
             num_rows=args.num_rows,
+            image_ids=args.image_ids,
         )
     elif args.figure == "foveation_trajectory":
         base_dir = args.base_dir or default_base
@@ -640,6 +807,27 @@ if __name__ == "__main__":
             padding_frac=args.padding_frac,
             downsample_factor=args.downsample,
             num_rows=args.num_rows,
+        )
+    elif args.figure == "stack":
+        if not args.images:
+            raise ValueError("--images is required for figure=stack (provide one or more image paths)")
+        import imageio
+        images = [imageio.imread(p) for p in args.images]
+        out = args.output or "stacked.png"
+        stack_images(
+            images,
+            output_path=out,
+            axis=args.axis,
+            pad_px=args.pad_px,
+        )
+    elif args.figure == "video":
+        if not args.folder:
+            raise ValueError("--folder is required for figure=video")
+        folder_to_video(
+            folder_path=args.folder,
+            output_path=args.output,
+            fps=args.fps,
+            image_glob=args.image_glob,
         )
     else:
         raise ValueError(f"Invalid figure: {args.figure}")

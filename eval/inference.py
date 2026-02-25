@@ -363,7 +363,7 @@ def generate_foveation_trajectory_masks(height, width, args, device):
     rng = np.random.default_rng(getattr(args, "seed", 0))
 
     if traj_type == "radius":
-        r_list = np.linspace(0.1, 1.0, num_cols)
+        r_list = np.linspace(0.3, 0.7, num_cols)
         for col in range(num_cols):
             r = float(r_list[col])
             m = create_foveation_mask(
@@ -523,7 +523,7 @@ def draw_foveation_outline(
     black_stroke = max(1, int(0.10 * border_width))
     white_stroke = max(1, int(0.80 * border_width))
     # Draw outer black first, then inner white so black is 10% outside and white is 80% inside
-    cv2.drawContours(image_np, contours, -1, (0, 0, 0), black_stroke + white_stroke)
+    cv2.drawContours(image_np, contours, -1, (255, 255, 255), black_stroke + white_stroke)
     cv2.drawContours(image_np, contours, -1, (255, 255, 255), white_stroke)
     return image_np
 
@@ -1115,10 +1115,28 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
     """
     import imageio
     assert args.prompt_dataset_path, "prompt_dataset_path required for foveation_trajectory_grid"
-    assert args.num_prompts is not None and args.num_prompts > 0, "num_prompts required"
-    prompts = load_prompt_dataset(args.prompt_dataset_path)
-    prompts = np.random.choice(prompts, size=args.num_prompts, replace=False)
-    print(f"Using {len(prompts)} prompts from {args.prompt_dataset_path}")
+
+    all_prompts = load_prompt_dataset(args.prompt_dataset_path)
+    prompt_ids = getattr(args, "prompt_ids", None)
+
+    if prompt_ids is not None:
+        if len(prompt_ids) == 0:
+            raise ValueError("prompt_ids must contain at least one index when provided.")
+        max_idx = len(all_prompts) - 1
+        invalid = [i for i in prompt_ids if i < 0 or i > max_idx]
+        if invalid:
+            raise ValueError(
+                f"prompt_ids contain invalid indices {invalid}; valid range is [0, {max_idx}]."
+            )
+        prompts = [all_prompts[i] for i in prompt_ids]
+        print(
+            f"Using {len(prompts)} prompts from {args.prompt_dataset_path} "
+            f"with explicit prompt_ids={prompt_ids}"
+        )
+    else:
+        assert args.num_prompts is not None and args.num_prompts > 0, "num_prompts required when prompt_ids is not provided"
+        prompts = np.random.choice(all_prompts, size=args.num_prompts, replace=False)
+        print(f"Using {len(prompts)} prompts from {args.prompt_dataset_path}")
     outline_width_frac = getattr(args, "outline_width_frac", 0.01)
     outline_color = getattr(args, "outline_color", (255, 0, 0))
     if isinstance(outline_color, str):
@@ -1328,7 +1346,7 @@ if __name__ == "__main__":
                         help='Subset index for distributed full_eval (0 <= subset_idx < num_subsets)')
     parser.add_argument('--num_subsets', type=int, default=1,
                         help='Total number of subsets for distributed full_eval')
-    parser.add_argument('--full_eval_mask', type=str, default='square', choices=['square', 'checkerboard'],
+    parser.add_argument('--full_eval_mask', type=str, default='square', choices=['square', 'checkerboard', 'circular'],
                         help='Foveation mask for full eval: square (center region) or checkerboard (interleaved)')
     parser.add_argument('--prompt_dataset_path', type=str, help='Path to the prompt dataset as a csv file')
     parser.add_argument('--num_prompts', type=int, default=None, help='Number of prompts to run')
@@ -1336,10 +1354,22 @@ if __name__ == "__main__":
     parser.add_argument('--foveation_trajectory_type', type=str, default='circular',
                         choices=['radius', 'circular', 'polygons', 'multi_circle'],
                         help='Trajectory for foveation_trajectory_grid: radius, circular, polygons (triangle/square/hexagon/star), or multi_circle (2-3 disjoint circles per mask)')
-    parser.add_argument('--outline_width_frac', type=float, default=0.01, help='Foveation outline line width as fraction of image width (default 0.01)')
+    parser.add_argument('--outline_width_frac', type=float, default=0.005, help='Foveation outline line width as fraction of image width (default 0.01)')
     parser.add_argument('--outline_color', type=str, default='255,0,0', help='Foveation outline color as R,G,B (default red: 255,0,0)')
     parser.add_argument('--foveation_outline', type=_str_to_bool, default=False, help='Do not draw foveation border on foveation_trajectory_grid images (save plain image)')
     parser.add_argument('--soft_foveation_blend', type=_str_to_bool, default=False, help='Use soft-edged (Gaussian falloff) blend when merging low-res and high-res in decode')
+
+    parser.add_argument(
+        '--prompt_ids',
+        type=int,
+        nargs='+',
+        default=None,
+        help=(
+            'Explicit prompt indices (row indices of prompt_dataset_path CSV) to use for '
+            'foveation_trajectory_grid. When provided, overrides num_prompts and uses these '
+            'prompts in the given order.'
+        ),
+    )
 
     
     # Circular experiment specific
