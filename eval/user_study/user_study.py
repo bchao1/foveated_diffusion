@@ -247,12 +247,11 @@ def ask_question(win, question_text, q_num, num_questions, pair_idx, imgs_per_tr
     if is_practice:
         practice_banner = visual.TextStim(
             win,
-            text='This is a practice round. Response will not be recorded.',
-            pos=(0, win.size[1] // 2 - 80),
-            color=(1.0, 0.8, 0.0),  # yellow-orange
-            height=22,
+            text='PRACTICE ROUND — responses will not be recorded',
+            pos=(0, 180),
+            color='yellow',
+            height=26,
             bold=True,
-            anchorVert='top',
             alignText='center',
         )
     question = visual.TextStim(
