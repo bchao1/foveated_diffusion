@@ -10,3 +10,4 @@ open_clip_torch>=2.20
 pandas==2.0.3
 tensorboard==2.14.0
 matplotlib==3.7.5
+vbench==0.1.5

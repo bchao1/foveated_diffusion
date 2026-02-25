@@ -1,5 +1,39 @@
 # Foveated Diffusion Evaluation Scripts
 
+
+## Qualitative results prompts
+Subject matters that have strict structural, anatomical, or geometric rules, so that scale or strctural mismatches are easy to identify.
+
+Here is the list of the categories and specific subject matters I just mentioned:
+
+**1. Anatomical and Biological Forms**
+
+* **Human Subjects:** Faces, hands, teeth, and full-body poses (especially joint alignments).
+* **Animals and Creatures:** Dogs, cats, horses (especially leg joints, body length, and facial symmetry).
+* **Crowds or Group Interactions:** People holding hands, hugging, or overlapping.
+
+**2. Rigid Architecture and Engineered Environments**
+
+* **Highly-Detailed Cities and Streetscapes:** Grids of windows, balconies, street lamps, and brickwork.
+* **Interior Rooms:** Floor tiles, ceiling corners, staircases, and doorways.
+* **Vehicles:** Cars, bicycles, airplanes (especially wheels, headlights, steering wheels, and dashboards).
+
+**3. Functional Everyday Objects**
+
+* **Symmetrical Objects:** Plates, bowls, glasses, and mugs (especially rims and handles).
+* **Mechanical Tools & Instruments:** Cameras, musical instruments (like guitar strings and frets), and silverware.
+* **Objects with Distinct Parts:** Chairs (four legs), eyeglasses, and open umbrellas.
+
+**4. Typography and Symbolic Information**
+
+* **Signs, Books, and Documents:** Any text, numbers, written documents, or street signs.
+* **Clocks and Dials:** The numbering and the placement/alignment of hands on a watch or clock face.
+
+**5. Scenes Requiring Relative Scale**
+
+* **Subjects interacting with props:** A person holding a coffee cup, eating with a fork, or playing an instrument.
+* **Foreground vs. Background interactions:** A tourist posing in front of a monument or building, where the scale of the person relative to the pathway and structure must align.
+
 ## Scripts
 
 - `inference.py` — generate images from a model checkpoint.

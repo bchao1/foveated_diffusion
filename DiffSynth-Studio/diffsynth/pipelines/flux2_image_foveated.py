@@ -23,6 +23,7 @@ from PIL import Image
 from typing import Union, List, Optional, Tuple
 from tqdm import tqdm
 from einops import rearrange
+from torchvision.utils import save_image
 
 from ..core.device.npu_compatible_device import get_device_type
 from ..diffusion import FlowMatchScheduler
@@ -34,6 +35,10 @@ from ..models.flux2_text_encoder import Flux2TextEncoder
 from ..models.flux2_dit_foveated import Flux2DiTFoveated
 from ..models.flux2_vae import Flux2VAE
 from ..models.z_image_text_encoder import ZImageTextEncoder
+from scipy.ndimage import zoom, gaussian_filter
+from scipy.datasets import face as scipy_face
+
+import deepgaze_pytorch
 
 
 def _gaussian_blur_mask_2d(
@@ -1359,25 +1364,125 @@ class Flux2FoveatedUnit_NoiseInitializer(PipelineUnit):
         return {"noise": noise, "noise_downsampled": noise_downsampled}
 
 
+# Saliency-to-mask constants (same as run_saliency_detection.py / fovetaion_masks_from_video.py)
+_INFERENCE_SCALE = 0.5
+_SPATIAL_SIGMA = 20.0
+_R_MIN, _R_MAX = 0.2, 0.5
+_COVERAGE = 0.9
+_DENSE_THRESHOLD = 0.3
+
+
 class Flux2FoveatedUnit_InputImageEmbedder(PipelineUnit):
     def __init__(self):
         super().__init__(
             input_params=("input_image", "noise", "noise_downsampled"),
-            output_params=("latents", "latents_downsampled", "input_latents", "input_latents_downsampled"),
+            output_params=("latents", "latents_downsampled", "input_latents", "input_latents_downsampled", "foveation_mask"),
             onload_model_names=("vae",)
         )
+        try:
+            self.saliency_detector = deepgaze_pytorch.DeepGazeIIE(pretrained=True)
+            self.saliency_detector.eval()
+            print("Saliency detector loaded")
+        except Exception as e:
+            print(e)
+            self.saliency_detector = None
+            print("Saliency detector not loaded")
+
+    def get_foveation_mask_from_image(self, image: torch.Tensor) -> Optional[torch.Tensor]:
+        """
+        Same logic as run_saliency_detection.py: half-res DeepGaze with zeros centerbias,
+        spatial smoothing, param extraction, then binarized circular mask at latent grid size.
+        image: (1, 3, H, W) in [-1, 1]. Returns (H//16, W//16) binary mask, 1=high-res, 0=low-res.
+        """
+        if self.saliency_detector is None:
+            return None
+        if image.dim() == 3:
+            image = image.unsqueeze(0)
+        device = image.device
+        self.saliency_detector = self.saliency_detector.to(device)
+        h_orig, w_orig = int(image.shape[2]), int(image.shape[3])
+        # DeepGaze input: [0, 255] float, same as run_saliency_detection _frame_to_tensor
+        img_01 = (image.float() + 1.0) / 2.0
+        img_255 = img_01.clamp(0, 1) * 255.0
+        h_inf = int(h_orig * _INFERENCE_SCALE)
+        w_inf = int(w_orig * _INFERENCE_SCALE)
+        img_inf = F.interpolate(img_255, size=(h_inf, w_inf), mode="bilinear", align_corners=False)
+        centerbias = torch.zeros(1, h_inf, w_inf, device=device, dtype=torch.float32)
+        with torch.no_grad():
+            log_density = self.saliency_detector(img_inf, centerbias)
+        smap = torch.exp(log_density[0, 0]).cpu().numpy()
+        smax = float(smap.max())
+        if smax > 0:
+            smap = smap / smax
+        smoothed = gaussian_filter(smap, sigma=_SPATIAL_SIGMA)
+        smax = float(smoothed.max())
+        if smax > 0:
+            smoothed = smoothed / smax
+        # _saliency_to_params (same as run_saliency_detection)
+        h, w = smoothed.shape
+        eps = 1e-8
+        peak = float(smoothed.max())
+        if peak < eps:
+            cx_norm, cy_norm, r = 0.0, 0.0, _R_MIN
+        else:
+            thresh = _DENSE_THRESHOLD * peak
+            dense_mask = smoothed >= thresh
+            dense_smap = smoothed * dense_mask
+            dense_total = dense_smap.sum() + eps
+            y_coords = np.arange(h, dtype=np.float64)
+            x_coords = np.arange(w, dtype=np.float64)
+            x_grid, y_grid = np.meshgrid(x_coords, y_coords)
+            cx_px = (dense_smap * x_grid).sum() / dense_total
+            cy_px = (dense_smap * y_grid).sum() / dense_total
+            cx_norm = (cx_px / w) - 0.5
+            cy_norm = (cy_px / h) - 0.5
+            dist = np.sqrt((x_grid - cx_px) ** 2 + (y_grid - cy_px) ** 2)
+            dense_pixels = dense_mask.ravel()
+            flat_dist = dist.ravel()[dense_pixels]
+            flat_sal = dense_smap.ravel()[dense_pixels]
+            sort_idx = np.argsort(flat_dist)
+            cumsum = np.cumsum(flat_sal[sort_idx])
+            target = _COVERAGE * dense_total
+            hit = min(np.searchsorted(cumsum, target), len(flat_dist) - 1)
+            radius_px = flat_dist[sort_idx[hit]]
+            half_diag = 0.5 * np.sqrt(h ** 2 + w ** 2)
+            r = float(np.clip(radius_px / half_diag, _R_MIN, _R_MAX))
+        # Binarized circular mask at full image res
+        cx = (cx_norm + 0.5) * w_orig
+        cy = (cy_norm + 0.5) * h_orig
+        diagonal = (h_orig ** 2 + w_orig ** 2) ** 0.5
+        radius_px = r * (diagonal / 2.0)
+        y = np.arange(h_orig, dtype=np.float64)
+        x = np.arange(w_orig, dtype=np.float64)
+        xx, yy = np.meshgrid(x, y)
+        dist_sq = (xx - cx) ** 2 + (yy - cy) ** 2
+        mask_hr = (dist_sq <= radius_px ** 2).astype(np.float32)
+        mask_hr = torch.from_numpy(mask_hr).to(device=device, dtype=torch.float32)
+        # Downsample by 32, binarize, then upsample 2x so effective factor is 16
+        mask_hr_4d = mask_hr.unsqueeze(0).unsqueeze(0)
+        h_32, w_32 = h_orig // 32, w_orig // 32
+        mask_32 = F.interpolate(mask_hr_4d, size=(h_32, w_32), mode="bilinear", align_corners=False)
+        mask_binary_32 = (mask_32.squeeze(0).squeeze(0) > 0.5).to(torch.float32).unsqueeze(0).unsqueeze(0)
+        latent_h, latent_w = h_orig // 16, w_orig // 16
+        mask_binary = F.interpolate(mask_binary_32, size=(latent_h, latent_w), mode="nearest")
+        return mask_binary
 
     def process(self, pipe: Flux2FoveatedImagePipeline, input_image, noise, noise_downsampled):
         if input_image is None:
             return {
-                "latents": noise, 
+                "latents": noise,
                 "latents_downsampled": noise_downsampled,
-                "input_latents": None, 
-                "input_latents_downsampled": None
+                "input_latents": None,
+                "input_latents_downsampled": None,
+                "foveation_mask": None,
             }
-        pipe.load_models_to_device(['vae'])
+        pipe.load_models_to_device(["vae"])
         image = pipe.preprocess_image(input_image)
         input_latents = pipe.vae.encode(image)
+        foveation_mask = self.get_foveation_mask_from_image(image)
+        #save_image((image + 1) / 2.0, "/home/brianchc/foveated_diffusion/paper_figures/input_image.png")
+        #save_image(foveation_mask, "/home/brianchc/foveated_diffusion/paper_figures/foveation_mask.png")
+        #exit()
         _, _, latent_height, latent_width = input_latents.shape
         input_latents = rearrange(input_latents, "B C H W -> B (H W) C")
 
@@ -1389,19 +1494,21 @@ class Flux2FoveatedUnit_InputImageEmbedder(PipelineUnit):
 
         if pipe.scheduler.training:
             return {
-                "latents": noise, 
+                "latents": noise,
                 "latents_downsampled": noise_downsampled,
                 "input_latents": input_latents,
-                "input_latents_downsampled": input_latents_downsampled
+                "input_latents_downsampled": input_latents_downsampled,
+                "foveation_mask": foveation_mask,
             }
         else:
             latents = pipe.scheduler.add_noise(input_latents, noise, timestep=pipe.scheduler.timesteps[0])
             latents_downsampled = pipe.scheduler.add_noise(input_latents_downsampled, noise_downsampled, timestep=pipe.scheduler.timesteps[0])
             return {
-                "latents": latents, 
-                "latents_downsampled": latents_downsampled, 
-                "input_latents": input_latents, 
-                "input_latents_downsampled": input_latents_downsampled
+                "latents": latents,
+                "latents_downsampled": latents_downsampled,
+                "input_latents": input_latents,
+                "input_latents_downsampled": input_latents_downsampled,
+                "foveation_mask": foveation_mask,
             }
 
 

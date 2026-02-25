@@ -57,9 +57,23 @@ def parse_args():
                         help='Number of randomly selected trials (default: 5)')
     parser.add_argument('--imgs_per_trial', type=int, default=3,
                         help='Image pairs per trial (default: 3)')
-    parser.add_argument('--output', type=str, default='user_study_results.csv',
-                        help='Output CSV file path (default: user_study_results.csv)')
+    parser.add_argument('--output_dir', type=str, default='.',
+                        help='Directory to save result CSVs (default: current directory)')
     return parser.parse_args()
+
+
+# ---------------------------------------------------------------------------
+# Output path helpers
+# ---------------------------------------------------------------------------
+
+def next_participant_path(output_dir):
+    """Return the path for the next participant CSV (participant_0.csv, participant_1.csv, ...)."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    participant_id = 0
+    while (output_dir / f'participant_{participant_id}.csv').exists():
+        participant_id += 1
+    return output_dir / f'participant_{participant_id}.csv'
 
 
 # ---------------------------------------------------------------------------
@@ -81,13 +95,24 @@ def load_trial_dirs(user_study_dir, num_trials):
 # ---------------------------------------------------------------------------
 
 def compute_display_size(win, img_path):
-    """Return (w, h) in pixels that fills the shorter screen dimension, aspect-ratio preserved."""
+    """Return (w, h) in PsychoPy 'height' units that fills the shorter screen dimension.
+
+    Using 'height' units (where 1.0 = window height in both axes) avoids any
+    pixel-scaling ambiguity on Retina / HiDPI displays. The image fills whichever
+    screen dimension is proportionally smaller while preserving its aspect ratio;
+    the remaining screen area stays black.
+    """
     screen_w, screen_h = win.size
-    display_side = min(screen_w, screen_h)
+    screen_aspect = screen_w / screen_h
     with Image.open(img_path) as img:
-        img_w, img_h = img.size
-    scale = display_side / max(img_w, img_h)
-    return (int(img_w * scale), int(img_h * scale))
+        img_aspect = img.size[0] / img.size[1]
+    # In 'height' units, 1.0 = full window height in both x and y.
+    if img_aspect <= screen_aspect:
+        # Screen is wider than the image: fill height, black bars on sides.
+        return (img_aspect, 1.0)
+    else:
+        # Screen is taller than the image: fill width, black bars top/bottom.
+        return (screen_aspect, screen_aspect / img_aspect)
 
 
 def load_image_stims(win, trial_dir, display_size):
@@ -98,13 +123,13 @@ def load_image_stims(win, trial_dir, display_size):
             win,
             image=str(trial_dir / filename),
             size=display_size,
-            units='pix',
+            units='height',
         )
     stims['fixation'] = visual.ImageStim(
         win,
         image=str(trial_dir / 'fixation_point.png'),
         size=display_size,
-        units='pix',
+        units='height',
     )
     return stims
 
@@ -356,6 +381,8 @@ def main():
     args = parse_args()
 
     trial_dirs = load_trial_dirs(args.user_study_dir, args.num_trials)
+    output_path = next_participant_path(args.output_dir)
+    print(f'Saving results to: {output_path}')
 
     win = visual.Window(
         fullscr=True,
@@ -365,7 +392,7 @@ def main():
     )
 
     try:
-        with open(args.output, 'w', newline='') as csvfile:
+        with open(output_path, 'w', newline='') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=CSV_FIELDNAMES)
             writer.writeheader()
             csvfile.flush()

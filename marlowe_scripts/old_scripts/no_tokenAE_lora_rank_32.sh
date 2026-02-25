@@ -1,4 +1,4 @@
-exp_name="no_tokenAE_fix_mask"
+exp_name="no_tokenAE_rank_32"
 root_folder="/scratch/m000051-pm05/brianchc_2"
 
 accelerate launch \
@@ -35,5 +35,4 @@ accelerate launch \
   --save_steps 1000 \
   --task sft_no_tokenAE \
   --find_unused_parameters \
-  --decode_mode "merge" \
-  --fixed_foveation_mask
+  --decode_mode "merge"
