@@ -15,7 +15,7 @@ accelerate launch \
   --learning_rate 1e-4 \
   --tokenAE_learning_rate 1e-4 \
   --tokenAE_train_steps 1000 \
-  --num_epochs 1 \
+  --num_epochs 10 \
   --remove_prefix_in_ckpt "pipe.dit." \
   --output_path "${root_folder}/foveated_diffusion/experiments/${exp_name}" \
   --lora_base_model "dit" \

@@ -1,7 +1,7 @@
 exp_name="no_tokenAE_full_finetune"
 root_folder="/scratch/m000051-pm05/brianchc_2"
 
-accelerate launch train_foveated.py \
+accelerate launch \
   --config_file /users/brianchc/accelerate_config.yaml \
   /users/brianchc/foveated_diffusion/DiffSynth-Studio/examples/flux2/model_training/train_foveated.py \
   --dataset_base_path "${root_folder}/Aesthetic-Train-V2" \
@@ -34,4 +34,3 @@ accelerate launch train_foveated.py \
   --task sft_no_tokenAE \
   --find_unused_parameters \
   --decode_mode "merge"
-cd lora
