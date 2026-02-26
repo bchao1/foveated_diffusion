@@ -8,7 +8,7 @@ lora_checkpoint="${ckpt_folder}/step-${step}.safetensors"
 CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment naive_mixed_res \
     --decode_mode merge \
-    --output_dir ../results/eccv2026_final_v2/naive_circular_qualitative \
+    --output_dir ../results/eccv2026_final_v2/naive_circular_qualitative_v3 \
     --seed 42 \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
@@ -16,6 +16,6 @@ CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --full_eval_mask circular \
     --foveation_outline true \
     --soft_foveation_blend true \
-    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/claude_prompts.csv \
+    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/claude_prompts_extended.csv \
     --num_prompts 100 \
     --mask_radius 0.4

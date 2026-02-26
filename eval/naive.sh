@@ -13,7 +13,7 @@ run_subset() {
         --experiment naive_mixed_res \
         --decode_mode merge \
         --tokenAE_training false \
-        --output_dir /local/brian/foveated_diffusion/results/naive_mixed_res_circle_eval \
+        --output_dir /local/brian/foveated_diffusion/results/naive_mixed_res_circle_r_${3}_eval \
         --seed 42 \
         --lora_checkpoint "${lora_checkpoint}" \
         --full_eval \
@@ -23,9 +23,27 @@ run_subset() {
         --prompt_dataset_path /local/brian/Aesthetic-Train-V2/metadata_test.csv \
         --num_subsets "${num_subsets}" \
         --subset_idx "${subset_idx}" \
-        --mask_radius 0.5
+        --mask_radius $3
 }
 
+run_subset 0 0 0.25 &
+run_subset 1 1 0.25 &
+run_subset 2 2 0.25 &
+run_subset 3 3 0.25 &
+run_subset 4 4 0.25 &
+run_subset 5 5 0.25 &
+run_subset 6 6 0.25 &
+run_subset 7 7 0.25 &
+wait
+run_subset 0 0 0.75 &
+run_subset 1 1 0.75 &
+run_subset 2 2 0.75 &
+run_subset 3 3 0.75 &
+run_subset 4 4 0.75 &
+run_subset 5 5 0.75 &
+run_subset 6 6 0.75 &
+run_subset 7 7 0.75 &
+exit
 
 CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment naive_mixed_res \

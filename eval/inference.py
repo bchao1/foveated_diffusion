@@ -284,7 +284,7 @@ def _sample_nonoverlapping_circles(rng, num_circles: int, r_lo: float, r_hi: flo
         (0.12, 0.42, -0.42, -0.12),     # top-right
         (-0.42, -0.12, 0.12, 0.42),     # bottom-left
         (0.12, 0.42, 0.12, 0.42),       # bottom-right
-        (-0.18, 0.18, -0.18, 0.18),     # center
+        #(-0.18, 0.18, -0.18, 0.18),     # center
     ]
     zone_order = rng.permutation(len(zones))
     chosen_zones = [zone_order[i] for i in range(num_circles)]
@@ -395,10 +395,10 @@ def generate_foveation_trajectory_masks(height, width, args, device):
     elif traj_type == "multi_circle":
         # Sequence of masks; each mask is 2-3 non-overlapping circles distributed across the image
         num_circles_lo = 2
-        num_circles_hi = 4  # 2 or 3
+        num_circles_hi = 3  # 2 or 3
         r_lo = 0.3 #getattr(args, "multi_circle_r_lo", 0.2)
-        r_hi = 0.4 #getattr(args, "multi_circle_r_hi", 0.4)
-        gap = 0.1 #getattr(args, "multi_circle_gap", 0.02)
+        r_hi = 0.3 #getattr(args, "multi_circle_r_hi", 0.4)
+        gap = 0.3 #getattr(args, "multi_circle_gap", 0.02)
         for col in range(num_cols):
             num_circles = int(rng.integers(num_circles_lo, num_circles_hi))
             circles = _sample_nonoverlapping_circles(rng, num_circles, r_lo, r_hi, gap=gap)
@@ -1135,7 +1135,8 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
         )
     else:
         assert args.num_prompts is not None and args.num_prompts > 0, "num_prompts required when prompt_ids is not provided"
-        prompts = np.random.choice(all_prompts, size=args.num_prompts, replace=False)
+        #prompts = np.random.choice(all_prompts, size=args.num_prompts, replace=False)
+        prompts = all_prompts[:args.num_prompts]
         print(f"Using {len(prompts)} prompts from {args.prompt_dataset_path}")
     outline_width_frac = getattr(args, "outline_width_frac", 0.01)
     outline_color = getattr(args, "outline_color", (255, 0, 0))

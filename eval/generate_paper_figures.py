@@ -559,19 +559,21 @@ def generate_foveation_trajectory_figure(
     """
     Generate a figure showing foveation trajectory sequences.
     - subfolder_indices: single int or list of ints (e.g. 0 or [0, 1, 2] for 000, 001, 002).
-    - For each subfolder index: row 1 from base_dir/row1_name/{subfolder}/, row 2 from base_dir/row2_name/{subfolder}/.
+    - For each subfolder index: row 1 from base_dir/row1_name/{subfolder}/; row 2 from base_dir/row2_name/{subfolder}/
+      if row2_name is provided. If row2_name is None or empty, only row1 is plotted.
     - Default behavior (num_rows is None): all img_*.png in each subfolder are stacked horizontally; rows stacked
       vertically with the same padding between rows.
-    - New behavior (num_rows is not None): build a 6-column grid where each column is a foveation trajectory over
-      time. Images from row1_name and row2_name are interleaved in columns (row1, row2, row1, row2, row1, row2) for
-      the first three subfolder indices. Each column shows num_rows evenly sampled frames from its trajectory,
-      aligned across the pair for each subfolder.
+    - New behavior (num_rows is not None): columns are foveation trajectories. If row2_name is set, row1 and row2
+      are interleaved (row1, row2, ...); otherwise only row1 columns are shown.
     """
     import glob
     import imageio
 
     if isinstance(subfolder_indices, int):
         subfolder_indices = [subfolder_indices]
+    has_row2 = row2_name is not None and (
+        not isinstance(row2_name, str) or (row2_name and row2_name.strip())
+    )
     factor = downsample_factor
 
     def load_row_images(folder, factor):
@@ -614,15 +616,19 @@ def generate_foveation_trajectory_figure(
         for idx in subfolder_indices:
             subfolder = f"{idx:03d}"
             dir1 = os.path.join(base_dir, row1_name, subfolder)
-            dir2 = os.path.join(base_dir, row2_name, subfolder)
-            for d in (dir1, dir2):
-                if not os.path.isdir(d):
-                    raise FileNotFoundError(f"Folder not found: {d}")
+            if not os.path.isdir(dir1):
+                raise FileNotFoundError(f"Folder not found: {dir1}")
             row1_imgs = load_row_images(dir1, factor)
-            row2_imgs = load_row_images(dir2, factor)
             row1 = horizontal_stack(row1_imgs, H, W, pad_px, C, dtype)
-            row2 = horizontal_stack(row2_imgs, H, W, pad_px, C, dtype)
-            row_w_max = max(row_w_max, row1.shape[1], row2.shape[1])
+            row_w_max = max(row_w_max, row1.shape[1])
+            row2 = None
+            if has_row2:
+                dir2 = os.path.join(base_dir, row2_name, subfolder)
+                if not os.path.isdir(dir2):
+                    raise FileNotFoundError(f"Folder not found: {dir2}")
+                row2_imgs = load_row_images(dir2, factor)
+                row2 = horizontal_stack(row2_imgs, H, W, pad_px, C, dtype)
+                row_w_max = max(row_w_max, row2.shape[1])
             row_blocks.append((row1, row2))
 
         # Pad rows to same width and stack vertically with padding between rows
@@ -634,73 +640,71 @@ def generate_foveation_trajectory_figure(
                     [row1, np.full((row1.shape[0], row_w_max - row1.shape[1], C), 255, dtype=dtype)],
                     axis=1,
                 )
-            if row2.shape[1] < row_w_max:
-                row2 = np.concatenate(
-                    [row2, np.full((row2.shape[0], row_w_max - row2.shape[1], C), 255, dtype=dtype)],
-                    axis=1,
-                )
             if pad_row_template is None:
                 pad_row_template = np.full((pad_px, row_w_max, C), 255, dtype=dtype)
             grid_parts.append(row1)
-            grid_parts.append(pad_row_template)
-            grid_parts.append(row2)
-            grid_parts.append(pad_row_template)
+            if has_row2 and row2 is not None:
+                if row2.shape[1] < row_w_max:
+                    row2 = np.concatenate(
+                        [row2, np.full((row2.shape[0], row_w_max - row2.shape[1], C), 255, dtype=dtype)],
+                        axis=1,
+                    )
+                grid_parts.append(pad_row_template)
+                grid_parts.append(row2)
+                grid_parts.append(pad_row_template)
         if grid_parts:
             grid_parts = grid_parts[:-1]  # drop trailing padding between blocks
         grid = np.concatenate(grid_parts, axis=0) if grid_parts else np.zeros((0, 0, C), dtype=dtype)
     else:
-        # New behavior: each column is a trajectory; interleave row1/row2 columns
-        # for the first three subfolder indices, giving 6 columns total.
-        #if len(subfolder_indices) < 3:
-        #    raise ValueError(
-        #        f"Need at least 3 subfolder indices for 3 interleaved trajectory pairs, "
-        #        f"got {len(subfolder_indices)}."
-        #    )
+        # New behavior: each column is a trajectory; optionally interleave row1/row2 columns.
         use_indices = subfolder_indices[:1]
 
         columns = []
 
+        def vertical_stack(frames):
+            col_w = frames[0].shape[1]
+            parts = [frames[0]]
+            for f in frames[1:]:
+                parts.append(np.full((pad_px, col_w, C), 255, dtype=dtype))
+                parts.append(f)
+            return np.concatenate(parts, axis=0)
+
         for idx in use_indices:
             subfolder = f"{idx:03d}"
             dir1 = os.path.join(base_dir, row1_name, subfolder)
-            dir2 = os.path.join(base_dir, row2_name, subfolder)
-            for d in (dir1, dir2):
-                if not os.path.isdir(d):
-                    raise FileNotFoundError(f"Folder not found: {d}")
+            if not os.path.isdir(dir1):
+                raise FileNotFoundError(f"Folder not found: {dir1}")
 
             row1_imgs = load_row_images(dir1, factor)
-            row2_imgs = load_row_images(dir2, factor)
-
-            if len(row1_imgs) != len(row2_imgs):
-                raise ValueError(
-                    f"Mismatch in number of frames between {dir1} ({len(row1_imgs)}) and "
-                    f"{dir2} ({len(row2_imgs)})."
-                )
             num_frames = len(row1_imgs)
             if num_frames < num_rows:
                 raise ValueError(
-                    f"Not enough frames in {dir1} / {dir2} for num_rows={num_rows}: only {num_frames} frames."
+                    f"Not enough frames in {dir1} for num_rows={num_rows}: only {num_frames} frames."
                 )
 
             if num_frames == num_rows:
                 frame_indices = list(range(num_rows))
             else:
                 frame_indices = np.linspace(0, num_frames - 1, num_rows, dtype=int)
+                frame_indices = list(range(num_rows))
 
             col1_frames = [row1_imgs[i] for i in frame_indices]
-            col2_frames = [row2_imgs[i] for i in frame_indices]
-
-            def vertical_stack(frames):
-                col_w = frames[0].shape[1]
-                parts = [frames[0]]
-                for f in frames[1:]:
-                    parts.append(np.full((pad_px, col_w, C), 255, dtype=dtype))
-                    parts.append(f)
-                return np.concatenate(parts, axis=0)
-
             col1 = vertical_stack(col1_frames)
-            col2 = vertical_stack(col2_frames)
-            columns.extend([col1, col2])
+            columns.append(col1)
+
+            if has_row2:
+                dir2 = os.path.join(base_dir, row2_name, subfolder)
+                if not os.path.isdir(dir2):
+                    raise FileNotFoundError(f"Folder not found: {dir2}")
+                row2_imgs = load_row_images(dir2, factor)
+                if len(row1_imgs) != len(row2_imgs):
+                    raise ValueError(
+                        f"Mismatch in number of frames between {dir1} ({len(row1_imgs)}) and "
+                        f"{dir2} ({len(row2_imgs)})."
+                    )
+                col2_frames = [row2_imgs[i] for i in frame_indices]
+                col2 = vertical_stack(col2_frames)
+                columns.append(col2)
 
         # Pad columns to same height and stack horizontally with padding between columns
         if columns:
@@ -770,7 +774,7 @@ if __name__ == "__main__":
 
     # foveation_trajectory figure-specific arguments
     parser.add_argument("--row1-name", type=str, default="foveation_trajectory_naive", help="Folder name for row 1 of foveation_trajectory (under base-dir)")
-    parser.add_argument("--row2-name", type=str, default="foveation_trajectory_ours_dit", help="Folder name for row 2 of foveation_trajectory")
+    parser.add_argument("--row2-name", type=str, default="foveation_trajectory_ours_dit", help="Folder name for row 2 of foveation_trajectory; use empty string or 'none' to plot only row1")
     parser.add_argument("--subfolder-idx", type=int, nargs="+", default=[0], help="Subfolder index(s), e.g. 0 or 0 1 2 for 000, 001, 002")
 
     args = parser.parse_args()
@@ -795,13 +799,17 @@ if __name__ == "__main__":
             padding_frac=getattr(args, "padding_frac", 0.02),
             num_rows=args.num_rows,
             image_ids=args.image_ids,
+            downsample_factor=args.downsample,
         )
     elif args.figure == "foveation_trajectory":
         base_dir = args.base_dir or default_base
+        row2_name = args.row2_name
+        if isinstance(row2_name, str) and row2_name.strip().lower() in ("", "none"):
+            row2_name = None
         generate_foveation_trajectory_figure(
             base_dir=base_dir,
             row1_name=args.row1_name,
-            row2_name=args.row2_name,
+            row2_name=row2_name,
             subfolder_indices=args.subfolder_idx,
             output_path=args.output,
             padding_frac=args.padding_frac,

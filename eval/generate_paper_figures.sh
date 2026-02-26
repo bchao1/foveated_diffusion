@@ -1,6 +1,49 @@
 # stack foveation trajectory figures
 python generate_paper_figures.py stack \
   --images \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/000.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/001.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/003.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/005.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/006.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/007.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/008.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/009.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/011.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/015.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/016.png \
+  -o /home/brianchc/foveated_diffusion/paper_figures/saliency_robotics.png \
+  --axis horizontal \
+  --pad-px 20
+exit 
+
+# saliency
+# idx 000-099
+for idx in $(seq -w 000 019); do
+python generate_paper_figures.py foveation_trajectory \
+  --base-dir /home/brianchc/foveated_diffusion/results/eccv2026_final_v2 \
+  --row1-name saliency_generation_robotics \
+  --row2-name "" \
+  --subfolder-idx $idx \
+  --num-rows 3 \
+  --output /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/${idx}.png
+done
+
+exit
+
+# baseline figure
+python generate_paper_figures.py baselines \
+  --base-dir /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/ \
+  --baselines baseline_qualitative naive_circular_qualitative_outlined ours_circular_qualitative_outlined \
+  --num-rows 4 \
+  --image-ids 8 10 29 30 35 49 61 63 \
+  --downsample 4 \
+  --output ../paper_figures/baselines.png
+exit
+
+# stack foveation trajectory figures
+python generate_paper_figures.py stack \
+  --images \
     /home/brianchc/foveated_diffusion/paper_figures/foveation_trajectory/circular_1.png \
     /home/brianchc/foveated_diffusion/paper_figures/foveation_trajectory/radius_4.png \
     /home/brianchc/foveated_diffusion/paper_figures/foveation_trajectory/multi_circle_7.png \
@@ -20,13 +63,4 @@ for fov_trajectory_type in radius circular polygons multi_circle; do
     --output /home/brianchc/foveated_diffusion/paper_figures/foveation_trajectory/${fov_trajectory_type}_${idx}.png
   done
 done
-exit
-
-# baseline figure
-python generate_paper_figures.py baselines \
-  --base-dir /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/ \
-  --baselines baseline_qualitative_outlined naive_qualitative_outlined ours_qualitative_outlined \
-  --num-rows 4 \
-  --image-ids 8 10 29 30 35 49 61 63 \
-  --output ../paper_figures/baselines.png
 exit
