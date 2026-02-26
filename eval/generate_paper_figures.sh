@@ -1,18 +1,27 @@
+# saliency
+# idx 000-099
+for idx in $(seq -w 000 004); do
+python generate_paper_figures.py foveation_trajectory \
+  --base-dir /home/brianchc/foveated_diffusion/results/eccv2026_final_v2 \
+  --row1-name saliency_generation_robotics_ego_raw \
+  --row2-name "" \
+  --subfolder-idx $idx \
+  --num-rows 3 \
+  --output /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics_ego_raw/${idx}.png
+done
+
+exit
+
 # stack foveation trajectory figures
 python generate_paper_figures.py stack \
   --images \
-    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/000.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_multi_object_random_model/000.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_multi_object/000.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation/013.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation/023.png \
     /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/001.png \
     /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/003.png \
-    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/005.png \
-    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/006.png \
-    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/007.png \
-    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/008.png \
-    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/009.png \
-    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/011.png \
-    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/015.png \
-    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/016.png \
-  -o /home/brianchc/foveated_diffusion/paper_figures/saliency_robotics.png \
+  -o /home/brianchc/foveated_diffusion/paper_figures/saliency_final.png \
   --axis horizontal \
   --pad-px 20
 exit 

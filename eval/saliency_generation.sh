@@ -15,11 +15,11 @@ CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment foveation_trajectory_grid \
     --foveation_trajectory_type circular \
     --decode_mode merge \
-    --output_dir ../results/eccv2026_final_v2/saliency_generation_robotics \
+    --output_dir ../results/eccv2026_final_v2/saliency_generation_robotics_ego_raw \
     --seed 42 \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
-    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/claude_prompts_robotics.csv \
+    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/robotics_ego_raw.csv \
     --num_prompts 20 \
     --num_cols 5 \
     --foveation_outline true \
