@@ -43,16 +43,20 @@ def _resolve_foveation_mask(pipe: BasePipeline, inputs: dict, h: int, w: int):
     - "fixed": fixed circular mask (center=0, r=0.5).
     - "random": random circular mask.
     - "saliency": use inputs["foveation_mask"], move to pipe device/dtype, ensure shape (h, w).
+    - "bbox": same as "saliency" but typically with masks created from bounding boxes (e.g. via run_bbox_detection.py).
     """
     mode = inputs.get("foveated_training_mode", "random")
     if mode == "fixed":
         return _create_fixed_foveation_mask(h, w, pipe.device, pipe.torch_dtype, center=(0.0, 0.0), r=0.5)
     if mode == "random":
         return _create_random_foveation_mask(h, w, pipe.device, pipe.torch_dtype)
-    if mode == "saliency":
+    if mode in ("saliency", "bbox"):
         mask = inputs.get("foveation_mask")
         if mask is None:
-            raise ValueError("foveated_training_mode='saliency' but inputs['foveation_mask'] is None (e.g. no input_image).")
+            raise ValueError(
+                f"foveated_training_mode='{mode}' but inputs['foveation_mask'] is None "
+                "(e.g. no input_image or missing precomputed mask)."
+            )
         mask = mask.to(device=pipe.device, dtype=pipe.torch_dtype)
         while mask.dim() > 2:
             mask = mask.squeeze(0)

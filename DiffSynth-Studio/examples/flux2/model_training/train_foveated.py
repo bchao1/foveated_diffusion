@@ -141,9 +141,12 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         self.pipe = Flux2FoveatedImagePipeline.from_pretrained(torch_dtype=torch.bfloat16, device=device, model_configs=model_configs, tokenizer_config=tokenizer_config)
         self.pipe = self.split_pipeline_units(task, self.pipe, trainable_models, lora_base_model)
         self.pipe.is_foveated_pipeline = is_foveated_pipeline
+        # Expose training foveation mode on the pipeline so units (e.g. input image embedder)
+        # can decide between saliency-based and bbox-based masks.
+        self.pipe.foveated_training_mode = foveated_training_mode
         print("<Flux2FoveatedImageTrainingModule> ===> Is foveated pipeline: {}".format(self.pipe.is_foveated_pipeline))
         self.foveated_training_mode = foveated_training_mode
-        assert foveated_training_mode in ("fixed", "random", "saliency"), "foveated_training_mode must be one of: fixed, random, saliency"
+        assert foveated_training_mode in ("fixed", "random", "saliency", "bbox"), "foveated_training_mode must be one of: fixed, random, saliency, bbox"
         print("<Flux2FoveatedImageTrainingModule> ===> Foveated training mode: {}".format(self.foveated_training_mode))
 
         # set token upsampler and downsampler (register as our children so they're in the module tree for optimizer/grads)
@@ -490,8 +493,19 @@ def flux2_parser():
     
     # Foveated pipeline arguments
     parser.add_argument("--is_foveated_pipeline", type=_str_to_bool, default=True, help="Is foveated pipeline (true/false).")
-    parser.add_argument("--foveated_training_mode", type=str, default="random", choices=["fixed", "random", "saliency"],
-                        help="Foveation mask during training: fixed (center=0, r=0.5), random (sampled each step), or saliency (use foveation_mask from inputs, from pipeline saliency).")
+    parser.add_argument(
+        "--foveated_training_mode",
+        type=str,
+        default="random",
+        choices=["fixed", "random", "saliency", "bbox"],
+        help=(
+            "Foveation mask during training: "
+            "fixed (center=0, r=0.5), "
+            "random (sampled each step), "
+            "saliency (use foveation_mask from inputs, from pipeline saliency), or "
+            "bbox (use foveation_mask from inputs, typically created from bounding boxes, e.g. via run_bbox_detection.py)."
+        ),
+    )
 
     return parser
 

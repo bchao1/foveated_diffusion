@@ -5,6 +5,10 @@ foveated preview.
 
 This follows the overall structure and CLI style of run_saliency_detection.py
 but uses a fast, state-of-the-art YOLO detector instead of saliency.
+
+The generated foveation masks are suitable for use as `inputs['foveation_mask']`
+when training with `foveated_training_mode='bbox'` in the DiffSynth Flux-2
+foveated training code.
 """
 
 import os
@@ -71,7 +75,7 @@ def collect_image_paths(root_dir):
     return sorted(paths)
 
 
-def _create_foveation_mask_from_bboxes(
+def bbox_to_foveation_mask(
     height: int,
     width: int,
     bboxes_xyxy,
@@ -353,7 +357,7 @@ def main():
                     else:
                         mask_np = mask_tensor[0].cpu().numpy()
             else:
-                mask_np = _create_foveation_mask_from_bboxes(h_orig, w_orig, bboxes_xyxy, sigma=args.sigma)
+                mask_np = bbox_to_foveation_mask(h_orig, w_orig, bboxes_xyxy, sigma=args.sigma)
 
             # Save image with bounding boxes overlaid.
             overlay_img = draw_bboxes_on_image(pil_image, bboxes_xyxy, scores=scores, class_ids=class_ids)

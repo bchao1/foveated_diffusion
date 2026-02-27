@@ -1372,6 +1372,40 @@ _COVERAGE = 0.9
 _DENSE_THRESHOLD = 0.3
 
 
+def bbox_to_foveation_mask(
+    height: int,
+    width: int,
+    bboxes_xyxy,
+    sigma: float = 10.0,
+):
+    """
+    Create a full-resolution foveation mask (H, W) in [0, 1] from a list of
+    bounding boxes in absolute pixel coordinates (x1, y1, x2, y2).
+
+    This function mirrors bbox_to_foveation_mask in misc/run_bbox_detection.py:
+    the mask is 1 inside any bbox, 0 outside, followed by Gaussian smoothing
+    and normalization. This yields a smooth "high-acuity" region covering all
+    detected objects.
+    """
+    mask = np.zeros((height, width), dtype=np.float32)
+    for box in bboxes_xyxy:
+        x1, y1, x2, y2 = box
+        x1_i = max(0, min(width - 1, int(np.floor(x1))))
+        y1_i = max(0, min(height - 1, int(np.floor(y1))))
+        x2_i = max(0, min(width, int(np.ceil(x2))))
+        y2_i = max(0, min(height, int(np.ceil(y2))))
+        if x2_i <= x1_i or y2_i <= y1_i:
+            continue
+        mask[y1_i:y2_i, x1_i:x2_i] = 1.0
+
+    if sigma > 0:
+        mask = gaussian_filter(mask, sigma=sigma)
+    max_val = mask.max()
+    if max_val > 0:
+        mask = mask / max_val
+    return mask
+
+
 class Flux2FoveatedUnit_InputImageEmbedder(PipelineUnit):
     def __init__(self):
         super().__init__(
@@ -1387,13 +1421,82 @@ class Flux2FoveatedUnit_InputImageEmbedder(PipelineUnit):
             print(e)
             self.saliency_detector = None
             print("Saliency detector not loaded")
+        self.bbox_detector = None
 
-    def get_foveation_mask_from_image(self, image: torch.Tensor) -> Optional[torch.Tensor]:
+    def get_foveation_mask_from_image(
+        self,
+        pipe: "Flux2FoveatedImagePipeline",
+        image: torch.Tensor,
+    ) -> Optional[torch.Tensor]:
         """
-        Same logic as run_saliency_detection.py: half-res DeepGaze with zeros centerbias,
-        spatial smoothing, param extraction, then binarized circular mask at latent grid size.
-        image: (1, 3, H, W) in [-1, 1]. Returns (H//16, W//16) binary mask, 1=high-res, 0=low-res.
+        Create a foveation mask from the input image, depending on the
+        foveated_training_mode on the pipeline:
+        - "saliency": current DeepGaze-based saliency-to-mask logic.
+        - "bbox": use bbox_to_foveation_mask (same logic as run_bbox_detection.py)
+          on provided bounding boxes, then downsample to latent grid size.
+        image: (1, 3, H, W) in [-1, 1]. Returns (H//16, W//16) mask.
         """
+        mode = getattr(pipe, "foveated_training_mode", "saliency")
+
+        if mode == "bbox":
+            # Run YOLO detector directly on the input image to obtain bboxes,
+            # then convert them to a foveation mask using the exact same logic
+            # as misc/run_bbox_detection.py.
+            if image.dim() == 3:
+                image = image.unsqueeze(0)
+            device = image.device
+            h_orig, w_orig = int(image.shape[2]), int(image.shape[3])
+
+            # Lazy-load YOLO detector with same defaults as run_bbox_detection.py
+            if self.bbox_detector is None:
+                try:
+                    from ultralytics import YOLO
+                except ImportError as exc:
+                    print(
+                        "ultralytics not installed; bbox-based foveation requires "
+                        "`pip install ultralytics`. Falling back to no foveation mask."
+                    )
+                    return None
+                # Use same default model and keep device selection at predict-time
+                self.bbox_detector = YOLO("yolov8n.pt")
+                self.bbox_detector.model.float()
+
+            # Convert input tensor ([-1, 1]) to uint8 RGB numpy array, same scaling
+            # convention as saliency path (0-255).
+            img_01 = (image[0].float() + 1.0) / 2.0
+            img_255 = (img_01.clamp(0, 1) * 255.0).permute(1, 2, 0).cpu().numpy().astype(np.uint8)
+
+            # Device string for YOLO; follow run_bbox_detection default conf params.
+            device_str = str(pipe.device) if hasattr(pipe, "device") else "cpu"
+            results = self.bbox_detector.predict(
+                img_255,
+                conf=0.25,
+                device=device_str,
+                verbose=False,
+            )
+            if not results:
+                # No detections result: use full high-res mask
+                mask_np = np.ones((h_orig, w_orig), dtype=np.float32)
+            else:
+                res = results[0]
+                if res.boxes is None or res.boxes.xyxy is None or len(res.boxes) == 0:
+                    # No boxes: use full high-res mask
+                    mask_np = np.ones((h_orig, w_orig), dtype=np.float32)
+                else:
+                    boxes_np = res.boxes.xyxy.cpu().numpy()
+                    # Full-resolution [H, W] mask using the exact bbox->mask logic.
+                    mask_np = bbox_to_foveation_mask(h_orig, w_orig, boxes_np)
+            mask_hr = torch.from_numpy(mask_np).to(device=device, dtype=torch.float32)
+            # Downsample by 32, binarize, then upsample 2x so effective factor is 16
+            mask_hr_4d = mask_hr.unsqueeze(0).unsqueeze(0)
+            h_32, w_32 = h_orig // 32, w_orig // 32
+            mask_32 = F.interpolate(mask_hr_4d, size=(h_32, w_32), mode="bilinear", align_corners=False)
+            mask_binary_32 = (mask_32.squeeze(0).squeeze(0) > 0.5).to(torch.float32).unsqueeze(0).unsqueeze(0)
+            latent_h, latent_w = h_orig // 16, w_orig // 16
+            mask_binary = F.interpolate(mask_binary_32, size=(latent_h, latent_w), mode="nearest")
+            return mask_binary
+
+        # Default: saliency-based foveation mask
         if self.saliency_detector is None:
             return None
         if image.dim() == 3:
@@ -1479,10 +1582,11 @@ class Flux2FoveatedUnit_InputImageEmbedder(PipelineUnit):
         pipe.load_models_to_device(["vae"])
         image = pipe.preprocess_image(input_image)
         input_latents = pipe.vae.encode(image)
-        foveation_mask = self.get_foveation_mask_from_image(image)
-        #save_image((image + 1) / 2.0, "/home/brianchc/foveated_diffusion/paper_figures/input_image.png")
-        #save_image(foveation_mask, "/home/brianchc/foveated_diffusion/paper_figures/foveation_mask.png")
-        #exit()
+        # Decide between saliency-based and bbox-based mask creation.
+        foveation_mask = self.get_foveation_mask_from_image(pipe, image)
+        save_image((image + 1) / 2.0, "/home/brianchc/foveated_diffusion/paper_figures/input_image.png")
+        save_image(foveation_mask, "/home/brianchc/foveated_diffusion/paper_figures/foveation_mask.png")
+        exit()
         _, _, latent_height, latent_width = input_latents.shape
         input_latents = rearrange(input_latents, "B C H W -> B (H W) C")
 

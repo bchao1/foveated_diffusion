@@ -2,7 +2,7 @@ export DIFFSYNTH_MODEL_BASE_PATH="/miele/brian/modelscope"
 export DIFFSYNTH_SKIP_DOWNLOAD=True
 cd ..
 
-exp_name="rank_32_saliency"
+exp_name="rank_32_bbox"
 accelerate launch train_foveated.py \
   --dataset_base_path /local/brian/Aesthetic-Train-V2/ \
   --dataset_metadata_path /local/brian/Aesthetic-Train-V2/metadata_train.csv \
@@ -36,5 +36,5 @@ accelerate launch train_foveated.py \
   --task sft_no_tokenAE \
   --find_unused_parameters \
   --decode_mode "merge" \
-  --foveated_training_mode saliency
+  --foveated_training_mode bbox
 cd lora
