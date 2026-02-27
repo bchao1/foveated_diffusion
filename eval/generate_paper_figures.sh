@@ -1,6 +1,6 @@
 # saliency
 # idx 000-099
-for idx in $(seq -w 000 004); do
+for idx in $(seq -w 000 019); do
 python generate_paper_figures.py foveation_trajectory \
   --base-dir /home/brianchc/foveated_diffusion/results/eccv2026_final_v2 \
   --row1-name saliency_generation_robotics_ego_raw \
