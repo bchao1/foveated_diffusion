@@ -1,5 +1,8 @@
 # Foveated Diffusion Evaluation Scripts
 
+## User study
+- results folder: `/home/brianchc/foveated_diffusion/results/eccv2026_final_v2/user_study`.
+- selected examples: 003, 008, 010, 015, 018, 019, 020, 028, 029, 036, 038, 039, 040, 041, 043, 056, 057, 065, 075, 076, 079, 092, 100, 101, 103, 106, 119, 122, 126, 128, 130, 137, 140, 152, 159, 160, 161, 163, 168, 172, 174, 173, 177, 186, 190, 191, 193, 194, 198, 199
 
 ## Qualitative results prompts
 Subject matters that have strict structural, anatomical, or geometric rules, so that scale or strctural mismatches are easy to identify.
@@ -38,6 +41,7 @@ Here is the list of the categories and specific subject matters I just mentioned
 ### Selected examples
 - 8, 10, 29, 30, 35, 49, 61, 63, 90, 65
 - potentially: 7, 11, 21, 50, 66, 75, 82, 85, 88
+
 
 ## Scripts
 
