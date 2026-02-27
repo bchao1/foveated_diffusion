@@ -20,7 +20,7 @@ CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
     --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/vr_game_prompts.csv \
-    --num_prompts 20 \
+    --num_prompts 50 \
     --num_cols 5 \
     --foveation_outline true \
     --soft_foveation_blend true \

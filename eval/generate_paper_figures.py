@@ -69,8 +69,8 @@ def generate_runtime_figure(runtime_and_radius_list_path, output_path=None):
         )
     with plt.rc_context(FIGURE_RC):
         data = np.load(runtime_and_radius_list_path, allow_pickle=True)
-        r_list = np.asarray(data["r_list"]).flatten()
-        runtime_list = np.asarray(data["runtime_list"]).flatten()
+        r_list = np.asarray(data["r_list"]).flatten()[1:]
+        runtime_list = np.asarray(data["runtime_list"]).flatten()[1:]
         if r_list.shape[0] != runtime_list.shape[0]:
             raise ValueError(
                 f"Mismatch: r_list length {r_list.shape[0]}, runtime_list length {runtime_list.shape[0]}"
@@ -852,13 +852,13 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    default_base = os.path.join(script_dir, "..", "results", "eccv2026_final")
+    default_base = os.path.join(script_dir, "..", "results", "eccv2026_final_v2")
 
     if args.figure == "runtime":
-        file_path = os.path.join(default_base, "runtime", "runtime_and_radius_list.npz")
+        file_path = os.path.join(args.base_dir, "runtime_and_radius_list.npz")
         generate_runtime_figure(file_path, output_path=args.output)
     elif args.figure == "runtime_quality":
-        file_path = os.path.join(default_base, "runtime", "runtime_and_radius_list.npz")
+        file_path = os.path.join(args.base_dir, "runtime_and_radius_list.npz")
         generate_runtime_quality_two_col(file_path, output_path=args.output)
     elif args.figure == "baselines":
         base_dir = args.base_dir or default_base

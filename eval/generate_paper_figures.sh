@@ -1,3 +1,17 @@
+# saliency
+# idx 000-099
+for idx in $(seq -w 000 042); do
+python generate_paper_figures.py foveation_trajectory \
+  --base-dir /home/brianchc/foveated_diffusion/results/eccv2026_final_v2 \
+  --row1-name saliency_generation_vr_games \
+  --row2-name "" \
+  --subfolder-idx $idx \
+  --num-rows 3 \
+  --output /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_vr_games/${idx}.png
+done
+
+exit
+
 # user study figure
 # For parent folder with subfolders 00000, 00001, ..., each containing frames
 python generate_paper_figures.py stack_folders \
