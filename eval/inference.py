@@ -1118,9 +1118,15 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
     - Saves to output_dir/{prompt_idx:03d}/img_{col:04d}.png with foveation outline drawn.
     """
     import imageio
-    assert args.prompt_dataset_path, "prompt_dataset_path required for foveation_trajectory_grid"
+    #assert args.prompt_dataset_path, "prompt_dataset_path required for foveation_trajectory_grid"
 
-    all_prompts = load_prompt_dataset(args.prompt_dataset_path)
+    if args.prompt_dataset_path is not None:
+        all_prompts = load_prompt_dataset(args.prompt_dataset_path)
+    else:
+        all_prompts = [args.prompt]
+        args.num_prompts = 1
+        print(f"Using single prompt: {args.prompt}")
+
     prompt_ids = getattr(args, "prompt_ids", None)
 
     if prompt_ids is not None:
