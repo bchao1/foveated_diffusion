@@ -1041,8 +1041,12 @@ def run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downs
     print("Running runtime experiments...")
     args.mask_shape = "square"
     args.num_frames = 20
-    r_list = np.linspace(0, 1.0, args.num_frames)
     # add first one again in the beginning
+    token_ratio_list = np.linspace(0.25, 1.0, args.num_frames)
+    # HR: r^2 tokens, LR: (1-r^2)/4 tokens -> total = (1 + 3r^2)/4 tokens = K
+    # min tokens K = 0.25 (r = 0) to K = 1.0 (r = 1.0)
+    # solve for r: r = sqrt((4K - 1) / 3)
+    r_list = np.sqrt((4 * token_ratio_list - 1) / 3)
     r_list = np.concatenate([[0], r_list])
     runtime_list = []
 

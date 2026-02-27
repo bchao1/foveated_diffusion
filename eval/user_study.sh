@@ -7,9 +7,9 @@ lora_checkpoint="${ckpt_folder}/step-${step}.safetensors"
 
 CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment user_study \
-    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/claude_prompts_saliency.csv \
-    --num_prompts 100 \
-    --output_dir ../results/eccv2026_final/user_study_v3 \
+    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/all_prompts.csv \
+    --num_prompts 200 \
+    --output_dir ../results/eccv2026_final_v2/user_study \
     --seed 42 \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
