@@ -1,3 +1,27 @@
+# user study figure
+# For parent folder with subfolders 00000, 00001, ..., each containing frames
+python generate_paper_figures.py stack_folders \
+  --folder /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/user_study \
+  --image-glob "*.png" \
+  --pad-px 8 \
+  -o /home/brianchc/foveated_diffusion/paper_figures/user_study_stacks
+exit
+
+# saliency final figure
+python generate_paper_figures.py stack \
+  --images \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_multi_object_random_model/000.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_multi_object/000.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_video_games/000.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics_ego_raw_v3/000.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_self_driving/003.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_drones/015.png \
+  -o /home/brianchc/foveated_diffusion/paper_figures/saliency_final_v2.png \
+  --axis horizontal \
+  --pad-px 20
+exit 
+
+
 # saliency
 # idx 000-099
 for idx in $(seq -w 000 019); do
@@ -12,33 +36,6 @@ done
 
 exit
 
-# stack foveation trajectory figures
-python generate_paper_figures.py stack \
-  --images \
-    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_multi_object_random_model/000.png \
-    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_multi_object/000.png \
-    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_ego_raw_v3/000.png \
-    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_video_games/000.png \
-    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/001.png \
-    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/003.png \
-  -o /home/brianchc/foveated_diffusion/paper_figures/saliency_final_v2.png \
-  --axis horizontal \
-  --pad-px 20
-exit 
-
-# saliency
-# idx 000-099
-for idx in $(seq -w 000 019); do
-python generate_paper_figures.py foveation_trajectory \
-  --base-dir /home/brianchc/foveated_diffusion/results/eccv2026_final_v2 \
-  --row1-name saliency_generation_robotics \
-  --row2-name "" \
-  --subfolder-idx $idx \
-  --num-rows 3 \
-  --output /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics/${idx}.png
-done
-
-exit
 
 # baseline figure
 python generate_paper_figures.py baselines \
@@ -60,6 +57,7 @@ python generate_paper_figures.py stack \
   --axis horizontal \
   --pad-px 20
 exit
+
 # foveation trajectory figure
 for fov_trajectory_type in radius circular polygons multi_circle; do
   for idx in 0 1 2 3 4 5 6 7 8; do

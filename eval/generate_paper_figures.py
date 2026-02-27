@@ -325,6 +325,61 @@ def stack_images(
     return stacked
 
 
+def stack_folders(
+    input_folder,
+    output_folder,
+    image_glob="*.png",
+    pad_px=10,
+):
+    """
+    For each subfolder of input_folder, horizontally stack its images into one image.
+
+    - Input: input_folder contains subfolders (e.g. 000, 001, 002, ...).
+    - For each subfolder, load images matching image_glob, sorted by filename.
+    - Horizontally stack those images (with optional padding) and save to output_folder
+      using the subfolder name, e.g. output_folder/000.png.
+
+    Args:
+        input_folder: Parent directory whose immediate subdirectories contain images.
+        output_folder: Directory to save stacked images (created if needed).
+        image_glob: Glob pattern for images in each subfolder (default "*.png").
+        pad_px: Horizontal padding between images (passed to stack_images; default 10).
+
+    Returns:
+        List of output image paths.
+    """
+    import glob
+    import imageio
+
+    input_folder = os.path.abspath(input_folder)
+    output_folder = os.path.abspath(output_folder)
+
+    if not os.path.isdir(input_folder):
+        raise FileNotFoundError(f"Input folder not found: {input_folder}")
+    os.makedirs(output_folder, exist_ok=True)
+
+    subdirs = sorted(
+        d for d in os.listdir(input_folder)
+        if os.path.isdir(os.path.join(input_folder, d))
+    )
+    if not subdirs:
+        raise FileNotFoundError(f"No subfolders found in {input_folder}")
+
+    outputs = []
+    for sub in subdirs:
+        sub_path = os.path.join(input_folder, sub)
+        pattern = os.path.join(sub_path, image_glob)
+        paths = sorted(glob.glob(pattern))
+        if not paths:
+            print(f"Warning: no images matching {image_glob!r} in {sub_path}, skipping.")
+            continue
+        images = [imageio.imread(p) for p in paths]
+        out_path = os.path.join(output_folder, f"{sub}.png")
+        stack_images(images, output_path=out_path, axis="horizontal", pad_px=pad_px)
+        outputs.append(out_path)
+    return outputs
+
+
 def folder_to_video(
     folder_path,
     output_path=None,
@@ -734,7 +789,19 @@ def generate_foveation_trajectory_figure(
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="Generate paper figures")
-    parser.add_argument("figure", type=str, choices=["runtime", "runtime_quality", "baselines", "foveation_trajectory", "stack", "video"])
+    parser.add_argument(
+        "figure",
+        type=str,
+        choices=[
+            "runtime",
+            "runtime_quality",
+            "baselines",
+            "foveation_trajectory",
+            "stack",
+            "video",
+            "stack_folders",
+        ],
+    )
     parser.add_argument("--output", "-o", type=str, default=None, help="Output path for the figure")
     parser.add_argument("--base-dir", type=str, default=None, help="Base dir (default: ../results/eccv2026_final)")
     parser.add_argument("--padding-frac", type=float, default=0.02, help="Padding between images as fraction of image width")
@@ -767,8 +834,13 @@ if __name__ == "__main__":
     parser.add_argument("--axis", type=str, default="horizontal", choices=["horizontal", "h", "vertical", "v"], help="Stack direction for stack figure: horizontal or vertical")
     parser.add_argument("--pad-px", type=int, default=10, help="Padding in pixels between images for stack figure")
 
-    # video figure: folder of images -> video
-    parser.add_argument("--folder", type=str, default=None, help="Folder of images for video figure (required when figure=video)")
+    # video / stack_folders figure: folder of images -> video or per-subfolder stack
+    parser.add_argument(
+        "--folder",
+        type=str,
+        default=None,
+        help="Folder of images (figure=video) or parent folder containing subfolders (figure=stack_folders)",
+    )
     parser.add_argument("--fps", type=float, default=10, help="Frames per second for output video")
     parser.add_argument("--image-glob", type=str, default="*.png", help="Glob for image files in folder (default: *.png)")
 
@@ -836,6 +908,17 @@ if __name__ == "__main__":
             output_path=args.output,
             fps=args.fps,
             image_glob=args.image_glob,
+        )
+    elif args.figure == "stack_folders":
+        if not args.folder:
+            raise ValueError("--folder is required for figure=stack_folders")
+        input_folder = args.folder
+        output_folder = args.output or os.path.join(input_folder, "stacked")
+        stack_folders(
+            input_folder=input_folder,
+            output_folder=output_folder,
+            image_glob=args.image_glob,
+            pad_px=args.pad_px,
         )
     else:
         raise ValueError(f"Invalid figure: {args.figure}")
