@@ -17,12 +17,12 @@ run_subset() {
     CUDA_VISIBLE_DEVICES=$gpu_id python inference.py \
         --experiment ours \
         --decode_mode merge \
-        --output_dir /local/brian/foveated_diffusion/results/ours_circle_r_${3}_eval \
+        --output_dir /local/brian/foveated_diffusion/results/ours_r_${3}_eval \
         --seed 42 \
         --tokenAE_training false \
         --lora_checkpoint "${lora_checkpoint}" \
         --full_eval \
-        --full_eval_mask circular \
+        --full_eval_mask square \
         --foveation_outline false \
         --soft_foveation_blend true \
         --prompt_dataset_path /local/brian/Aesthetic-Train-V2/metadata_test.csv \

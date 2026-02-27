@@ -1584,9 +1584,9 @@ class Flux2FoveatedUnit_InputImageEmbedder(PipelineUnit):
         input_latents = pipe.vae.encode(image)
         # Decide between saliency-based and bbox-based mask creation.
         foveation_mask = self.get_foveation_mask_from_image(pipe, image)
-        save_image((image + 1) / 2.0, "/home/brianchc/foveated_diffusion/paper_figures/input_image.png")
-        save_image(foveation_mask, "/home/brianchc/foveated_diffusion/paper_figures/foveation_mask.png")
-        exit()
+        #save_image((image + 1) / 2.0, "/home/brianchc/foveated_diffusion/paper_figures/input_image.png")
+        #save_image(foveation_mask, "/home/brianchc/foveated_diffusion/paper_figures/foveation_mask.png")
+        #exit()
         _, _, latent_height, latent_width = input_latents.shape
         input_latents = rearrange(input_latents, "B C H W -> B (H W) C")
 
