@@ -83,7 +83,6 @@ def generate_runtime_figure(runtime_and_radius_list_path, output_path=None):
         # Y = speedup vs full res (r=1): baseline_runtime / runtime
         baseline_runtime = np.asarray(runtime_list)[np.argmax(token_pct)]  # runtime at full res (max tokens)
         speedup = baseline_runtime / np.asarray(runtime_list)
-
         # Sort by token_pct increasing so curve is well-defined; then invert x so % decreases left→right
         order = np.argsort(token_pct)
         x = token_pct[order]
@@ -110,6 +109,11 @@ def generate_runtime_figure(runtime_and_radius_list_path, output_path=None):
         ax.set_xlim(x.min() - 1, x.max() + 1)
         ax.set_ylim(bottom=1.0)  # speedup ≥ 1 (full res = 1×)
         ax.invert_xaxis()  # decreasing % left to right: 100% on left, 25% on right
+
+        # Exactly 4 x-ticks: first and last (data extent) plus two in between
+        xticks = np.linspace(x.min(), x.max(), 4)
+        ax.set_xticks(xticks)
+        ax.set_xticklabels([f"{t:.0f}" for t in xticks])
         ax.legend(loc="upper left", framealpha=0.95, edgecolor="#cccccc")
 
         fig.tight_layout(pad=1.0)
