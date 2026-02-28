@@ -34,7 +34,8 @@ CUDA_VISIBLE_DEVICES=$GPU_ID python inference.py \
     --seed 42 \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
-    --prompt "A Siberian husky sits on a snowdrift, ears upright and symmetrical, ice crystals frosting its dense fur. Its heterochromatic eyes—one blue, one brown—stare directly forward, and the featureless white tundra extends behind it to a pale sky." \
+    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/saliency.csv \
+    --num_prompts 100 \
     --num_cols 5 \
     --foveation_outline true \
     --soft_foveation_blend true \

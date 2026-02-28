@@ -2,12 +2,12 @@
 # idx 000-099
 for idx in $(seq -w 000 099); do
 python generate_paper_figures.py foveation_trajectory \
-  --base-dir /home/brianchc/foveated_diffusion/results/eccv2026_final_v2 \
-  --row1-name bbox_generation \
-  --row2-name "" \
+  --base-dir /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/vary_radius \
+  --row1-name saliency \
+  --row2-name bbox \
   --subfolder-idx $idx \
   --num-rows 3 \
-  --output /home/brianchc/foveated_diffusion/paper_figures/bbox_generation/${idx}.png
+  --output /home/brianchc/foveated_diffusion/paper_figures/vary_radius_bbox_saliency/${idx}.png
 done
 
 exit
