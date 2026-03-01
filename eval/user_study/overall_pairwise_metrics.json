@@ -1,0 +1,71 @@
+{
+  "files_used": [
+    "participant_0.csv"
+  ],
+  "files_used_count": 1,
+  "pairwise_overall": {
+    "naive_vs_high_res": {
+      "ci95_error_bar_length": {
+        "high_res": 0.0,
+        "naive": 0.0,
+        "type": "95%_confidence_interval_half_width"
+      },
+      "error_bar_length": {
+        "high_res": 0.0,
+        "naive": 0.0,
+        "type": "sem"
+      },
+      "mean_preference": {
+        "high_res": 1.0,
+        "naive": 0.0
+      },
+      "n_files": 1,
+      "pair": [
+        "naive",
+        "high_res"
+      ]
+    },
+    "naive_vs_ours": {
+      "ci95_error_bar_length": {
+        "naive": 0.0,
+        "ours": 0.0,
+        "type": "95%_confidence_interval_half_width"
+      },
+      "error_bar_length": {
+        "naive": 0.0,
+        "ours": 0.0,
+        "type": "sem"
+      },
+      "mean_preference": {
+        "naive": 0.15,
+        "ours": 0.85
+      },
+      "n_files": 1,
+      "pair": [
+        "naive",
+        "ours"
+      ]
+    },
+    "ours_vs_high_res": {
+      "ci95_error_bar_length": {
+        "high_res": 0.1,
+        "ours": 0.1,
+        "type": "95%_confidence_interval_half_width"
+      },
+      "error_bar_length": {
+        "high_res": 0.1,
+        "ours": 0.1,
+        "type": "sem"
+      },
+      "mean_preference": {
+        "high_res": 0.5,
+        "ours": 0.5
+      },
+      "n_files": 1,
+      "pair": [
+        "ours",
+        "high_res"
+      ]
+    }
+  }
+}
