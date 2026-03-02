@@ -31,14 +31,14 @@ run_subset() {
         --mask_radius $3
 }
 
-run_subset 0 0 0.25 &
-run_subset 1 1 0.25 &
-run_subset 2 2 0.25 &
-run_subset 3 3 0.25 &
-run_subset 4 4 0.25 &
-run_subset 5 5 0.25 &
-run_subset 6 6 0.25 &
-run_subset 7 7 0.25 &
+run_subset 0 0 0.1 &
+run_subset 1 1 0.1 &
+run_subset 2 2 0.1 &
+run_subset 3 3 0.1 &
+run_subset 4 4 0.1 &
+run_subset 5 5 0.1 &
+run_subset 6 6 0.1 &
+run_subset 7 7 0.1 &
 wait
 
 

@@ -1,3 +1,21 @@
+# saliency 
+python generate_paper_figures.py stack \
+  --images \
+    /home/brianchc/foveated_diffusion/paper_figures/vary_radius_bbox_saliency/028.png \
+    /home/brianchc/foveated_diffusion/paper_figures/vary_radius_bbox_saliency/033.png \
+    /home/brianchc/foveated_diffusion/paper_figures/vary_radius_bbox_saliency/036.png \
+    /home/brianchc/foveated_diffusion/paper_figures/vary_radius_bbox_saliency/038.png \
+    /home/brianchc/foveated_diffusion/paper_figures/vary_radius_bbox_saliency/041.png \
+    /home/brianchc/foveated_diffusion/paper_figures/vary_radius_bbox_saliency/080.png \
+    /home/brianchc/foveated_diffusion/paper_figures/vary_radius_bbox_saliency/057.png \
+    /home/brianchc/foveated_diffusion/paper_figures/vary_radius_bbox_saliency/070.png \
+    /home/brianchc/foveated_diffusion/paper_figures/vary_radius_bbox_saliency/084.png \
+  -o /home/brianchc/foveated_diffusion/paper_figures/saliency_vs_bbox_vary_radius.png \
+  --num-rows 3 \
+  --num-cols 3 \
+  --pad-px 20 \
+  --downsample 4
+exit
 # saliency
 # idx 000-099
 for idx in $(seq -w 000 099); do
@@ -30,8 +48,9 @@ python generate_paper_figures.py stack \
     /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics_ego_raw_v3/000.png \
     /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_self_driving/003.png \
     /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_drones/015.png \
-  -o /home/brianchc/foveated_diffusion/paper_figures/saliency_final_v2.png \
-  --axis horizontal \
+  -o /home/brianchc/foveated_diffusion/paper_figures/saliency_vs_bbox_vary_radius.png \
+  --num-rows 3 \
+  --num-cols 3 \
   --pad-px 20
 exit 
 

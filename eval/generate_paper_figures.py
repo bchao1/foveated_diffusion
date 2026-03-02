@@ -3,6 +3,7 @@ Generate publication-quality figures for foveated diffusion paper.
 Academic style: faint dashed grids, serif fonts, colorblind-friendly palette.
 """
 
+import glob
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -55,63 +56,84 @@ def r_to_token_percentage(r):
     return r ** 2 + (1 - r ** 2) / 4
 
 
-def generate_runtime_figure(runtime_and_radius_list_path, output_path=None):
+def _load_runtime_curve(npz_path):
+    """Load r_list and runtime_list from npz, return (x, y) for plotting (token % vs speedup). Same logic as single-file runtime plot."""
+    data = np.load(npz_path, allow_pickle=True)
+    r_list = np.asarray(data["r_list"]).flatten()
+    if "video" in npz_path:
+        r_list = np.asarray(data["token_ratio_list"]).flatten()
+    runtime_list = np.asarray(data["runtime_list"]).flatten()
+    if "image" in npz_path:
+        r_list = r_list[1:]
+        runtime_list = runtime_list[1:]
+    if r_list.shape[0] != runtime_list.shape[0]:
+        raise ValueError(
+            f"Mismatch in {npz_path}: r_list length {r_list.shape[0]}, runtime_list length {runtime_list.shape[0]}"
+        )
+    token_ratio = r_to_token_percentage(r_list)
+    token_pct = token_ratio * 100
+    baseline_runtime = np.asarray(runtime_list)[np.argmax(token_pct)]
+    speedup = baseline_runtime / np.asarray(runtime_list)
+    order = np.argsort(token_pct)
+    x = token_pct[order]
+    y = speedup[order]
+    return x, y
+
+
+def generate_runtime_figure(base_dir, output_path=None):
     """
-    Plot speedup vs. token budget (% of original tokens) from saved npz.
+    Plot speedup vs. token budget (% of original tokens) from all runtime_and_radius_list_{mode}.npz in base_dir.
     X = token percentage (ratio = r^2 + (1-r^2)/4), displayed decreasing left-to-right.
     Y = speedup factor vs. full-resolution (r=1) generation (baseline_runtime / runtime).
-    Expects npz with keys: runtime_list, r_list.
+    Each file is one curve; mode (from filename) is used as the legend label.
     """
-    if not os.path.isfile(runtime_and_radius_list_path):
+    pattern = os.path.join(base_dir, "runtime_and_radius_list_*.npz")
+    files = sorted(glob.glob(pattern))
+    if not files:
         raise FileNotFoundError(
-            f"Data file not found: {runtime_and_radius_list_path}. "
-            "Run the runtime experiment first (e.g. inference.py --experiment runtime)."
+            f"No files matching {pattern}. "
+            "Run the runtime experiment first (e.g. inference.py --experiment runtime) for each mode."
         )
+    prefix = "runtime_and_radius_list_"
+    mode_color_order = [COLORS["primary"], COLORS["secondary"], COLORS["accent"]]
+
     with plt.rc_context(FIGURE_RC):
-        data = np.load(runtime_and_radius_list_path, allow_pickle=True)
-        r_list = np.asarray(data["r_list"]).flatten()[1:]
-        runtime_list = np.asarray(data["runtime_list"]).flatten()[1:]
-        if r_list.shape[0] != runtime_list.shape[0]:
-            raise ValueError(
-                f"Mismatch: r_list length {r_list.shape[0]}, runtime_list length {runtime_list.shape[0]}"
-            )
-
-        # X = token percentage (ratio = r^2 + (1-r^2)/4), in %
-        token_ratio = r_to_token_percentage(r_list)
-        token_pct = token_ratio * 100  # e.g. 25 to 100
-
-        # Y = speedup vs full res (r=1): baseline_runtime / runtime
-        baseline_runtime = np.asarray(runtime_list)[np.argmax(token_pct)]  # runtime at full res (max tokens)
-        speedup = baseline_runtime / np.asarray(runtime_list)
-        # Sort by token_pct increasing so curve is well-defined; then invert x so % decreases left→right
-        order = np.argsort(token_pct)
-        x = token_pct[order]
-        y = speedup[order]
-
         fig, ax = plt.subplots(figsize=(4, 4))
         setup_academic_axes(ax, grid=True)
 
-        ax.plot(
-            x, y,
-            color=COLORS["primary"],
-            linewidth=2.0,
-            marker="o",
-            markersize=4,
-            markeredgecolor="white",
-            markeredgewidth=0.8,
-            label="Speedup",
-            zorder=3,
-        )
+        x_min_global = np.inf
+        x_max_global = -np.inf
+
+        for idx, npz_path in enumerate(files):
+            basename = os.path.basename(npz_path)
+            stem = os.path.splitext(basename)[0]
+            if stem.startswith(prefix):
+                mode = stem[len(prefix):]
+            else:
+                mode = stem
+            x, y = _load_runtime_curve(npz_path)
+            color = mode_color_order[idx % len(mode_color_order)]
+            ax.plot(
+                x, y,
+                color=color,
+                linewidth=2.0,
+                marker="o",
+                markersize=4,
+                markeredgecolor="white",
+                markeredgewidth=0.8,
+                label=mode,
+                zorder=3,
+            )
+            x_min_global = min(x_min_global, x.min())
+            x_max_global = max(x_max_global, x.max())
 
         ax.set_xlabel("Tokens (% of original)")
         ax.set_ylabel("Speedup (vs. full resolution)")
         ax.set_title("Inference speedup vs. token budget")
-        ax.set_xlim(x.min() - 1, x.max() + 1)
-        ax.set_ylim(bottom=1.0)  # speedup ≥ 1 (full res = 1×)
-        ax.invert_xaxis()  # decreasing % left to right: 100% on left, 25% on right
-
-        # Exactly 4 x-ticks: first and last (data extent) plus two in between
-        xticks = np.linspace(x.min(), x.max(), 4)
+        ax.set_xlim(x_min_global - 1, x_max_global + 1)
+        ax.set_ylim(bottom=1.0)
+        ax.invert_xaxis()
+        xticks = np.linspace(x_min_global, x_max_global, 4)
         ax.set_xticks(xticks)
         ax.set_xticklabels([f"{t:.0f}" for t in xticks])
         ax.legend(loc="upper left", framealpha=0.95, edgecolor="#cccccc")
@@ -119,8 +141,7 @@ def generate_runtime_figure(runtime_and_radius_list_path, output_path=None):
         fig.tight_layout(pad=1.0)
 
         if output_path is None:
-            base = os.path.splitext(runtime_and_radius_list_path)[0]
-            output_path = os.path.join(os.path.dirname(base), "runtime_figure.pdf")
+            output_path = os.path.join(base_dir, "runtime_figure.pdf")
         out_dir = os.path.dirname(output_path)
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
@@ -322,6 +343,78 @@ def stack_images(
         stacked = np.concatenate(parts, axis=0)
     else:
         raise ValueError(f"axis must be 'horizontal'/'h' or 'vertical'/'v', got {axis!r}")
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
+    imageio.imwrite(output_path, stacked)
+    print(f"Saved: {output_path}")
+    return stacked
+
+
+def stack_images_grid(images, output_path, num_rows, num_cols, pad_px=10):
+    """
+    Stack a list of images into a num_rows x num_cols grid with padding and save.
+
+    Args:
+        images: List of numpy arrays (H, W) or (H, W, C). Length must equal num_rows * num_cols.
+        output_path: Path to save the stacked image (e.g. .png).
+        num_rows: Number of rows in the grid.
+        num_cols: Number of columns in the grid.
+        pad_px: Padding in pixels between adjacent images (default 10).
+
+    Returns:
+        The stacked image array (before saving).
+    """
+    import imageio
+
+    n = num_rows * num_cols
+    if len(images) != n:
+        raise ValueError(
+            f"Number of images ({len(images)}) must equal num_rows * num_cols ({num_rows} * {num_cols} = {n})"
+        )
+
+    if not images:
+        raise ValueError("images must be a non-empty list")
+
+    # Normalize to (H, W, C) and common dtype
+    normalized = []
+    for img in images:
+        img = np.asarray(img)
+        if img.ndim == 2:
+            img = np.expand_dims(img, axis=-1)
+        normalized.append(img)
+
+    dtype = normalized[0].dtype
+    C = max(im.shape[2] for im in normalized)
+    for i in range(len(normalized)):
+        if normalized[i].shape[2] != C:
+            normalized[i] = np.repeat(normalized[i], C, axis=2)
+
+    # Build each row: horizontal stack of num_cols images
+    row_images = []
+    for r in range(num_rows):
+        row_list = normalized[r * num_cols : (r + 1) * num_cols]
+        max_h = max(im.shape[0] for im in row_list)
+        parts = []
+        for k, im in enumerate(row_list):
+            if k > 0:
+                parts.append(np.full((max_h, pad_px, C), 255, dtype=dtype))
+            if im.shape[0] < max_h:
+                pad = np.full((max_h - im.shape[0], im.shape[1], C), 255, dtype=dtype)
+                im = np.concatenate([im, pad], axis=0)
+            parts.append(im)
+        row_images.append(np.concatenate(parts, axis=1))
+
+    # Vertical stack of rows (same width per row, pad if needed)
+    max_w = max(im.shape[1] for im in row_images)
+    parts = []
+    for k, im in enumerate(row_images):
+        if k > 0:
+            parts.append(np.full((pad_px, max_w, C), 255, dtype=dtype))
+        if im.shape[1] < max_w:
+            pad = np.full((im.shape[0], max_w - im.shape[1], C), 255, dtype=dtype)
+            im = np.concatenate([im, pad], axis=1)
+        parts.append(im)
+    stacked = np.concatenate(parts, axis=0)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
     imageio.imwrite(output_path, stacked)
@@ -745,7 +838,8 @@ def generate_foveation_trajectory_figure(
                 frame_indices = list(range(num_rows))
             else:
                 frame_indices = np.linspace(0, num_frames - 1, num_rows, dtype=int)
-                frame_indices = list(range(num_rows))
+                if "radius" in base_dir:
+                    frame_indices = list(range(num_rows))
 
             col1_frames = [row1_imgs[i] for i in frame_indices]
             col1 = vertical_stack(col1_frames)
@@ -819,7 +913,7 @@ if __name__ == "__main__":
         "--num-rows",
         type=int,
         default=None,
-        help="Number of rows for baselines (two prompt triplets per row) or foveation_trajectory (frames per trajectory column)",
+        help="Number of rows for baselines, foveation_trajectory, or stack figure (stack: grid is num-rows x num-cols)",
     )
 
     parser.add_argument(
@@ -833,9 +927,14 @@ if __name__ == "__main__":
         ),
     )
 
-    # stack figure: list of images, axis, pad_px
-    parser.add_argument("--images", type=str, nargs="+", default=None, help="Image paths for stack figure (required when figure=stack)")
-    parser.add_argument("--axis", type=str, default="horizontal", choices=["horizontal", "h", "vertical", "v"], help="Stack direction for stack figure: horizontal or vertical")
+    # stack figure: list of images in a num_rows x num_cols grid
+    parser.add_argument(
+        "--images",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Image paths for stack figure (required when figure=stack). Count must equal --num-rows * --num-cols.",
+    )
     parser.add_argument("--pad-px", type=int, default=10, help="Padding in pixels between images for stack figure")
 
     # video / stack_folders figure: folder of images -> video or per-subfolder stack
@@ -859,8 +958,7 @@ if __name__ == "__main__":
     default_base = os.path.join(script_dir, "..", "results", "eccv2026_final_v2")
 
     if args.figure == "runtime":
-        file_path = os.path.join(args.base_dir, "runtime_and_radius_list.npz")
-        generate_runtime_figure(file_path, output_path=args.output)
+        generate_runtime_figure(args.base_dir, output_path=args.output)
     elif args.figure == "runtime_quality":
         file_path = os.path.join(args.base_dir, "runtime_and_radius_list.npz")
         generate_runtime_quality_two_col(file_path, output_path=args.output)
@@ -895,14 +993,27 @@ if __name__ == "__main__":
     elif args.figure == "stack":
         if not args.images:
             raise ValueError("--images is required for figure=stack (provide one or more image paths)")
+        if args.num_rows is None:
+            raise ValueError("--num-rows is required for figure=stack (grid layout)")
+        num_rows = args.num_rows
+        num_cols = args.num_cols
+        n = num_rows * num_cols
+        if len(args.images) != n:
+            raise ValueError(
+                f"Number of images ({len(args.images)}) must equal num_rows * num_cols ({num_rows} * {num_cols} = {n})"
+            )
         import imageio
         images = [imageio.imread(p) for p in args.images]
+        if args.downsample:
+            print(f"Downsampling images by factor {args.downsample}")
+            images = [_downsample_by_factor(img, args.downsample) for img in images]
         out = args.output or "stacked.png"
-        stack_images(
+        stack_images_grid(
             images,
             output_path=out,
-            axis=args.axis,
-            pad_px=args.pad_px,
+            num_rows=num_rows,
+            num_cols=num_cols,
+            pad_px=int(args.pad_px // args.downsample),
         )
     elif args.figure == "video":
         if not args.folder:
