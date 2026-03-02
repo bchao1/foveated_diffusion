@@ -13,9 +13,9 @@ import numpy as np
 from matplotlib.patches import FancyBboxPatch
 from matplotlib.ticker import AutoMinorLocator
 
-# Import shared style constants from the paper figures module
+# Import shared style constants and colors from the paper figures module
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from generate_paper_figures import FIGURE_RC, setup_academic_axes
+from generate_paper_figures import FIGURE_RC, COLORS, setup_academic_axes
 
 # Tunable aesthetics
 FIGSIZE = (8.0, 4.0)
@@ -24,29 +24,28 @@ Y_AXIS_MAX = 100.0
 TOP_MARGIN_FRACTION = 0.85  # lower = more whitespace above axes for value labels
 
 BAR_WIDTH = 0.08
-PAIR_INNER_GAP = BAR_WIDTH  # center-to-center = bar width → bars touch (no gap)
+# Slight spacing between bars in a pair: previous center-to-center was BAR_WIDTH (touching),
+# now widened by BAR_WIDTH / 8.
+PAIR_INNER_GAP = BAR_WIDTH * (1.0 + 1.0 / 8.0)
 PAIR_OUTER_GAP = 0.15  # extra gap between adjacent pairs (after second bar center)
 BAR_CORNER_RADIUS_FRAC = 0.0
 
-COLOR1 = "#549bcf"
-COLOR2 = "#dc65aa"
-BAR_EDGE_COLOR = "#555555"
-BAR_EDGE_WIDTH = 0.6
+# Colors matched to runtime figure palette
+COLOR1 = COLORS["primary"]
+COLOR2 = COLORS["secondary"]
+BAR_EDGE_COLOR = None  # no explicit edge color; bars will have no outline
+BAR_EDGE_WIDTH = 0.0
 
 ERROR_BAR_LINEWIDTH = 1.0
 ERROR_BAR_CAPTHICK = 1.0
 ERROR_BAR_CAPSIZE = 4
-ERROR_BAR_COLOR = "#333333"
+ERROR_BAR_COLOR = FIGURE_RC.get("xtick.color", "#333333")
 
 VALUE_LABEL_OFFSET_PT = 6.0
 
-PAIR_LABEL_FONT_SIZE = 12
-METHOD_LABEL_FONT_SIZE = 11
-METHOD_LABEL_ROTATION = 25
-
 PAIR_ORDER = [
-    ("naive_vs_ours", "Naive vs Ours"),
     ("ours_vs_high_res", "Ours vs High-res"),
+    ("naive_vs_ours", "Naive vs Ours"),
     ("naive_vs_high_res", "Naive vs High-res"),
 ]
 
@@ -167,7 +166,8 @@ def generate_user_study_figure(json_path, output_path=None):
             linewidth=BAR_EDGE_WIDTH,
             zorder=3,
         )
-        _add_rounded_bars(ax, bars)
+        # With zero-width, no-outline bars, rounded patches are visually unnecessary;
+        # keep simple rect bars for a cleaner look.
 
         ax.errorbar(
             x_positions,
@@ -198,19 +198,10 @@ def generate_user_study_figure(json_path, output_path=None):
         ax.set_ylim(0.0, Y_AXIS_MAX)
         ax.set_yticks(Y_TICKS)
         ax.set_xticks(x_positions)
-        ax.set_xticklabels(method_labels, rotation=METHOD_LABEL_ROTATION, fontsize=METHOD_LABEL_FONT_SIZE)
-
-        # Pair labels centered under each method pair.
-        for xc, label in zip(pair_centers, pair_labels):
-            ax.text(
-                xc,
-                -0.20,
-                label,
-                ha="center",
-                va="top",
-                transform=ax.get_xaxis_transform(),
-                fontsize=PAIR_LABEL_FONT_SIZE,
-            )
+        # Show only method names (Naive, Ours, High-res) on the x-axis,
+        # with font controlled entirely by FIGURE_RC (no rotation).
+        ax.set_xticklabels(method_labels)
+        ax.set_title("User preference comparison")
 
         ax.set_xlim(min(x_positions) - BAR_WIDTH, max(x_positions) + BAR_WIDTH)
         fig.tight_layout(pad=1.0)
@@ -237,7 +228,7 @@ def main():
     parser.add_argument(
         "json_path",
         nargs="?",
-        default="eval/user_study/overall_pairwise_metrics.json",
+        default="overall_pairwise_metrics.json",
         help="Path to overall_pairwise_metrics.json",
     )
     parser.add_argument(

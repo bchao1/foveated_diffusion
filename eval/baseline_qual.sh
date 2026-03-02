@@ -8,13 +8,11 @@ lora_checkpoint="${ckpt_folder}/step-${step}.safetensors"
 CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment high_res \
     --decode_mode direct \
-    --output_dir ../results/eccv2026_final_v2/baseline_qualitative_v4 \
-    --seed 42 \
+    --output_dir ../results/eccv2026_final_v2/teaser \
+    --seed 30 \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
-    --full_eval \
-    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/claude_prompts_extended_v2.csv \
-    --num_prompts 100
+    --prompt "A lion lounges calmly, displaying its powerful physique, with a soft focus highlighting its majestic mane and intense gaze."
 exit 
 
 CUDA_VISIBLE_DEVICES=$1 python inference.py \

@@ -77,6 +77,9 @@ def _load_runtime_curve(npz_path):
     order = np.argsort(token_pct)
     x = token_pct[order]
     y = speedup[order]
+    print(x)
+    print(y)
+    exit()
     return x, y
 
 
