@@ -1,67 +1,60 @@
 {
   "files_used": [
-    "participant_0.csv"
+    "participant_0.csv",
+    "participant_2.csv",
+    "participant_3.csv",
+    "participant_4.csv",
+    "participant_5.csv",
+    "participant_6.csv",
+    "participant_7.csv",
+    "participant_8.csv",
+    "participant_9.csv"
   ],
-  "files_used_count": 1,
+  "files_used_count": 9,
   "pairwise_overall": {
     "naive_vs_high_res": {
-      "ci95_error_bar_length": {
-        "high_res": 0.0,
-        "naive": 0.0,
-        "type": "95%_confidence_interval_half_width"
-      },
       "error_bar_length": {
-        "high_res": 0.0,
-        "naive": 0.0,
+        "high_res": 0.04148106811963355,
+        "naive": 0.04148106811963355,
         "type": "sem"
       },
       "mean_preference": {
-        "high_res": 1.0,
-        "naive": 0.0
+        "high_res": 0.9111111111111112,
+        "naive": 0.08888888888888889
       },
-      "n_files": 1,
+      "n_files": 9,
       "pair": [
         "naive",
         "high_res"
       ]
     },
     "naive_vs_ours": {
-      "ci95_error_bar_length": {
-        "naive": 0.0,
-        "ours": 0.0,
-        "type": "95%_confidence_interval_half_width"
-      },
       "error_bar_length": {
-        "naive": 0.0,
-        "ours": 0.0,
+        "naive": 0.03203489609630777,
+        "ours": 0.03203489609630777,
         "type": "sem"
       },
       "mean_preference": {
-        "naive": 0.15,
-        "ours": 0.85
+        "naive": 0.1111111111111111,
+        "ours": 0.8888888888888888
       },
-      "n_files": 1,
+      "n_files": 9,
       "pair": [
         "naive",
         "ours"
       ]
     },
     "ours_vs_high_res": {
-      "ci95_error_bar_length": {
-        "high_res": 0.1,
-        "ours": 0.1,
-        "type": "95%_confidence_interval_half_width"
-      },
       "error_bar_length": {
-        "high_res": 0.1,
-        "ours": 0.1,
+        "high_res": 0.04722222222222222,
+        "ours": 0.04722222222222222,
         "type": "sem"
       },
       "mean_preference": {
-        "high_res": 0.5,
-        "ours": 0.5
+        "high_res": 0.6222222222222222,
+        "ours": 0.37777777777777777
       },
-      "n_files": 1,
+      "n_files": 9,
       "pair": [
         "ours",
         "high_res"
