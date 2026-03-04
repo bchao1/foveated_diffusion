@@ -1102,6 +1102,9 @@ def run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downs
     args.num_frames = 20
     # add first one again in the beginning
     token_ratio_list = np.linspace(0.25, 1.0, args.num_frames)
+    # reverse list 
+    token_ratio_list = token_ratio_list[::-1] # 1 to 0.25
+    token_ratio_list = np.concatenate([[1], token_ratio_list]) # 1 to 0.25
     # HR: r^2 tokens, LR: (1-r^2)/4 tokens -> total = (1 + 3r^2)/4 tokens = K
     # min tokens K = 0.25 (r = 0) to K = 1.0 (r = 1.0)
     # solve for r: r = sqrt((4K - 1) / 3)
@@ -1125,17 +1128,19 @@ def run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downs
             mask_to_save = _gaussian_blur_mask_2d(mask_to_save, upscale, pipe.device, mask_to_save.dtype)
         save_image(mask_to_save, os.path.join(output_dir, f"foveation_mask_{r_idx_str}.png"))
         
-        # Run pipeline
-        torch.cuda.empty_cache()
-        start_time = time.time()
-        
+        # Run pipeline: average runtime over multiple runs with identical parameters
         vis_kwargs = {}
         foveation_mask_to_use = foveation_mask
         if getattr(args, "save_vis_vlow_x0", False):
             vis_kwargs["vis_vlow_x0_folder"] = os.path.join(output_dir, "vis_vlow_x0")
             if getattr(args, "vis_vlow_x0_steps", None):
                 vis_kwargs["vis_vlow_x0_steps"] = [int(x) for x in args.vis_vlow_x0_steps.split(",")]
-            foveation_mask_to_use = torch.zeros(args.height // 16, args.width // 16, device=pipe.device, dtype=torch.float32)
+            foveation_mask_to_use = torch.zeros(
+                args.height // 16,
+                args.width // 16,
+                device=pipe.device,
+                dtype=torch.float32,
+            )
         pipe_kwargs = dict(
             prompt=args.prompt,
             height=args.height,
@@ -1155,14 +1160,26 @@ def run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downs
         )
         if foveation_mask_to_use is foveation_mask:
             pipe_kwargs["full_res_foveation_mask"] = full_res_foveation_mask
-        image = pipe(**pipe_kwargs)
-        
-        end_time = time.time()
-        runtime = end_time - start_time
-        print(f"Radius {r:.2f} | Time: {runtime:.2f}s")
-        runtime_list.append(runtime)
-        
-        image.save(os.path.join(output_dir, f"img_{r_idx_str}.png"))
+
+        num_repeats = 5
+        runtimes = []
+        saved_image = None
+        for rep in range(num_repeats):
+            torch.cuda.empty_cache()
+            start_time = time.time()
+            image = pipe(**pipe_kwargs)
+            end_time = time.time()
+            runtimes.append(end_time - start_time)
+            # Save only the first image for this radius to avoid clutter
+            if rep == 0:
+                saved_image = image
+
+        avg_runtime = float(np.mean(runtimes))
+        print(f"Radius {r:.2f} | Avg Time over {num_repeats} runs: {avg_runtime:.2f}s")
+        runtime_list.append(avg_runtime)
+
+        if saved_image is not None:
+            saved_image.save(os.path.join(output_dir, f"img_{r_idx_str}.png"))
     
     # save runtime and radius list to numpy
     np.savez(os.path.join(output_dir, "runtime_and_radius_list.npz"), runtime_list=runtime_list, r_list=r_list)

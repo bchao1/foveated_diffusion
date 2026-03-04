@@ -1,16 +1,17 @@
 # video for baseline comparisons 
+for id in $(seq 1 100); do
 python generate_paper_figures.py baselines_video \
   --base-dir /home/brianchc/foveated_diffusion/results/video_results/baseline \
   --baselines high_res naive ours \
-  --image-ids 3 11 \
+  --image-ids $id \
   --pad-px 10 \
   --no-horizontal-padding \
-  --draw-circle-overlay \
   --outline-width-frac 0.005 \
   --outline-color "255,0,0" \
   --num-cols 6 \
   --downsample 2 \
-  --output /home/brianchc/foveated_diffusion/paper_figures/baseline_video.png
+  --output /home/brianchc/foveated_diffusion/paper_figures/baseline_video/${id}.png
+done
 exit
 
 
