@@ -831,10 +831,19 @@ def run_user_study(pipe, args, output_dir, token_upsampler, token_downsampler):
     num_prompts = getattr(args, "num_prompts", None) or 5
     all_prompts = load_prompt_dataset(args.prompt_dataset_path)
     k = min(num_prompts, len(all_prompts))
-    prompts = random.sample(all_prompts, k)
+    if num_prompts == len(all_prompts):
+        prompts = all_prompts
+    else:
+        prompts = random.sample(all_prompts, k)
     height, width = args.height, args.width
     device = pipe.device
     print(f"Running user study with {len(prompts)} prompts, same seed={args.seed} (LoRA only for 'ours')")
+
+    # Reuse outline args and behavior from foveation_trajectory_grid
+    outline_width_frac = getattr(args, "outline_width_frac", 0.01)
+    outline_color = getattr(args, "outline_color", (255, 0, 0))
+    if isinstance(outline_color, str):
+        outline_color = tuple(int(x) for x in outline_color.split(","))
 
     pipe.clear_lora(verbose=0)
     # Collect (subdir, prompt, foveation_mask, full_res_foveation_mask, center) for second pass
@@ -857,11 +866,37 @@ def run_user_study(pipe, args, output_dir, token_upsampler, token_downsampler):
             os.path.join(subdir, "img_0000000000.png"),
             os.path.join(subdir, "img_high_res.png"),
         )
-        run_naive_mixed_res(pipe, args, subdir, prompt, 0, token_upsampler, token_downsampler, foveation_mask=foveation_mask, full_res_foveation_mask=full_res_foveation_mask)
+
+        # Naive mixed-resolution baseline with optional foveation outline overlay
+        run_naive_mixed_res(
+            pipe,
+            args,
+            subdir,
+            prompt,
+            0,
+            token_upsampler,
+            token_downsampler,
+            foveation_mask=foveation_mask,
+            full_res_foveation_mask=full_res_foveation_mask,
+        )
         os.rename(
             os.path.join(subdir, "img_0000000000.png"),
             os.path.join(subdir, "img_naive.png"),
         )
+        if getattr(args, "foveation_outline", True):
+            naive_path = os.path.join(subdir, "img_naive.png")
+            naive_img = imageio.imread(naive_path)
+            if naive_img.ndim == 2:
+                naive_img = np.stack([naive_img] * 3, axis=-1)
+            draw_foveation_outline(
+                naive_img,
+                full_res_foveation_mask,
+                height,
+                width,
+                outline_width_frac=outline_width_frac,
+                color=outline_color,
+            )
+            imageio.imwrite(naive_path, naive_img)
 
         # Save full-res mask (optionally blurred to match pipeline merge)
         mask_to_save = full_res_foveation_mask.unsqueeze(0).unsqueeze(0).float().to(device)
@@ -893,11 +928,35 @@ def run_user_study(pipe, args, output_dir, token_upsampler, token_downsampler):
         print(f"Loaded DiT checkpoint from {args.dit_checkpoint}")
         
     for idx, (subdir, prompt, foveation_mask, full_res_foveation_mask, _) in enumerate(items):
-        run_ours(pipe, args, subdir, prompt, 0, token_upsampler, token_downsampler, foveation_mask=foveation_mask, full_res_foveation_mask=full_res_foveation_mask)
+        run_ours(
+            pipe,
+            args,
+            subdir,
+            prompt,
+            0,
+            token_upsampler,
+            token_downsampler,
+            foveation_mask=foveation_mask,
+            full_res_foveation_mask=full_res_foveation_mask,
+        )
         os.rename(
             os.path.join(subdir, "img_0000000000.png"),
             os.path.join(subdir, "img_ours.png"),
         )
+        if getattr(args, "foveation_outline", True):
+            ours_path = os.path.join(subdir, "img_ours.png")
+            ours_img = imageio.imread(ours_path)
+            if ours_img.ndim == 2:
+                ours_img = np.stack([ours_img] * 3, axis=-1)
+            draw_foveation_outline(
+                ours_img,
+                full_res_foveation_mask,
+                height,
+                width,
+                outline_width_frac=outline_width_frac,
+                color=outline_color,
+            )
+            imageio.imwrite(ours_path, ours_img)
         print(f"Saved {idx:05d}/ img_ours.png")
     if args.lora_checkpoint is not None:
         pipe.clear_lora(verbose=0)
