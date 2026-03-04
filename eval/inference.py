@@ -1142,7 +1142,6 @@ def run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downs
         print(f"Total tokens: {total_tokens}")
         print("--------------------------------")
         actual_token_ratio_list.append(token_ratio.item())
-        
         # Run pipeline: average runtime over multiple runs with identical parameters
         vis_kwargs = {}
 
