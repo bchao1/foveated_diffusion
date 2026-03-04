@@ -16,15 +16,15 @@
   "pairwise_overall": {
     "naive_vs_high_res": {
       "error_bar_length": {
-        "high_res": 0.01894277005168351,
-        "naive": 0.01894277005168351,
+        "high_res": 0.02062823862694593,
+        "naive": 0.02062823862694593,
         "type": "sem"
       },
       "mean_preference": {
-        "high_res": 0.9193504594820384,
-        "naive": 0.08064954051796158
+        "high_res": 0.9081632653061225,
+        "naive": 0.09183673469387756
       },
-      "n_files": 38,
+      "n_files": 196,
       "pair": [
         "naive",
         "high_res"
@@ -32,15 +32,15 @@
     },
     "naive_vs_ours": {
       "error_bar_length": {
-        "naive": 0.02078741669450483,
-        "ours": 0.02078741669450483,
+        "naive": 0.023604525275768565,
+        "ours": 0.023604525275768565,
         "type": "sem"
       },
       "mean_preference": {
-        "naive": 0.1073015873015873,
-        "ours": 0.8926984126984127
+        "naive": 0.12626262626262627,
+        "ours": 0.8737373737373737
       },
-      "n_files": 40,
+      "n_files": 198,
       "pair": [
         "naive",
         "ours"
@@ -48,15 +48,15 @@
     },
     "ours_vs_high_res": {
       "error_bar_length": {
-        "high_res": 0.04045862616882688,
-        "ours": 0.04045862616882688,
+        "high_res": 0.03504156132314135,
+        "ours": 0.03504156132314135,
         "type": "sem"
       },
       "mean_preference": {
-        "high_res": 0.5355753968253967,
-        "ours": 0.4644246031746033
+        "high_res": 0.5270935960591133,
+        "ours": 0.4729064039408867
       },
-      "n_files": 40,
+      "n_files": 203,
       "pair": [
         "ours",
         "high_res"
