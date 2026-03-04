@@ -932,13 +932,19 @@ def generate_baseline_video_grid(
     center_crop_aspect=None,
 ):
     """
-    Video analogue of generate_baseline_comparison_grid.
+    Video analogue of generate_baseline_comparison_grid with flexible number of videos.
 
-    - Expects exactly two video IDs (video_ids) and three baselines.
+    New layout:
     - For each baseline and video ID, loads base_dir / baseline / {id}.mp4.
-    - For each video, extracts num_rows frames uniformly spaced in time.
-    - Builds a grid with num_rows rows and num_cols columns, where columns correspond
-      to [baseline_0 vid_0, baseline_1 vid_0, baseline_2 vid_0, baseline_0 vid_1, ...].
+    - For each video, extracts num_cols frames uniformly spaced in time.
+    - For a fixed video ID, frames are stacked horizontally (columns = num_cols) and
+      baselines are stacked vertically (rows = num_baselines), forming a grid of
+      shape [num_baselines x num_cols].
+    - These per-video grids are then stacked vertically in the order of video_ids,
+      so the final grid has:
+        rows  = len(baselines) * len(video_ids)
+        cols  = num_cols
+        total = len(video_ids) * num_cols * len(baselines) images.
 
     Padding: pad_px is the default; pad_px_horizontal/pad_px_vertical override for grid spacing
     (e.g. pad_px_horizontal=0 to remove horizontal padding between images).
@@ -951,21 +957,20 @@ def generate_baseline_video_grid(
     if not os.path.isdir(base_dir):
         raise FileNotFoundError(f"Base dir not found: {base_dir}")
 
-    if len(video_ids) != 2:
-        raise ValueError(f"generate_baseline_video_grid expects exactly 2 video IDs, got {len(video_ids)}")
     num_baselines = len(baselines)
-    if num_baselines != 3:
-        raise ValueError(f"generate_baseline_video_grid expects exactly 3 baselines, got {num_baselines}")
+    num_videos = len(video_ids)
+    if num_baselines == 0:
+        raise ValueError("generate_baseline_video_grid expects at least one baseline")
+    if num_videos == 0:
+        raise ValueError("generate_baseline_video_grid expects at least one video ID")
 
-    expected_cols = num_baselines * len(video_ids)
-    if num_cols != expected_cols:
-        raise ValueError(
-            f"num_cols must be {expected_cols} (baselines * videos), got {num_cols}. "
-            "Set --num-cols accordingly."
-        )
+    frames_per_video = num_cols
+    total_rows = num_baselines * num_videos
+    if total_rows <= 0:
+        raise ValueError("Total rows for baseline video grid must be positive")
 
     # Extract frames per baseline and video ID
-    frames_bv = []  # shape: [baseline][video][num_rows]
+    frames_bv = []  # shape: [baseline][video][frames_per_video]
     for baseline in baselines:
         baseline_frames = []
         for vid_id in video_ids:
@@ -973,7 +978,7 @@ def generate_baseline_video_grid(
             video_path = os.path.join(base_dir, baseline, vid_name)
             frames = _extract_equally_spaced_frames(
                 video_path,
-                num_rows,
+                frames_per_video,
                 downsample_factor=downsample_factor,
                 draw_circle_overlay=draw_circle_overlay,
                 outline_width_frac=outline_width_frac,
@@ -984,17 +989,25 @@ def generate_baseline_video_grid(
         frames_bv.append(baseline_frames)
 
     # Build images list in row-major order for stack_images_grid:
-    # row r, then over videos, then baselines.
+    # For each video (in video_ids order), for each baseline (in baselines order),
+    # append its frames left-to-right. This yields:
+    #   rows = num_videos * num_baselines
+    #   cols = frames_per_video (= num_cols)
     images = []
-    for r in range(num_rows):
-        for v in range(len(video_ids)):
-            for b in range(num_baselines):
-                images.append(frames_bv[b][v][r])
+    for v in range(num_videos):
+        for b in range(num_baselines):
+            frames = frames_bv[b][v]
+            if len(frames) != frames_per_video:
+                raise ValueError(
+                    f"Expected {frames_per_video} frames for baseline '{baselines[b]}' "
+                    f"video '{video_ids[v]}', got {len(frames)}"
+                )
+            images.extend(frames)
 
     stacked = stack_images_grid(
         images,
         output_path=output_path,
-        num_rows=num_rows,
+        num_rows=total_rows,
         num_cols=num_cols,
         pad_px=pad_px,
         pad_px_horizontal=pad_px_horizontal,
@@ -1321,13 +1334,14 @@ if __name__ == "__main__":
         )
     elif args.figure == "baselines_video":
         base_dir = args.base_dir or default_base
-        if args.image_ids is None or len(args.image_ids) != 2:
+        if args.image_ids is None or len(args.image_ids) == 0:
             raise ValueError(
-                "figure=baselines_video expects exactly 2 --image-ids values (video IDs corresponding to {id}.mp4)."
+                "figure=baselines_video expects at least one --image-ids value "
+                "(video IDs corresponding to {id}.mp4)."
             )
-        if args.num_rows is None:
-            raise ValueError("--num-rows is required for figure=baselines_video (frames per video).")
-        num_rows = args.num_rows
+        # New layout: num_cols controls the number of frames per video (horizontal),
+        # and rows are determined by baselines x number of videos.
+        num_rows = len(args.baselines) * len(args.image_ids)
         num_cols = args.num_cols
         pad_px = args.pad_px
         pad_px_horizontal = 0 if getattr(args, "no_horizontal_padding", False) else None

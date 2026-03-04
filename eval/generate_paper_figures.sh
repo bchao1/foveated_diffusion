@@ -1,3 +1,44 @@
+# video for baseline comparisons 
+python generate_paper_figures.py baselines_video \
+  --base-dir /home/brianchc/foveated_diffusion/results/video_results/baseline \
+  --baselines high_res naive ours \
+  --image-ids 3 11 \
+  --pad-px 10 \
+  --no-horizontal-padding \
+  --draw-circle-overlay \
+  --outline-width-frac 0.005 \
+  --outline-color "255,0,0" \
+  --num-cols 6 \
+  --downsample 2 \
+  --output /home/brianchc/foveated_diffusion/paper_figures/baseline_video.png
+exit
+
+
+# randomized baseline figure
+python generate_paper_figures.py stack \
+  --images \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00008.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00010.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00035.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00029.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00061.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00003.png \
+  -o /home/brianchc/foveated_diffusion/paper_figures/baseline_comparison_randomized.png \
+  --num-rows 3 \
+  --num-cols 2 \
+  --pad-px 20 \
+  --downsample 2
+exit
+
+
+# stacked randomized baseline figure
+python generate_paper_figures.py stack_folders \
+  --folder /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized \
+  --image-glob "img*.png" \
+  --pad-px 20 \
+  -o /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked
+exit
+
 # video frame grid for teaser
 for video_folder in 720p_cam_prompt 720p_no_cam_prompt; do
   for video_id in 53 56 57 62 75 79 81 85 87 88 91; do
@@ -27,22 +68,6 @@ for video_folder in 720p_cam_prompt 720p_no_cam_prompt; do
       --output /home/brianchc/foveated_diffusion/paper_figures/videos/${video_folder}/ours_${video_id}.png
   done
 done
-exit
-
-# video for baseline comparisons 
-python generate_paper_figures.py baselines_video \
-  --base-dir /home/brianchc/foveated_diffusion/results/video_results/baseline \
-  --baselines high_res naive ours \
-  --image-ids 3 11 \
-  --num-rows 5 \
-  --pad-px 10 \
-  --no-vertical-padding \
-  --draw-circle-overlay \
-  --outline-width-frac 0.005 \
-  --outline-color "255,0,0" \
-  --num-cols 6 \
-  --downsample 2 \
-  --output /home/brianchc/foveated_diffusion/paper_figures/baseline_video.png
 exit
 
 # saliency 
