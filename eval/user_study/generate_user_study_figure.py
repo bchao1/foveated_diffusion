@@ -216,7 +216,7 @@ def generate_user_study_figure(json_path, output_path=None):
         fig.subplots_adjust(top=TOP_MARGIN_FRACTION)
 
         if output_path is None:
-            output_path = os.path.join(os.path.dirname(json_path), "user_study_pairwise_bars.pdf")
+            output_path = os.path.join(os.path.dirname(json_path), "user_study.pdf")
         out_dir = os.path.dirname(output_path)
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)

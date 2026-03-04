@@ -1,12 +1,16 @@
 # video frame grid for teaser
-for video_id in 24 81 87; do
-python generate_paper_figures.py video_grid \
-  --folder /home/brianchc/foveated_diffusion/results/video_results/saliency/480p_cam_prompt/${video_id}.mp4 \
-  --image-glob "*.png" \
-  --num-rows 1 \
-  --num-cols 3 \
-  --pad-px 20 \
-  --output /home/brianchc/foveated_diffusion/paper_figures/videos/baseline/ours_${video_id}.png
+for video_folder in 720p_cam_prompt 720p_no_cam_prompt; do
+  for video_id in $(seq 1 100); do
+    echo "Generating video grid for ${video_folder}/${video_id}"
+    python generate_paper_figures.py video_grid \
+      --folder /home/brianchc/foveated_diffusion/results/video_results/saliency/${video_folder}/${video_id}.mp4 \
+      --image-glob "*.png" \
+      --num-rows 1 \
+      --num-cols 3 \
+      --pad-px 5 \
+      --center-crop-aspect "4:3" \
+      --output /home/brianchc/foveated_diffusion/paper_figures/videos/${video_folder}/ours_${video_id}.png
+  done
 done
 exit
 

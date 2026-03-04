@@ -467,6 +467,7 @@ def stack_folders(
     output_folder,
     image_glob="*.png",
     pad_px=10,
+    center_crop_aspect=None,
 ):
     """
     For each subfolder of input_folder, horizontally stack its images into one image.
@@ -511,6 +512,8 @@ def stack_folders(
             print(f"Warning: no images matching {image_glob!r} in {sub_path}, skipping.")
             continue
         images = [imageio.imread(p) for p in paths]
+        if center_crop_aspect:
+            images = [_center_crop_to_aspect_ratio(img, center_crop_aspect) for img in images]
         out_path = os.path.join(output_folder, f"{sub}.png")
         stack_images(images, output_path=out_path, axis="horizontal", pad_px=pad_px)
         outputs.append(out_path)
@@ -522,6 +525,7 @@ def folder_to_video(
     output_path=None,
     fps=10,
     image_glob="*.png",
+    center_crop_aspect=None,
 ):
     """
     Load images from a folder (sorted by filename), merge into a video, and save in the same folder.
@@ -557,6 +561,7 @@ def folder_to_video(
         img = imageio.imread(p)
         if img.ndim == 2:
             img = np.expand_dims(img, axis=-1)
+        img = _center_crop_to_aspect_ratio(img, center_crop_aspect)
         images.append(img)
 
     with imageio.get_writer(output_path, fps=fps) as writer:
@@ -623,12 +628,14 @@ def _extract_equally_spaced_frames(
     draw_circle_overlay=False,
     outline_width_frac=0.005,
     outline_color=(255, 0, 0),
+    center_crop_aspect=None,
 ):
     """
     Helper: extract n frames from a video at equally spaced positions.
     Returns a list of frames as numpy arrays.
     If draw_circle_overlay is True, detects a white circular border in each frame and overlays
     a circle of the same radius with the given thickness (outline_width_frac) and color.
+    If center_crop_aspect is set (e.g. "16:9"), each frame is center-cropped to that aspect ratio.
     """
     import imageio
 
@@ -679,13 +686,12 @@ def _extract_equally_spaced_frames(
             frame = np.expand_dims(frame, axis=-1)
         if downsample_factor is not None and downsample_factor > 1:
             frame = _downsample_by_factor(frame, downsample_factor)
+        frame = _center_crop_to_aspect_ratio(frame, center_crop_aspect)
         if draw_circle_overlay:
             circle = _detect_white_circle(frame)
             if circle is not None:
                 cx, cy, r = circle
                 _draw_circle_overlay(frame, cx, cy, r, outline_width_frac, color)
-            else:
-                print(f"No circle detected in frame {idx}")
         frames.append(frame)
     reader.close()
     return frames
@@ -701,6 +707,7 @@ def generate_video_frame_grid(
     draw_circle_overlay=False,
     outline_width_frac=0.005,
     outline_color=(255, 0, 0),
+    center_crop_aspect=None,
 ):
     """
     Extract N = num_rows * num_cols frames from a video at equally spaced
@@ -717,6 +724,7 @@ def generate_video_frame_grid(
         draw_circle_overlay: If True, detect white circular border in each frame and overlay a circle (same radius, different thickness/color).
         outline_width_frac: Line width as fraction of image width (foveation outline convention).
         outline_color: (R, G, B) for overlay circle.
+        center_crop_aspect: If set (e.g. "16:9"), center-crop each frame to that aspect ratio.
     """
     n = num_rows * num_cols
     frames = _extract_equally_spaced_frames(
@@ -726,6 +734,7 @@ def generate_video_frame_grid(
         draw_circle_overlay=draw_circle_overlay,
         outline_width_frac=outline_width_frac,
         outline_color=outline_color,
+        center_crop_aspect=center_crop_aspect,
     )
     print(f"Sampling {n} frames from video: {video_path}")
     stack_images_grid(frames, output_path=output_path, num_rows=num_rows, num_cols=num_cols, pad_px=pad_px)
@@ -743,6 +752,7 @@ def generate_baseline_comparison_grid(
     image_name_template="img_{:010d}.png",
     num_rows=None,
     image_ids=None,
+    center_crop_aspect=None,
 ):
     """
     Stack images from multiple baseline folders into an interleaved grid.
@@ -770,6 +780,7 @@ def generate_baseline_comparison_grid(
     sample = imageio.imread(sample_path)
     if sample.ndim == 2:
         sample = np.expand_dims(sample, axis=-1)
+    sample = _center_crop_to_aspect_ratio(sample, center_crop_aspect)
     if factor > 1:
         sample_small = _downsample_by_factor(sample, factor)
     else:
@@ -800,6 +811,7 @@ def generate_baseline_comparison_grid(
                 img = imageio.imread(path)
                 if img.ndim == 2:
                     img = np.expand_dims(img, axis=-1)
+                img = _center_crop_to_aspect_ratio(img, center_crop_aspect)
                 if factor > 1:
                     img = _downsample_by_factor(img, factor)
                 parts.append(img)
@@ -855,6 +867,7 @@ def generate_baseline_comparison_grid(
                 img = imageio.imread(path)
                 if img.ndim == 2:
                     img = np.expand_dims(img, axis=-1)
+                img = _center_crop_to_aspect_ratio(img, center_crop_aspect)
                 if factor > 1:
                     img = _downsample_by_factor(img, factor)
                 imgs.append(img)
@@ -916,6 +929,7 @@ def generate_baseline_video_grid(
     draw_circle_overlay=False,
     outline_width_frac=0.005,
     outline_color=(255, 0, 0),
+    center_crop_aspect=None,
 ):
     """
     Video analogue of generate_baseline_comparison_grid.
@@ -964,6 +978,7 @@ def generate_baseline_video_grid(
                 draw_circle_overlay=draw_circle_overlay,
                 outline_width_frac=outline_width_frac,
                 outline_color=outline_color,
+                center_crop_aspect=center_crop_aspect,
             )
             baseline_frames.append(frames)
         frames_bv.append(baseline_frames)
@@ -997,6 +1012,7 @@ def generate_foveation_trajectory_figure(
     downsample_factor=None,
     num_rows=None,
     image_name_glob="img_*.png",
+    center_crop_aspect=None,
 ):
     """
     Generate a figure showing foveation trajectory sequences.
@@ -1027,6 +1043,7 @@ def generate_foveation_trajectory_figure(
             img = imageio.imread(p)
             if img.ndim == 2:
                 img = np.expand_dims(img, axis=-1)
+            img = _center_crop_to_aspect_ratio(img, center_crop_aspect)
             if factor and factor > 1:
                 img = _downsample_by_factor(img, factor)
             imgs.append(img)
@@ -1300,6 +1317,7 @@ if __name__ == "__main__":
             num_rows=args.num_rows,
             image_ids=args.image_ids,
             downsample_factor=args.downsample,
+            center_crop_aspect=getattr(args, "center_crop_aspect", None),
         )
     elif args.figure == "baselines_video":
         base_dir = args.base_dir or default_base
@@ -1332,6 +1350,7 @@ if __name__ == "__main__":
             draw_circle_overlay=getattr(args, "draw_circle_overlay", False),
             outline_width_frac=getattr(args, "outline_width_frac", 0.005),
             outline_color=outline_color,
+            center_crop_aspect=getattr(args, "center_crop_aspect", None),
         )
     elif args.figure == "foveation_trajectory":
         base_dir = args.base_dir or default_base
@@ -1347,6 +1366,7 @@ if __name__ == "__main__":
             padding_frac=args.padding_frac,
             downsample_factor=args.downsample,
             num_rows=args.num_rows,
+            center_crop_aspect=getattr(args, "center_crop_aspect", None),
         )
     elif args.figure == "stack":
         if not args.images:
@@ -1362,6 +1382,8 @@ if __name__ == "__main__":
             )
         import imageio
         images = [imageio.imread(p) for p in args.images]
+        if getattr(args, "center_crop_aspect", None):
+            images = [_center_crop_to_aspect_ratio(img, args.center_crop_aspect) for img in images]
         if args.downsample:
             print(f"Downsampling images by factor {args.downsample}")
             images = [_downsample_by_factor(img, args.downsample) for img in images]
@@ -1381,6 +1403,7 @@ if __name__ == "__main__":
             output_path=args.output,
             fps=args.fps,
             image_glob=args.image_glob,
+            center_crop_aspect=getattr(args, "center_crop_aspect", None),
         )
     elif args.figure == "video_grid":
         if not args.folder:
@@ -1404,6 +1427,7 @@ if __name__ == "__main__":
             draw_circle_overlay=getattr(args, "draw_circle_overlay", False),
             outline_width_frac=getattr(args, "outline_width_frac", 0.005),
             outline_color=outline_color,
+            center_crop_aspect=getattr(args, "center_crop_aspect", None),
         )
     elif args.figure == "stack_folders":
         if not args.folder:
@@ -1415,6 +1439,7 @@ if __name__ == "__main__":
             output_folder=output_folder,
             image_glob=args.image_glob,
             pad_px=args.pad_px,
+            center_crop_aspect=getattr(args, "center_crop_aspect", None),
         )
     else:
         raise ValueError(f"Invalid figure: {args.figure}")
