@@ -1,3 +1,36 @@
+# saliency final figure
+python generate_paper_figures.py stack \
+  --images \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_random_model/042.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation/042.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_video_games/000.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics_ego_raw_v3/000.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_self_driving/003.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_drones/015.png \
+  -o /home/brianchc/foveated_diffusion/paper_figures/saliency_final.png \
+  --num-rows 1 \
+  --num-cols 6 \
+  --pad-px 20 \
+  --downsample 2
+# multi-object 000.png
+exit 
+
+
+# saliency vs random
+# idx 000-099
+for idx in $(seq -w 000 099); do
+python generate_paper_figures.py stack \
+  --images \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation/${idx}.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_random_model/${idx}.png \
+  -o /home/brianchc/foveated_diffusion/paper_figures/saliency_vs_random/${idx}.png \
+  --num-rows 1 \
+  --num-cols 2 \
+  --pad-px 20 \
+  --downsample 4 \
+  --output /home/brianchc/foveated_diffusion/paper_figures/salinecy_vs_random/${idx}.png
+done
+
 # video for baseline comparisons 
 for id in $(seq 1 100); do
 python generate_paper_figures.py baselines_video \
@@ -89,17 +122,8 @@ python generate_paper_figures.py stack \
   --pad-px 20 \
   --downsample 4
 exit
-# saliency
-# idx 000-099
-for idx in $(seq -w 000 099); do
-python generate_paper_figures.py foveation_trajectory \
-  --base-dir /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/vary_radius \
-  --row1-name saliency \
-  --row2-name bbox \
-  --subfolder-idx $idx \
-  --num-rows 3 \
-  --output /home/brianchc/foveated_diffusion/paper_figures/vary_radius_bbox_saliency/${idx}.png
-done
+
+
 
 exit
 
@@ -115,8 +139,8 @@ exit
 # saliency final figure
 python generate_paper_figures.py stack \
   --images \
-    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_multi_object_random_model/000.png \
-    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_multi_object/000.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_random_model/084.png \
+    /home/brianchc/foveated_diffusion/paper_figures/saliency_generation/084.png \
     /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_video_games/000.png \
     /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_robotics_ego_raw_v3/000.png \
     /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_self_driving/003.png \

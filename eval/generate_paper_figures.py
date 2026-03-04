@@ -59,19 +59,15 @@ def r_to_token_percentage(r):
 def _load_runtime_curve(npz_path):
     """Load r_list and runtime_list from npz, return (x, y) for plotting (token % vs speedup). Same logic as single-file runtime plot."""
     data = np.load(npz_path, allow_pickle=True)
-    r_list = np.asarray(data["r_list"]).flatten()
-    if "video" in npz_path:
-        r_list = np.asarray(data["token_ratio_list"]).flatten()
+    #r_list = np.asarray(data["r_list"]).flatten()
+    print(data.keys())
     runtime_list = np.asarray(data["runtime_list"]).flatten()
-    if "image" in npz_path:
-        r_list = r_list[1:]
-        runtime_list = runtime_list[1:]
-    if r_list.shape[0] != runtime_list.shape[0]:
+    token_ratio_list = np.asarray(data["token_ratio_list"]).flatten()
+    if runtime_list.shape[0] != token_ratio_list.shape[0]:
         raise ValueError(
-            f"Mismatch in {npz_path}: r_list length {r_list.shape[0]}, runtime_list length {runtime_list.shape[0]}"
+            f"Mismatch in {npz_path}: runtime_list length {runtime_list.shape[0]}, token_ratio_list length {token_ratio_list.shape[0]}"
         )
-    token_ratio = r_to_token_percentage(r_list)
-    token_pct = token_ratio * 100
+    token_pct = token_ratio_list * 100
     baseline_runtime = np.asarray(runtime_list)[np.argmax(token_pct)]
     speedup = baseline_runtime / np.asarray(runtime_list)
     order = np.argsort(token_pct)
@@ -87,8 +83,12 @@ def generate_runtime_figure(base_dir, output_path=None):
     Y = speedup factor vs. full-resolution (r=1) generation (baseline_runtime / runtime).
     Each file is one curve; mode (from filename) is used as the legend label.
     """
-    pattern = os.path.join(base_dir, "runtime_and_radius_list_*.npz")
-    files = sorted(glob.glob(pattern))
+    #pattern = os.path.join(base_dir, "runtime_and_radius_list_*.npz")
+    #files = sorted(glob.glob(pattern))
+    files = [
+        os.path.join(base_dir, "runtime_and_radius_list_image.npz"),
+        os.path.join(base_dir, "runtime_and_radius_list_video.npz"),
+    ]
     if not files:
         raise FileNotFoundError(
             f"No files matching {pattern}. "
