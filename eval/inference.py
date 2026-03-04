@@ -1099,48 +1099,53 @@ def run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downs
     """Run runtime experiments."""
     print("Running runtime experiments...")
     args.mask_shape = "square"
-    args.num_frames = 20
+    args.num_frames = 32 # low-res latents
     # add first one again in the beginning
-    token_ratio_list = np.linspace(0.25, 1.0, args.num_frames)
+    #token_ratio_list = np.linspace(0.25, 1.0, args.num_frames)
     # reverse list 
-    token_ratio_list = token_ratio_list[::-1] # 1 to 0.25
-    token_ratio_list = np.concatenate([[1], token_ratio_list]) # 1 to 0.25
+    #token_ratio_list = token_ratio_list[::-1] # 1 to 0.25
+    #token_ratio_list = np.concatenate([[1], token_ratio_list]) # 1 to 0.25
     # HR: r^2 tokens, LR: (1-r^2)/4 tokens -> total = (1 + 3r^2)/4 tokens = K
     # min tokens K = 0.25 (r = 0) to K = 1.0 (r = 1.0)
     # solve for r: r = sqrt((4K - 1) / 3)
-    r_list = np.sqrt((4 * token_ratio_list - 1) / 3)
-    r_list = np.concatenate([[0], r_list])
+    #r_list = np.sqrt((4 * token_ratio_list - 1) / 3)
     runtime_list = []
+    actual_token_ratio_list = []
+    #print(token_ratio_list)
+    #print(r_list)
+    r_list = np.arange(0, args.num_frames + 1) # 0 to 32
+    r_list = r_list[::-1] # 32 to 0
+    r_list = np.concatenate([[r_list[0]], r_list]) # 32, 32, ..., 0
+
+
 
     for r_idx, r in enumerate(r_list):
         r_idx_str = str(r_idx).zfill(2)
         
-        foveation_mask = create_foveation_mask(
-            args.height, args.width, center=(0, 0), r=r, shape=args.mask_shape, device=pipe.device
-        )
-        full_res_foveation_mask = create_foveation_mask_full_res(
-            args.height, args.width, center=(0, 0), r=r, shape=args.mask_shape, device=pipe.device
-        )
-        # Save full-res mask (optionally blurred to match pipeline merge)
-        mask_to_save = full_res_foveation_mask.unsqueeze(0).unsqueeze(0).float().to(pipe.device)
-        if getattr(args, "soft_foveation_blend", False):
-            upscale = args.height / (args.height // 16)
-            mask_to_save = _gaussian_blur_mask_2d(mask_to_save, upscale, pipe.device, mask_to_save.dtype)
-        save_image(mask_to_save, os.path.join(output_dir, f"foveation_mask_{r_idx_str}.png"))
+        foveation_mask = torch.zeros(args.height // 32, args.width // 32, device=pipe.device, dtype=torch.float32) # latent tokens of shape 32x32
+        foveation_mask[:r, :r] = 1.0
+        foveation_mask = F.interpolate(
+            foveation_mask.unsqueeze(0).unsqueeze(0),
+            size=(args.height // 16, args.width // 16),
+            mode='nearest'
+        ).squeeze(0).squeeze(0)
+
+        
+        total_orig_tokens = foveation_mask.shape[-2] * foveation_mask.shape[-1]
+        num_hr_tokens = foveation_mask.sum()
+        num_lr_tokens = (total_orig_tokens - num_hr_tokens) // 4
+        total_tokens = num_hr_tokens + num_lr_tokens
+
+        token_ratio = total_tokens / total_orig_tokens
+        print(f"Actual token ratio: {token_ratio}, radius: {r}")
+        print(f"HR tokens: {num_hr_tokens}, LR tokens: {num_lr_tokens}")
+        print(f"Total tokens: {total_tokens}")
+        print("--------------------------------")
+        actual_token_ratio_list.append(token_ratio.item())
         
         # Run pipeline: average runtime over multiple runs with identical parameters
         vis_kwargs = {}
-        foveation_mask_to_use = foveation_mask
-        if getattr(args, "save_vis_vlow_x0", False):
-            vis_kwargs["vis_vlow_x0_folder"] = os.path.join(output_dir, "vis_vlow_x0")
-            if getattr(args, "vis_vlow_x0_steps", None):
-                vis_kwargs["vis_vlow_x0_steps"] = [int(x) for x in args.vis_vlow_x0_steps.split(",")]
-            foveation_mask_to_use = torch.zeros(
-                args.height // 16,
-                args.width // 16,
-                device=pipe.device,
-                dtype=torch.float32,
-            )
+
         pipe_kwargs = dict(
             prompt=args.prompt,
             height=args.height,
@@ -1149,7 +1154,7 @@ def run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downs
             rand_device="cuda",
             num_inference_steps=args.num_inference_steps,
             cfg_scale=args.guidance_scale,
-            foveation_mask=foveation_mask_to_use,
+            foveation_mask=foveation_mask,
             token_upsampler=token_upsampler,
             token_downsampler=token_downsampler,
             decode_mode=args.decode_mode,
@@ -1158,8 +1163,6 @@ def run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downs
             soft_foveation_blend=getattr(args, "soft_foveation_blend", False),
             **vis_kwargs,
         )
-        if foveation_mask_to_use is foveation_mask:
-            pipe_kwargs["full_res_foveation_mask"] = full_res_foveation_mask
 
         num_repeats = 5
         runtimes = []
@@ -1182,7 +1185,10 @@ def run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downs
             saved_image.save(os.path.join(output_dir, f"img_{r_idx_str}.png"))
     
     # save runtime and radius list to numpy
-    np.savez(os.path.join(output_dir, "runtime_and_radius_list.npz"), runtime_list=runtime_list, r_list=r_list)
+    runtime_list = np.array(runtime_list)
+    r_list = np.array(r_list)
+    token_ratio_list = np.array(actual_token_ratio_list)
+    np.savez(os.path.join(output_dir, "runtime_and_radius_list.npz"), runtime_list=runtime_list, r_list=r_list, token_ratio_list=actual_token_ratio_list)
 
 
 def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token_downsampler):
