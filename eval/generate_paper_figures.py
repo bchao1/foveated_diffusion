@@ -77,9 +77,6 @@ def _load_runtime_curve(npz_path):
     order = np.argsort(token_pct)
     x = token_pct[order]
     y = speedup[order]
-    print(x)
-    print(y)
-    exit()
     return x, y
 
 
@@ -280,6 +277,41 @@ def _downsample_by_factor(arr, factor):
     return out
 
 
+def _center_crop_to_aspect_ratio(image, aspect_ratio_str):
+    """
+    Center-crop an image so the result has the given aspect ratio (width:height).
+    aspect_ratio_str: e.g. "16:9", "1:1", "4:3". If None or empty, return image unchanged.
+    image: numpy array (H, W) or (H, W, C).
+    """
+    if not aspect_ratio_str or not str(aspect_ratio_str).strip():
+        return image
+    image = np.asarray(image)
+    s = str(aspect_ratio_str).strip()
+    if ":" not in s:
+        return image
+    parts = s.split(":", 1)
+    try:
+        w_ratio = float(parts[0])
+        h_ratio = float(parts[1])
+    except ValueError:
+        return image
+    if w_ratio <= 0 or h_ratio <= 0:
+        return image
+    target_aspect = w_ratio / h_ratio
+    h, w = image.shape[0], image.shape[1]
+    if w / h >= target_aspect:
+        crop_h = h
+        crop_w = int(round(h * target_aspect))
+    else:
+        crop_w = w
+        crop_h = int(round(w / target_aspect))
+    crop_w = max(1, min(crop_w, w))
+    crop_h = max(1, min(crop_h, h))
+    y = (h - crop_h) // 2
+    x = (w - crop_w) // 2
+    return image[y : y + crop_h, x : x + crop_w].copy()
+
+
 def stack_images(
     images,
     output_path,
@@ -353,7 +385,7 @@ def stack_images(
     return stacked
 
 
-def stack_images_grid(images, output_path, num_rows, num_cols, pad_px=10):
+def stack_images_grid(images, output_path, num_rows, num_cols, pad_px=10, pad_px_horizontal=None, pad_px_vertical=None):
     """
     Stack a list of images into a num_rows x num_cols grid with padding and save.
 
@@ -362,12 +394,17 @@ def stack_images_grid(images, output_path, num_rows, num_cols, pad_px=10):
         output_path: Path to save the stacked image (e.g. .png).
         num_rows: Number of rows in the grid.
         num_cols: Number of columns in the grid.
-        pad_px: Padding in pixels between adjacent images (default 10).
+        pad_px: Default padding in pixels (used for both directions when pad_px_* are None).
+        pad_px_horizontal: Padding between columns; if None, use pad_px.
+        pad_px_vertical: Padding between rows; if None, use pad_px.
 
     Returns:
         The stacked image array (before saving).
     """
     import imageio
+
+    pad_h = pad_px if pad_px_horizontal is None else pad_px_horizontal
+    pad_v = pad_px if pad_px_vertical is None else pad_px_vertical
 
     n = num_rows * num_cols
     if len(images) != n:
@@ -399,8 +436,8 @@ def stack_images_grid(images, output_path, num_rows, num_cols, pad_px=10):
         max_h = max(im.shape[0] for im in row_list)
         parts = []
         for k, im in enumerate(row_list):
-            if k > 0:
-                parts.append(np.full((max_h, pad_px, C), 255, dtype=dtype))
+            if k > 0 and pad_h > 0:
+                parts.append(np.full((max_h, pad_h, C), 255, dtype=dtype))
             if im.shape[0] < max_h:
                 pad = np.full((max_h - im.shape[0], im.shape[1], C), 255, dtype=dtype)
                 im = np.concatenate([im, pad], axis=0)
@@ -411,8 +448,8 @@ def stack_images_grid(images, output_path, num_rows, num_cols, pad_px=10):
     max_w = max(im.shape[1] for im in row_images)
     parts = []
     for k, im in enumerate(row_images):
-        if k > 0:
-            parts.append(np.full((pad_px, max_w, C), 255, dtype=dtype))
+        if k > 0 and pad_v > 0:
+            parts.append(np.full((pad_v, max_w, C), 255, dtype=dtype))
         if im.shape[1] < max_w:
             pad = np.full((im.shape[0], max_w - im.shape[1], C), 255, dtype=dtype)
             im = np.concatenate([im, pad], axis=1)
@@ -527,6 +564,171 @@ def folder_to_video(
             writer.append_data(img)
 
     print(f"Saved: {output_path} ({len(images)} frames @ {fps} fps)")
+    return output_path
+
+
+def _detect_white_circle(frame):
+    """
+    Detect a white circular border (or bright circular region) in a frame.
+    Returns (cx, cy, radius_px) or None if no suitable circle found.
+    Uses bright pixel threshold, contours, and minEnclosingCircle (same radius, arbitrary location).
+    """
+    try:
+        import cv2
+    except ImportError:
+        return None
+    if frame.ndim == 3:
+        gray = np.mean(frame.astype(np.float32), axis=2).astype(np.uint8)
+    else:
+        gray = frame.astype(np.uint8)
+    h, w = gray.shape
+    _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    # Take contour with largest area (main white region)
+    largest = max(contours, key=cv2.contourArea)
+    if cv2.contourArea(largest) < 100:
+        return None
+    (cx, cy), radius_px = cv2.minEnclosingCircle(largest)
+    cx, cy, radius_px = float(cx), float(cy), float(radius_px)
+    min_r = 0.05 * min(h, w)
+    max_r = 0.95 * min(h, w) / 2
+    if radius_px < min_r or radius_px > max_r:
+        return None
+    return (cx, cy, radius_px)
+
+
+def _draw_circle_overlay(frame, cx, cy, radius_px, outline_width_frac, color):
+    """
+    Draw a circle overlay on frame (in-place). Same radius as detected; thickness and color from args.
+    outline_width_frac: line width as fraction of image width (reuse foveation outline convention).
+    color: (R, G, B) tuple.
+    """
+    try:
+        import cv2
+    except ImportError:
+        return
+    h, w = frame.shape[0], frame.shape[1]
+    thickness = max(1, int(outline_width_frac * w))
+    # cv2.circle expects BGR when image is BGR; imageio frames are typically RGB
+    color_bgr = (int(color[2]), int(color[1]), int(color[0]))
+    cv2.circle(frame, (int(round(cx)), int(round(cy))), int(round(radius_px)), color_bgr, thickness)
+
+
+def _extract_equally_spaced_frames(
+    video_path,
+    n,
+    downsample_factor=None,
+    draw_circle_overlay=False,
+    outline_width_frac=0.005,
+    outline_color=(255, 0, 0),
+):
+    """
+    Helper: extract n frames from a video at equally spaced positions.
+    Returns a list of frames as numpy arrays.
+    If draw_circle_overlay is True, detects a white circular border in each frame and overlays
+    a circle of the same radius with the given thickness (outline_width_frac) and color.
+    """
+    import imageio
+
+    video_path = os.path.abspath(video_path)
+    if not os.path.isfile(video_path):
+        raise FileNotFoundError(f"Video not found: {video_path}")
+
+    reader = imageio.get_reader(video_path)
+    # Robustly determine number of frames; guard against backends that report inf or 0.
+    try:
+        try:
+            num_frames = reader.get_length()
+        except Exception:
+            num_frames = len(reader)
+    except Exception:
+        num_frames = np.inf
+
+    if not np.isfinite(num_frames) or int(num_frames) <= 0:
+        # Fallback: iterate once to count frames, then reopen reader for actual sampling.
+        count = 0
+        try:
+            for _ in reader:
+                count += 1
+        finally:
+            reader.close()
+        num_frames = count
+        reader = imageio.get_reader(video_path)
+    else:
+        num_frames = int(num_frames)
+
+    if num_frames < n:
+        reader.close()
+        raise ValueError(
+            f"Video has only {num_frames} frames, but requested {n} frames. "
+            "Cannot sample enough frames."
+        )
+
+    if isinstance(outline_color, (list, tuple)) and len(outline_color) == 3:
+        color = tuple(int(x) for x in outline_color)
+    else:
+        color = (255, 0, 0)
+
+    indices = np.linspace(0, num_frames - 1, n, dtype=int)
+    frames = []
+    for idx in indices:
+        frame = reader.get_data(int(idx))
+        if frame.ndim == 2:
+            frame = np.expand_dims(frame, axis=-1)
+        if downsample_factor is not None and downsample_factor > 1:
+            frame = _downsample_by_factor(frame, downsample_factor)
+        if draw_circle_overlay:
+            circle = _detect_white_circle(frame)
+            if circle is not None:
+                cx, cy, r = circle
+                _draw_circle_overlay(frame, cx, cy, r, outline_width_frac, color)
+            else:
+                print(f"No circle detected in frame {idx}")
+        frames.append(frame)
+    reader.close()
+    return frames
+
+
+def generate_video_frame_grid(
+    video_path,
+    output_path,
+    num_rows,
+    num_cols,
+    pad_px=10,
+    downsample_factor=None,
+    draw_circle_overlay=False,
+    outline_width_frac=0.005,
+    outline_color=(255, 0, 0),
+):
+    """
+    Extract N = num_rows * num_cols frames from a video at equally spaced
+    positions, and stack them into a num_rows x num_cols grid with padding.
+
+    Args:
+        video_path: Path to input video file.
+        output_path: Path to save the stacked grid image (e.g. .png).
+        num_rows: Number of rows in the grid.
+        num_cols: Number of columns in the grid.
+        pad_px: Padding in pixels between frames in the grid.
+        downsample_factor: Optional integer; if >1, each frame is downsampled
+            by this factor using _downsample_by_factor (same helper as other grids).
+        draw_circle_overlay: If True, detect white circular border in each frame and overlay a circle (same radius, different thickness/color).
+        outline_width_frac: Line width as fraction of image width (foveation outline convention).
+        outline_color: (R, G, B) for overlay circle.
+    """
+    n = num_rows * num_cols
+    frames = _extract_equally_spaced_frames(
+        video_path,
+        n,
+        downsample_factor=downsample_factor,
+        draw_circle_overlay=draw_circle_overlay,
+        outline_width_frac=outline_width_frac,
+        outline_color=outline_color,
+    )
+    print(f"Sampling {n} frames from video: {video_path}")
+    stack_images_grid(frames, output_path=output_path, num_rows=num_rows, num_cols=num_cols, pad_px=pad_px)
     return output_path
 
 
@@ -699,6 +901,91 @@ def generate_baseline_comparison_grid(
     print(f"Saved: {output_path}")
     return grid
 
+
+def generate_baseline_video_grid(
+    base_dir,
+    baselines,
+    video_ids,
+    num_rows,
+    num_cols,
+    pad_px,
+    output_path,
+    downsample_factor=None,
+    pad_px_horizontal=None,
+    pad_px_vertical=None,
+    draw_circle_overlay=False,
+    outline_width_frac=0.005,
+    outline_color=(255, 0, 0),
+):
+    """
+    Video analogue of generate_baseline_comparison_grid.
+
+    - Expects exactly two video IDs (video_ids) and three baselines.
+    - For each baseline and video ID, loads base_dir / baseline / {id}.mp4.
+    - For each video, extracts num_rows frames uniformly spaced in time.
+    - Builds a grid with num_rows rows and num_cols columns, where columns correspond
+      to [baseline_0 vid_0, baseline_1 vid_0, baseline_2 vid_0, baseline_0 vid_1, ...].
+
+    Padding: pad_px is the default; pad_px_horizontal/pad_px_vertical override for grid spacing
+    (e.g. pad_px_horizontal=0 to remove horizontal padding between images).
+    If draw_circle_overlay is True, detects white circular border in each frame and overlays
+    a circle (same radius) with outline_width_frac and outline_color.
+    """
+    import imageio  # only to ensure dependency present; frame extraction uses helper
+
+    base_dir = os.path.abspath(base_dir)
+    if not os.path.isdir(base_dir):
+        raise FileNotFoundError(f"Base dir not found: {base_dir}")
+
+    if len(video_ids) != 2:
+        raise ValueError(f"generate_baseline_video_grid expects exactly 2 video IDs, got {len(video_ids)}")
+    num_baselines = len(baselines)
+    if num_baselines != 3:
+        raise ValueError(f"generate_baseline_video_grid expects exactly 3 baselines, got {num_baselines}")
+
+    expected_cols = num_baselines * len(video_ids)
+    if num_cols != expected_cols:
+        raise ValueError(
+            f"num_cols must be {expected_cols} (baselines * videos), got {num_cols}. "
+            "Set --num-cols accordingly."
+        )
+
+    # Extract frames per baseline and video ID
+    frames_bv = []  # shape: [baseline][video][num_rows]
+    for baseline in baselines:
+        baseline_frames = []
+        for vid_id in video_ids:
+            vid_name = f"{vid_id}.mp4"
+            video_path = os.path.join(base_dir, baseline, vid_name)
+            frames = _extract_equally_spaced_frames(
+                video_path,
+                num_rows,
+                downsample_factor=downsample_factor,
+                draw_circle_overlay=draw_circle_overlay,
+                outline_width_frac=outline_width_frac,
+                outline_color=outline_color,
+            )
+            baseline_frames.append(frames)
+        frames_bv.append(baseline_frames)
+
+    # Build images list in row-major order for stack_images_grid:
+    # row r, then over videos, then baselines.
+    images = []
+    for r in range(num_rows):
+        for v in range(len(video_ids)):
+            for b in range(num_baselines):
+                images.append(frames_bv[b][v][r])
+
+    stacked = stack_images_grid(
+        images,
+        output_path=output_path,
+        num_rows=num_rows,
+        num_cols=num_cols,
+        pad_px=pad_px,
+        pad_px_horizontal=pad_px_horizontal,
+        pad_px_vertical=pad_px_vertical,
+    )
+    return stacked
 
 def generate_foveation_trajectory_figure(
     base_dir,
@@ -897,9 +1184,11 @@ if __name__ == "__main__":
             "runtime",
             "runtime_quality",
             "baselines",
+            "baselines_video",
             "foveation_trajectory",
             "stack",
             "video",
+            "video_grid",
             "stack_folders",
         ],
     )
@@ -907,6 +1196,12 @@ if __name__ == "__main__":
     parser.add_argument("--base-dir", type=str, default=None, help="Base dir (default: ../results/eccv2026_final)")
     parser.add_argument("--padding-frac", type=float, default=0.02, help="Padding between images as fraction of image width")
     parser.add_argument("--downsample", type=int, default=None, help="Downsample factor for foveation_trajectory (optional)")
+    parser.add_argument(
+        "--center-crop-aspect",
+        type=str,
+        default=None,
+        help="Center-crop all loaded images and video frames to this aspect ratio (e.g. '16:9', '1:1'). If not set, no cropping.",
+    )
 
     # baselines / foveation_trajectory figure-specific arguments
     parser.add_argument("--baselines", type=str, nargs="+", default=["baseline_eval", "naive_eval", "ours_dit_eval"], help="Baseline folder names for baselines figure")
@@ -939,6 +1234,34 @@ if __name__ == "__main__":
         help="Image paths for stack figure (required when figure=stack). Count must equal --num-rows * --num-cols.",
     )
     parser.add_argument("--pad-px", type=int, default=10, help="Padding in pixels between images for stack figure")
+    parser.add_argument(
+        "--no-horizontal-padding",
+        action="store_true",
+        help="For baselines_video: use zero horizontal padding between images (vertical padding still uses --pad-px).",
+    )
+    parser.add_argument(
+        "--no-vertical-padding",
+        action="store_true",
+        help="For baselines_video: use zero vertical padding between rows (horizontal padding still uses --pad-px).",
+    )
+    # Video frame circle overlay (detect white circular border, overlay same-radius circle; reuse foveation outline convention)
+    parser.add_argument(
+        "--draw-circle-overlay",
+        action="store_true",
+        help="For video_grid and baselines_video: detect white circular border in each frame and overlay a circle (same radius, different thickness/color).",
+    )
+    parser.add_argument(
+        "--outline-width-frac",
+        type=float,
+        default=0.005,
+        help="Circle overlay line width as fraction of image width (default 0.005). Used with --draw-circle-overlay.",
+    )
+    parser.add_argument(
+        "--outline-color",
+        type=str,
+        default="255,0,0",
+        help="Circle overlay color as R,G,B (default red: 255,0,0). Used with --draw-circle-overlay.",
+    )
 
     # video / stack_folders figure: folder of images -> video or per-subfolder stack
     parser.add_argument(
@@ -977,6 +1300,38 @@ if __name__ == "__main__":
             num_rows=args.num_rows,
             image_ids=args.image_ids,
             downsample_factor=args.downsample,
+        )
+    elif args.figure == "baselines_video":
+        base_dir = args.base_dir or default_base
+        if args.image_ids is None or len(args.image_ids) != 2:
+            raise ValueError(
+                "figure=baselines_video expects exactly 2 --image-ids values (video IDs corresponding to {id}.mp4)."
+            )
+        if args.num_rows is None:
+            raise ValueError("--num-rows is required for figure=baselines_video (frames per video).")
+        num_rows = args.num_rows
+        num_cols = args.num_cols
+        pad_px = args.pad_px
+        pad_px_horizontal = 0 if getattr(args, "no_horizontal_padding", False) else None
+        pad_px_vertical = 0 if getattr(args, "no_vertical_padding", False) else None
+        output_path = args.output or os.path.join(base_dir, "baselines_video_grid.png")
+        outline_color = (255, 0, 0)
+        if getattr(args, "outline_color", None):
+            outline_color = tuple(int(x) for x in args.outline_color.split(","))
+        generate_baseline_video_grid(
+            base_dir=base_dir,
+            baselines=args.baselines,
+            video_ids=args.image_ids,
+            num_rows=num_rows,
+            num_cols=num_cols,
+            pad_px=pad_px,
+            output_path=output_path,
+            downsample_factor=args.downsample,
+            pad_px_horizontal=pad_px_horizontal,
+            pad_px_vertical=pad_px_vertical,
+            draw_circle_overlay=getattr(args, "draw_circle_overlay", False),
+            outline_width_frac=getattr(args, "outline_width_frac", 0.005),
+            outline_color=outline_color,
         )
     elif args.figure == "foveation_trajectory":
         base_dir = args.base_dir or default_base
@@ -1026,6 +1381,29 @@ if __name__ == "__main__":
             output_path=args.output,
             fps=args.fps,
             image_glob=args.image_glob,
+        )
+    elif args.figure == "video_grid":
+        if not args.folder:
+            raise ValueError("--folder is required for figure=video_grid (video path)")
+        if args.num_rows is None:
+            raise ValueError("--num-rows is required for figure=video_grid (grid layout)")
+        num_rows = args.num_rows
+        num_cols = args.num_cols
+        video_path = args.folder
+        out = args.output or os.path.join(os.path.dirname(os.path.abspath(video_path)), "video_frame_grid.png")
+        outline_color = (255, 0, 0)
+        if getattr(args, "outline_color", None):
+            outline_color = tuple(int(x) for x in args.outline_color.split(","))
+        generate_video_frame_grid(
+            video_path=video_path,
+            output_path=out,
+            num_rows=num_rows,
+            num_cols=num_cols,
+            pad_px=args.pad_px,
+            downsample_factor=args.downsample,
+            draw_circle_overlay=getattr(args, "draw_circle_overlay", False),
+            outline_width_frac=getattr(args, "outline_width_frac", 0.005),
+            outline_color=outline_color,
         )
     elif args.figure == "stack_folders":
         if not args.folder:

@@ -18,16 +18,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from generate_paper_figures import FIGURE_RC, COLORS, setup_academic_axes
 
 # Tunable aesthetics
-FIGSIZE = (8.0, 4.0)
+# Match runtime figure width/height (see generate_runtime_figure in generate_paper_figures.py)
+FIGSIZE = (4.0, 4.0)
 Y_TICKS = np.arange(0, 101, 20)
 Y_AXIS_MAX = 100.0
 TOP_MARGIN_FRACTION = 0.85  # lower = more whitespace above axes for value labels
 
-BAR_WIDTH = 0.08
-# Slight spacing between bars in a pair: previous center-to-center was BAR_WIDTH (touching),
-# now widened by BAR_WIDTH / 8.
-PAIR_INNER_GAP = BAR_WIDTH * (1.0 + 1.0 / 8.0)
-PAIR_OUTER_GAP = 0.15  # extra gap between adjacent pairs (after second bar center)
+BAR_WIDTH = 0.06
+# Slight spacing between bars in a pair: previous center-to-center was BAR_WIDTH (touching).
+# Double the previous gap between the two bars in each pair.
+PAIR_INNER_GAP = BAR_WIDTH * (1.0 + 2.0 / 8.0)
+# Extra gap between adjacent pairs (after second bar center), slightly reduced to keep
+# the overall layout comfortable within the narrower figure width.
+PAIR_OUTER_GAP = 0.12
 BAR_CORNER_RADIUS_FRAC = 0.0
 
 # Colors matched to runtime figure palette
@@ -36,9 +39,9 @@ COLOR2 = COLORS["secondary"]
 BAR_EDGE_COLOR = None  # no explicit edge color; bars will have no outline
 BAR_EDGE_WIDTH = 0.0
 
-ERROR_BAR_LINEWIDTH = 1.0
-ERROR_BAR_CAPTHICK = 1.0
-ERROR_BAR_CAPSIZE = 4
+ERROR_BAR_LINEWIDTH = 0.8
+ERROR_BAR_CAPTHICK = 0.8
+ERROR_BAR_CAPSIZE = 3
 ERROR_BAR_COLOR = FIGURE_RC.get("xtick.color", "#333333")
 
 VALUE_LABEL_OFFSET_PT = 6.0
@@ -52,7 +55,8 @@ PAIR_ORDER = [
 NAME_MAP = {
     "naive": "Naive",
     "ours": "Ours",
-    "high_res": "High-res",
+    # Two-line label for High-res to better fit the compact width.
+    "high_res": "High\nres",
 }
 
 
@@ -192,6 +196,7 @@ def generate_user_study_figure(json_path, output_path=None):
                 va="bottom",
                 clip_on=False,
                 zorder=5,
+                fontsize=max(8, int(FIGURE_RC.get("xtick.labelsize", 12) * 0.8)),
             )
 
         ax.set_ylabel("Preference (%)")
@@ -199,9 +204,12 @@ def generate_user_study_figure(json_path, output_path=None):
         ax.set_yticks(Y_TICKS)
         ax.set_xticks(x_positions)
         # Show only method names (Naive, Ours, High-res) on the x-axis,
-        # with font controlled entirely by FIGURE_RC (no rotation).
+        # and make tick label fonts slightly smaller than the global default.
         ax.set_xticklabels(method_labels)
-        ax.set_title("User preference comparison")
+        small_tick = max(8, int(FIGURE_RC.get("xtick.labelsize", 12) * 0.85))
+        ax.tick_params(axis="both", which="both", labelsize=small_tick)
+        # Slightly increase padding so the title sits a bit higher above the plot.
+        ax.set_title("User preference comparison", pad=10)
 
         ax.set_xlim(min(x_positions) - BAR_WIDTH, max(x_positions) + BAR_WIDTH)
         fig.tight_layout(pad=1.0)

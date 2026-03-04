@@ -1,3 +1,31 @@
+# video frame grid for teaser
+for video_id in 24 81 87; do
+python generate_paper_figures.py video_grid \
+  --folder /home/brianchc/foveated_diffusion/results/video_results/saliency/480p_cam_prompt/${video_id}.mp4 \
+  --image-glob "*.png" \
+  --num-rows 1 \
+  --num-cols 3 \
+  --pad-px 20 \
+  --output /home/brianchc/foveated_diffusion/paper_figures/videos/baseline/ours_${video_id}.png
+done
+exit
+
+# video for baseline comparisons 
+python generate_paper_figures.py baselines_video \
+  --base-dir /home/brianchc/foveated_diffusion/results/video_results/baseline \
+  --baselines high_res naive ours \
+  --image-ids 3 11 \
+  --num-rows 5 \
+  --pad-px 10 \
+  --no-vertical-padding \
+  --draw-circle-overlay \
+  --outline-width-frac 0.005 \
+  --outline-color "255,0,0" \
+  --num-cols 6 \
+  --downsample 2 \
+  --output /home/brianchc/foveated_diffusion/paper_figures/baseline_video.png
+exit
+
 # saliency 
 python generate_paper_figures.py stack \
   --images \
