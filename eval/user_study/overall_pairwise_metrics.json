@@ -1,21 +1,30 @@
 {
   "files_used": [
-    "participant_11.csv",
-    "participant_7.csv"
+    "participant_0.csv",
+    "participant_1.csv",
+    "participant_10.csv",
+    "participant_2.csv",
+    "participant_3.csv",
+    "participant_4.csv",
+    "participant_5.csv",
+    "participant_6.csv",
+    "participant_7.csv",
+    "participant_8.csv",
+    "participant_9.csv"
   ],
-  "files_used_count": 2,
+  "files_used_count": 11,
   "pairwise_overall": {
     "naive_vs_high_res": {
       "error_bar_length": {
-        "high_res": 0.0,
-        "naive": 0.0,
+        "high_res": 0.01894277005168351,
+        "naive": 0.01894277005168351,
         "type": "sem"
       },
       "mean_preference": {
-        "high_res": 1.0,
-        "naive": 0.0
+        "high_res": 0.9193504594820384,
+        "naive": 0.08064954051796158
       },
-      "n_files": 26,
+      "n_files": 38,
       "pair": [
         "naive",
         "high_res"
@@ -23,15 +32,15 @@
     },
     "naive_vs_ours": {
       "error_bar_length": {
-        "naive": 0.0,
-        "ours": 0.0,
+        "naive": 0.02078741669450483,
+        "ours": 0.02078741669450483,
         "type": "sem"
       },
       "mean_preference": {
-        "naive": 0.0,
-        "ours": 1.0
+        "naive": 0.1073015873015873,
+        "ours": 0.8926984126984127
       },
-      "n_files": 28,
+      "n_files": 40,
       "pair": [
         "naive",
         "ours"
@@ -39,15 +48,15 @@
     },
     "ours_vs_high_res": {
       "error_bar_length": {
-        "high_res": 0.08072035080630875,
-        "ours": 0.08072035080630875,
+        "high_res": 0.04045862616882688,
+        "ours": 0.04045862616882688,
         "type": "sem"
       },
       "mean_preference": {
-        "high_res": 0.6851851851851851,
-        "ours": 0.3148148148148148
+        "high_res": 0.5355753968253967,
+        "ours": 0.4644246031746033
       },
-      "n_files": 27,
+      "n_files": 40,
       "pair": [
         "ours",
         "high_res"
