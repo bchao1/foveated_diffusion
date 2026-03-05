@@ -6,11 +6,12 @@ ckpt_folder="/local/brian/foveated_diffusion/models/eccv2026_final/rank_32_fov_m
 lora_checkpoint="${ckpt_folder}/step-${step}.safetensors"
 
 # Normal run
+for seed in $(seq 0 20); do
 CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment ours \
     --decode_mode merge \
-    --output_dir ../results/eccv2026_final_v2/teaser \
-    --seed 0 \
+    --output_dir ../results/eccv2026_final_v2/teaser_v2/seed_${seed} \
+    --seed ${seed} \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
     --full_eval_mask circular \
@@ -18,6 +19,7 @@ CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --soft_foveation_blend true \
     --prompt "A lion lounges calmly, displaying its powerful physique, with a soft focus highlighting its majestic mane and intense gaze." \
     --mask_radius 0.3
+done
 exit
 
 CUDA_VISIBLE_DEVICES=$1 python inference.py \

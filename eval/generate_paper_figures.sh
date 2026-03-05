@@ -1,3 +1,33 @@
+python generate_paper_figures.py baselines_video \
+  --base-dir /home/brianchc/foveated_diffusion/results/video_results/baseline \
+  --baselines high_res naive ours \
+  --image-ids 3 6 \
+  --pad-px 10 \
+  --no-horizontal-padding \
+  --outline-width-frac 0.005 \
+  --outline-color "255,0,0" \
+  --num-cols 5 \
+  --downsample 2 \
+  --output /home/brianchc/foveated_diffusion/paper_figures/baseline_video.png
+# 3 57 77 84
+exit
+
+# video frame grid for teaser
+for video_folder in 720p_cam_prompt 720p_no_cam_prompt; do
+  for video_id in 53 56 57 62 75 79 81 85 87 88 91; do
+    echo "Generating video grid for ${video_folder}/${video_id}"
+    python generate_paper_figures.py video_grid \
+      --folder /home/brianchc/foveated_diffusion/results/video_results/saliency/${video_folder}/${video_id}.mp4 \
+      --image-glob "*.png" \
+      --num-rows 1 \
+      --num-cols 5 \
+      --pad-px 2 \
+      --output /home/brianchc/foveated_diffusion/paper_figures/videos/saliency_v2/${video_folder}_${video_id}.png
+  done
+done
+exit
+
+
 # saliency final figure
 python generate_paper_figures.py stack \
   --images \
@@ -31,7 +61,7 @@ python generate_paper_figures.py stack \
   --output /home/brianchc/foveated_diffusion/paper_figures/salinecy_vs_random/${idx}.png
 done
 
-# video for baseline comparisons 
+# all single video for baseline comparisons 
 for id in $(seq 1 100); do
 python generate_paper_figures.py baselines_video \
   --base-dir /home/brianchc/foveated_diffusion/results/video_results/baseline \
@@ -81,9 +111,9 @@ for video_folder in 720p_cam_prompt 720p_no_cam_prompt; do
       --folder /home/brianchc/foveated_diffusion/results/video_results/saliency/${video_folder}/${video_id}.mp4 \
       --image-glob "*.png" \
       --num-rows 1 \
-      --num-cols 6 \
+      --num-cols 5 \
       --pad-px 2 \
-      --output /home/brianchc/foveated_diffusion/paper_figures/videos/saliency/${video_folder}_${video_id}.png
+      --output /home/brianchc/foveated_diffusion/paper_figures/videos/saliency_v2/${video_folder}_${video_id}.png
   done
 done
 exit

@@ -3,12 +3,14 @@ Generate publication-quality figures for foveated diffusion paper.
 Academic style: faint dashed grids, serif fonts, colorblind-friendly palette.
 """
 
+import ast
 import glob
 import os
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
 from argparse import ArgumentParser
+import pandas as pd
 
 # Academic figure style: serif font, faint grid, restrained colors (font sizes ×1.2)
 FIGURE_RC = {
@@ -620,6 +622,40 @@ def _draw_circle_overlay(frame, cx, cy, radius_px, outline_width_frac, color):
     color_bgr = (int(color[2]), int(color[1]), int(color[0]))
     cv2.circle(frame, (int(round(cx)), int(round(cy))), int(round(radius_px)), color_bgr, thickness)
 
+# for video
+def draw_foveation_circle_from_params(video_frames, keyframe_centers, keyframe_radii, outline_color=(255, 255, 255)):
+    """Draw a white circle on each frame using smoothly interpolated keyframe parameters.
+    Uses the same normalized-to-pixel conversion as create_foveation_mask."""
+    import cv2
+    num_frames = len(video_frames)
+    n_keys = len(keyframe_centers)
+    keyframe_t = np.linspace(0, 1, n_keys)
+    frame_t = np.linspace(0, 1, num_frames)
+
+    cx_interp = np.interp(frame_t, keyframe_t, [c[0] for c in keyframe_centers])
+    cy_interp = np.interp(frame_t, keyframe_t, [c[1] for c in keyframe_centers])
+    r_interp = np.interp(frame_t, keyframe_t, keyframe_radii)
+
+    out = []
+    for t, frame in enumerate(video_frames):
+        if hasattr(frame, "numpy"):
+            frame = frame.numpy()
+        elif hasattr(frame, "__array__"):
+            frame = np.array(frame)
+        else:
+            frame = np.array(frame)
+        if frame.dtype != np.uint8 or frame.max() <= 1.0:
+            frame = (np.clip(frame, 0, 1) * 255).astype(np.uint8)
+        frame = np.ascontiguousarray(frame)
+        h, w = frame.shape[:2]
+        px_cx = int((cx_interp[t] + 0.5) * w)
+        px_cy = int((cy_interp[t] + 0.5) * h)
+        diagonal = (h**2 + w**2) ** 0.5
+        px_r = int(round(r_interp[t] * (diagonal / 2.0)))
+        frame = cv2.circle(frame, (px_cx, px_cy), px_r, outline_color, 2)
+        out.append(frame)
+    return out
+
 
 def _extract_equally_spaced_frames(
     video_path,
@@ -948,8 +984,8 @@ def generate_baseline_video_grid(
 
     Padding: pad_px is the default; pad_px_horizontal/pad_px_vertical override for grid spacing
     (e.g. pad_px_horizontal=0 to remove horizontal padding between images).
-    If draw_circle_overlay is True, detects white circular border in each frame and overlays
-    a circle (same radius) with outline_width_frac and outline_color.
+    Foveation circles are drawn from center_list/radius_list (spline_prompts.csv) via
+    draw_foveation_circle_from_params; draw_circle_overlay is not used.
     """
     import imageio  # only to ensure dependency present; frame extraction uses helper
 
@@ -969,7 +1005,19 @@ def generate_baseline_video_grid(
     if total_rows <= 0:
         raise ValueError("Total rows for baseline video grid must be positive")
 
-    # Extract frames per baseline and video ID
+    # Load keyframe centers and radii per video from spline_prompts (by id)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    spline_path = os.path.join(script_dir, "prompts", "spline_prompts.csv")
+    spline_prompts = pd.read_csv(spline_path)
+    # Resolve center_list and radius_list per video (parse CSV strings)
+    keyframe_centers_per_video = []
+    keyframe_radii_per_video = []
+    for vid_id in video_ids:
+        row = spline_prompts[spline_prompts["id"] == int(vid_id)].iloc[0]
+        keyframe_centers_per_video.append(ast.literal_eval(row["center_list"]))
+        keyframe_radii_per_video.append(ast.literal_eval(row["radius_list"]))
+
+    # Extract frames per baseline and video ID (no circle overlay in extract)
     frames_bv = []  # shape: [baseline][video][frames_per_video]
     for baseline in baselines:
         baseline_frames = []
@@ -980,13 +1028,25 @@ def generate_baseline_video_grid(
                 video_path,
                 frames_per_video,
                 downsample_factor=downsample_factor,
-                draw_circle_overlay=draw_circle_overlay,
+                draw_circle_overlay=False,
                 outline_width_frac=outline_width_frac,
                 outline_color=outline_color,
                 center_crop_aspect=center_crop_aspect,
             )
             baseline_frames.append(frames)
         frames_bv.append(baseline_frames)
+
+    # Draw foveation circle on each baseline×video frame list from params
+    if draw_circle_overlay:
+        for b in range(num_baselines):
+            if b > 0: # not high-res
+                for v in range(num_videos):
+                    frames_bv[b][v] = draw_foveation_circle_from_params(
+                        frames_bv[b][v],
+                        keyframe_centers_per_video[v],
+                        keyframe_radii_per_video[v],
+                        outline_color=outline_color,
+                    )
 
     # Build images list in row-major order for stack_images_grid:
     # For each video (in video_ids order), for each baseline (in baselines order),
