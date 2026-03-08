@@ -1,3 +1,140 @@
+
+### SUPPLEMENTARY MATERIALS
+
+# stack saliency images
+
+for idx in $(seq -w 000 099); do
+python generate_paper_figures.py stack \
+  --images \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/bbox_generation/${idx}/img_0000.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/bbox_generation/${idx}/img_0001.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/bbox_generation/${idx}/img_0002.png \
+  -o /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/bbox_generation/stacked/${idx}.png \
+  --num-rows 1 \
+  --num-cols 3 \
+  --pad-px 20 \
+  --downsample 1
+done
+
+for idx in $(seq -w 000 099); do
+python generate_paper_figures.py stack \
+  --images \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/bbox_multi_object_generation/${idx}/img_0000.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/bbox_multi_object_generation/${idx}/img_0001.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/bbox_multi_object_generation/${idx}/img_0002.png \
+  -o /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/bbox_multi_object_generation/stacked/${idx}.png \
+  --num-rows 1 \
+  --num-cols 3 \
+  --pad-px 20 \
+  --downsample 1
+done
+exit
+
+
+for idx in $(seq -w 000 099); do
+python generate_paper_figures.py stack \
+  --images \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/saliency_generation/${idx}/img_0000.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/saliency_generation/${idx}/img_0001.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/saliency_generation/${idx}/img_0002.png \
+  -o /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/saliency_generation/stacked/${idx}.png \
+  --num-rows 1 \
+  --num-cols 3 \
+  --pad-px 20 \
+  --downsample 1
+done
+
+for idx in $(seq -w 000 099); do
+python generate_paper_figures.py stack \
+  --images \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/saliency_generation_multi_object/${idx}/img_0000.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/saliency_generation_multi_object/${idx}/img_0001.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/saliency_generation_multi_object/${idx}/img_0002.png \
+  -o /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/saliency_generation_multi_object/stacked/${idx}.png \
+  --num-rows 1 \
+  --num-cols 3 \
+  --pad-px 20 \
+  --downsample 1
+done
+
+for fov_trajectory_type in radius circular multi_circle; do
+  for idx in $(seq -w 000 099); do
+    python generate_paper_figures.py stack \
+      --images \
+        /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/supp/foveation_trajectory/ours_${fov_trajectory_type}/${idx}/img_0000.png \
+        /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/supp/foveation_trajectory/ours_${fov_trajectory_type}/${idx}/img_0001.png \
+        /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/supp/foveation_trajectory/ours_${fov_trajectory_type}/${idx}/img_0002.png \
+      -o /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/supp/foveation_trajectory/ours_${fov_trajectory_type}/stacked/${idx}.png \
+      --num-rows 1 \
+      --num-cols 3 \
+      --pad-px 20 \
+      --downsample 1
+  done
+done
+
+for category in games robotics av; do
+  for idx in $(seq -w 000 099); do
+    python generate_paper_figures.py stack \
+      --images \
+        /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/supp/${category}_claude/${idx}/img_0000.png \
+        /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/supp/${category}_claude/${idx}/img_0002.png \
+        /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/supp/${category}_claude/${idx}/img_0004.png \
+      -o /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/supp/${category}_claude/stacked/${idx}.png \
+      --num-rows 1 \
+      --num-cols 3 \
+      --pad-px 20 \
+      --downsample 1
+  done
+done
+
+
+exit
+
+# randomized baseline figure
+python generate_paper_figures.py stack \
+  --images \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00031.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00062.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00045.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00002.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00095.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00030.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00007.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00086.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00039.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00028.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00006.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00055.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00032.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00052.png \
+    /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked/00013.png \
+  -o /home/brianchc/foveated_diffusion/paper_figures/supp/baseline_1.png \
+  --num-rows 3 \
+  --num-cols 9 \
+  --pad-px 20 \
+  --downsample 2
+
+### MAIN PAPER
+# saliency
+# idx 000-099
+for idx in $(seq -w 000 099); do
+python generate_paper_figures.py foveation_trajectory \
+  --base-dir /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/supp \
+  --row1-name av_claude \
+  --row2-name "" \
+  --subfolder-idx $idx \
+  --num-rows 3 \
+  --output /home/brianchc/foveated_diffusion/paper_figures/supp/av_claude/${idx}.png
+done
+
+# stacked randomized baseline figure
+python generate_paper_figures.py stack_folders \
+  --folder /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized_3 \
+  --image-glob "img*.png" \
+  --pad-px 20 \
+  -o /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized_3/stacked
+exit
+
 python generate_paper_figures.py baselines_video \
   --base-dir /home/brianchc/foveated_diffusion/results/video_results/baseline \
   --baselines high_res naive ours \
@@ -95,14 +232,6 @@ python generate_paper_figures.py stack \
 exit
 
 
-# stacked randomized baseline figure
-python generate_paper_figures.py stack_folders \
-  --folder /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized \
-  --image-glob "img*.png" \
-  --pad-px 20 \
-  -o /home/brianchc/foveated_diffusion/results/eccv2026_final_v2/baseline_comparison_randomized/stacked
-exit
-
 # video frame grid for teaser
 for video_folder in 720p_cam_prompt 720p_no_cam_prompt; do
   for video_id in 53 56 57 62 75 79 81 85 87 88 91; do
@@ -181,18 +310,6 @@ python generate_paper_figures.py stack \
   --pad-px 20
 exit 
 
-
-# saliency
-# idx 000-099
-for idx in $(seq -w 000 019); do
-python generate_paper_figures.py foveation_trajectory \
-  --base-dir /home/brianchc/foveated_diffusion/results/eccv2026_final_v2 \
-  --row1-name saliency_generation_self_driving_v2 \
-  --row2-name "" \
-  --subfolder-idx $idx \
-  --num-rows 3 \
-  --output /home/brianchc/foveated_diffusion/paper_figures/saliency_generation_self_driving_v2/${idx}.png
-done
 
 exit
 
