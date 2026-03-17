@@ -528,23 +528,30 @@ def create_tokenization_mask_vis(foveation_mask, height, width):
     upsampled = np.repeat(np.repeat(mask_np, 16, axis=0), 16, axis=1)[:height, :width]
 
     vis = np.full((height, width, 3), 255, dtype=np.uint8)
-    vis[upsampled < 0.5] = [200, 200, 200]
+    vis[upsampled < 0.5] = [225, 225, 225]
 
     yy = np.arange(height)
     xx = np.arange(width)
 
+    border_px = 4
     hr_grid = np.zeros((height, width), dtype=bool)
-    hr_grid[yy % 16 < 2, :] = True
-    hr_grid[:, xx % 16 < 2] = True
+    hr_grid[yy % 16 < border_px, :] = True
+    hr_grid[:, xx % 16 < border_px] = True
 
     lr_grid = np.zeros((height, width), dtype=bool)
-    lr_grid[yy % 32 < 2, :] = True
-    lr_grid[:, xx % 32 < 2] = True
+    lr_grid[yy % 32 < border_px, :] = True
+    lr_grid[:, xx % 32 < border_px] = True
 
     hr_region = upsampled > 0.5
     outline = (hr_grid & hr_region) | (lr_grid & ~hr_region)
 
     vis[outline] = [0, 0, 0]
+
+    # top, right, bottom, left borders are also black
+    vis[yy < border_px, :] = [0, 0, 0]
+    vis[yy > height - border_px, :] = [0, 0, 0]
+    vis[:, xx < border_px] = [0, 0, 0]
+    vis[:, xx > width - border_px] = [0, 0, 0]
     return vis
 
 
@@ -1308,6 +1315,7 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
         tok_vis = create_tokenization_mask_vis(fov_mask, height, width)
         imageio.imwrite(os.path.join(tok_mask_dir, f"tokenization_mask_{col:04d}.png"), tok_vis)
     print(f"Saved {num_cols} tokenization masks to {tok_mask_dir}")
+    exit()
 
     for prompt_idx, prompt in enumerate(prompts):
         prompt_dir = os.path.join(output_dir, f"{prompt_idx:03d}")
