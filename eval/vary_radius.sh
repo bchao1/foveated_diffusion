@@ -30,13 +30,13 @@ CUDA_VISIBLE_DEVICES=$GPU_ID python inference.py \
     --experiment foveation_trajectory_grid \
     --foveation_trajectory_type radius \
     --decode_mode merge \
-    --output_dir ../results/eccv2026_final_v2/vary_radius/${MODEL} \
+    --output_dir ../results/eccv2026_final_v2/website/vary_radius/${MODEL} \
     --seed 42 \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
-    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/saliency.csv \
+    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/website_prompts.csv \
     --num_prompts 100 \
-    --num_cols 5 \
+    --num_cols 10 \
     --foveation_outline true \
     --soft_foveation_blend true \
     --outline_width_frac 0.005

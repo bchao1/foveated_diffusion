@@ -1,6 +1,20 @@
 
 ### SUPPLEMENTARY MATERIALS
 
+# video frame grid for teaser
+for video_id in $(seq 1 100); do
+  echo "Generating video grid for ${video_folder}/${video_id}"
+  python generate_paper_figures.py video_grid \
+    --folder /home/brianchc/foveated_diffusion/results/video_results/baseline/ours/${video_id}.mp4 \
+    --image-glob "*.png" \
+    --num-rows 3 \
+    --num-cols 1 \
+    --pad-px 2 \
+    --output /home/brianchc/foveated_diffusion/paper_figures/videos/failures_circle/${video_id}.png
+done
+exit
+
+
 # stack saliency images
 
 for idx in $(seq -w 000 099); do

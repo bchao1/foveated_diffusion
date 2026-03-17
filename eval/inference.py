@@ -350,6 +350,9 @@ def generate_foveation_trajectory_masks(height, width, args, device):
       - "circular": center on orbit
       - "polygons": sequence of triangle/square/hexagon/star with random center and scale
       - "multi_circle": each mask is 2-3 disjoint circles with varying position and size
+      - "grid": mask center moves along an M*N grid (args.grid_rows x args.grid_cols).
+               Positions span [-orbit_radius, +orbit_radius] in both axes.
+               mask_radius and mask_shape control the foveation region at each position.
     Same trajectory is reused for all prompts.
     Returns (masks, full_res_masks) where full_res_masks are at (height, width) with same geometry.
     """
@@ -392,6 +395,25 @@ def generate_foveation_trajectory_masks(height, width, args, device):
             )
             masks.append(m)
             full_res_masks.append(m_full)
+    elif traj_type == "grid":
+        grid_rows = getattr(args, "grid_rows", 3)
+        grid_cols = getattr(args, "grid_cols", 3)
+        grid_range = orbit_radius
+        x_positions = np.linspace(-grid_range, grid_range, grid_cols)
+        y_positions = np.linspace(-grid_range, grid_range, grid_rows)
+        for row in range(grid_rows):
+            for col in range(grid_cols):
+                center = (float(x_positions[col]), float(y_positions[row]))
+                m = create_foveation_mask(
+                    height, width, center=center, r=mask_radius,
+                    shape=getattr(args, "mask_shape", "circular"), device=device
+                )
+                m_full = create_foveation_mask_full_res(
+                    height, width, center=center, r=mask_radius,
+                    shape=getattr(args, "mask_shape", "circular"), device=device
+                )
+                masks.append(m)
+                full_res_masks.append(m_full)
     elif traj_type == "multi_circle":
         # Sequence of masks; each mask is 2-3 non-overlapping circles distributed across the image
         num_circles_lo = 2
@@ -1444,8 +1466,10 @@ if __name__ == "__main__":
     parser.add_argument('--num_prompts', type=int, default=None, help='Number of prompts to run')
     parser.add_argument('--num_cols', type=int, default=4, help='Number of columns (foveation steps per row) for foveation_trajectory_grid')
     parser.add_argument('--foveation_trajectory_type', type=str, default='circular',
-                        choices=['radius', 'circular', 'polygons', 'multi_circle'],
-                        help='Trajectory for foveation_trajectory_grid: radius, circular, polygons (triangle/square/hexagon/star), or multi_circle (2-3 disjoint circles per mask)')
+                        choices=['radius', 'circular', 'polygons', 'multi_circle', 'grid'],
+                        help='Trajectory for foveation_trajectory_grid: radius, circular, polygons (triangle/square/hexagon/star), multi_circle (2-3 disjoint circles per mask), or grid (M*N grid of positions)')
+    parser.add_argument('--grid_rows', type=int, default=3, help='Number of rows (M) for grid foveation trajectory')
+    parser.add_argument('--grid_cols', type=int, default=3, help='Number of columns (N) for grid foveation trajectory')
     parser.add_argument('--outline_width_frac', type=float, default=0.005, help='Foveation outline line width as fraction of image width (default 0.01)')
     parser.add_argument('--outline_color', type=str, default='255,0,0', help='Foveation outline color as R,G,B (default red: 255,0,0)')
     parser.add_argument('--foveation_outline', type=_str_to_bool, default=False, help='Do not draw foveation border on foveation_trajectory_grid images (save plain image)')
