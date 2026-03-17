@@ -11,15 +11,15 @@ CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment foveation_trajectory_grid \
     --foveation_trajectory_type ${foveation_trajectory_type} \
     --decode_mode merge \
-    --output_dir ../results/eccv2026_final_v2/supp/foveation_trajectory/ours_${foveation_trajectory_type} \
+    --output_dir ../results/eccv2026_final_v2/website/teaser_grid_10x10 \
     --seed 42 \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
     --prompt "A lion lounges calmly, displaying its powerful physique, with a soft focus highlighting its majestic mane and intense gaze." \
     --orbit_radius 0.3 \
     --mask_radius 0.3 \
-    --grid_rows 5 \
-    --grid_cols 5 \
+    --grid_rows 10 \
+    --grid_cols 10 \
     --foveation_outline true \
     --soft_foveation_blend true \
     --outline_width_frac 0.005 

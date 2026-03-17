@@ -511,6 +511,43 @@ def _gaussian_blur_mask_2d(mask_4d, sigma_pixels, device, dtype):
     return out
 
 
+def create_tokenization_mask_vis(foveation_mask, height, width):
+    """
+    Visualize token grid structure from a latent-space foveation mask.
+
+    Args:
+        foveation_mask: (H//16, W//16) tensor with values 0 or 1 from create_foveation_mask.
+        height, width: Full image dimensions.
+
+    Returns:
+        (H, W, 3) uint8 numpy array. HR region (mask=1) is white with 16x16 token
+        outlines; LR region (mask=0) is light gray with 32x32 (2x2 token) outlines.
+    """
+    mask_np = foveation_mask.detach().cpu().numpy() if hasattr(foveation_mask, "detach") else np.asarray(foveation_mask)
+
+    upsampled = np.repeat(np.repeat(mask_np, 16, axis=0), 16, axis=1)[:height, :width]
+
+    vis = np.full((height, width, 3), 255, dtype=np.uint8)
+    vis[upsampled < 0.5] = [200, 200, 200]
+
+    yy = np.arange(height)
+    xx = np.arange(width)
+
+    hr_grid = np.zeros((height, width), dtype=bool)
+    hr_grid[yy % 16 < 2, :] = True
+    hr_grid[:, xx % 16 < 2] = True
+
+    lr_grid = np.zeros((height, width), dtype=bool)
+    lr_grid[yy % 32 < 2, :] = True
+    lr_grid[:, xx % 32 < 2] = True
+
+    hr_region = upsampled > 0.5
+    outline = (hr_grid & hr_region) | (lr_grid & ~hr_region)
+
+    vis[outline] = [0, 0, 0]
+    return vis
+
+
 def draw_foveation_outline(
     image_np,
     mask_token_grid,
@@ -1264,6 +1301,14 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
     num_cols = len(foveation_masks)
     print(f"Trajectory type={getattr(args, 'foveation_trajectory_type', 'circular')}, {num_cols} masks")
 
+    # Save tokenization mask visualizations (shared across prompts)
+    tok_mask_dir = os.path.join(output_dir, "tokenization_masks")
+    os.makedirs(tok_mask_dir, exist_ok=True)
+    for col, fov_mask in enumerate(foveation_masks):
+        tok_vis = create_tokenization_mask_vis(fov_mask, height, width)
+        imageio.imwrite(os.path.join(tok_mask_dir, f"tokenization_mask_{col:04d}.png"), tok_vis)
+    print(f"Saved {num_cols} tokenization masks to {tok_mask_dir}")
+
     for prompt_idx, prompt in enumerate(prompts):
         prompt_dir = os.path.join(output_dir, f"{prompt_idx:03d}")
         os.makedirs(prompt_dir, exist_ok=True)
@@ -1317,7 +1362,7 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
             mask_high = np.clip(mask_high, 0.0, 1.0)
             mask_uint8 = (mask_high * 255).astype(np.uint8)
             mask_path = os.path.join(prompt_dir, f"mask_{col:04d}.png")
-            imageio.imwrite(mask_path, mask_uint8)
+            #imageio.imwrite(mask_path, mask_uint8)
             print(f"Saved {prompt_idx:03d}/img_{col:04d}.png, {prompt_idx:03d}/mask_{col:04d}.png")
     print(f"Done. Grid saved under {output_dir}")
 
