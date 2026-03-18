@@ -119,7 +119,8 @@ def FoveatedFlowMatchSFTLoss(pipe: BasePipeline, **inputs):
         foveation_mask = _resolve_foveation_mask(pipe, inputs, h, w)
         inputs["foveation_mask"] = foveation_mask
         prediction_type = inputs.get("prediction_type", "clean")
-        noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id, prediction_type)
+        lr_downsample_factor = inputs.get("lr_downsample_factor", 2)
+        noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id, prediction_type, lr_downsample_factor=lr_downsample_factor)
     else:
         # Fallback to standard Flow Matching
         models = {name: getattr(pipe, name) for name in pipe.in_iteration_models}
@@ -165,19 +166,21 @@ def FoveatedFlowMatchNoTokenAESFTLoss(pipe: BasePipeline, **inputs):
         foveation_mask = _resolve_foveation_mask(pipe, inputs, h, w)
 
         # contruct merged training target
-        h_2, w_2 = h // 2, w // 2
+        lr_factor = inputs.get("lr_downsample_factor", 2)
+        n_per_block = lr_factor * lr_factor
+        h_d, w_d = h // lr_factor, w // lr_factor
         training_target_merged = training_target.view(batch_size, h, w, channels)
-        training_target_downsampled = training_target_downsampled.view(batch_size, h_2, w_2, channels)
-        training_target_merged = training_target_merged.view(batch_size, h_2, 2, w_2, 2, channels)
-        training_target_merged = training_target_merged.permute(0, 1, 3, 2, 4, 5).reshape(batch_size, h_2, w_2, 4, channels)
+        training_target_downsampled = training_target_downsampled.view(batch_size, h_d, w_d, channels)
+        training_target_merged = training_target_merged.view(batch_size, h_d, lr_factor, w_d, lr_factor, channels)
+        training_target_merged = training_target_merged.permute(0, 1, 3, 2, 4, 5).reshape(batch_size, h_d, w_d, n_per_block, channels)
 
-        mask_blocks = foveation_mask.view(h_2, 2, w_2, 2).permute(0, 2, 1, 3).reshape(h_2, w_2, 4)
+        mask_blocks = foveation_mask.view(h_d, lr_factor, w_d, lr_factor).permute(0, 2, 1, 3).reshape(h_d, w_d, n_per_block)
         is_high_res_block = (mask_blocks.sum(dim=-1) > 0)
         is_low_res_block = ~is_high_res_block
 
         training_target_merged[:, is_low_res_block, 0, :] = training_target_downsampled[:, is_low_res_block, :].to(training_target_merged.dtype)
 
-        valid_tokens = torch.ones(h_2, w_2, 4, device=training_target_merged.device, dtype=torch.bool)
+        valid_tokens = torch.ones(h_d, w_d, n_per_block, device=training_target_merged.device, dtype=torch.bool)
         valid_tokens[is_low_res_block, 1:] = False
 
         training_target_merged = training_target_merged.view(batch_size, -1, channels)
@@ -191,7 +194,7 @@ def FoveatedFlowMatchNoTokenAESFTLoss(pipe: BasePipeline, **inputs):
         inputs["foveation_mask"] = foveation_mask
         prediction_type = inputs.get("prediction_type", "clean")
         tokenAE_training = inputs.get("tokenAE_training", False)
-        noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id, prediction_type, tokenAE_training)
+        noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id, prediction_type, tokenAE_training, lr_downsample_factor=lr_factor)
     else:
         # Fallback to standard Flow Matching
         models = {name: getattr(pipe, name) for name in pipe.in_iteration_models}
@@ -235,14 +238,15 @@ def FoveatedDistillLoss(pipe: BasePipeline, **inputs):
         h, w = height // 16, width // 16
         foveation_mask = _resolve_foveation_mask(pipe, inputs, h, w)
         prediction_type = inputs.get("prediction_type", "clean")
+        lr_downsample_factor = inputs.get("lr_downsample_factor", 2)
 
         # unfoveated training target
         inputs["foveation_mask"] = None
-        training_target = pipe.foveated_training_forward(inputs, timestep, timestep_id, prediction_type)
+        training_target = pipe.foveated_training_forward(inputs, timestep, timestep_id, prediction_type, lr_downsample_factor=lr_downsample_factor)
 
         # foveated prediction
         inputs["foveation_mask"] = foveation_mask
-        noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id, prediction_type)
+        noise_pred = pipe.foveated_training_forward(inputs, timestep, timestep_id, prediction_type, lr_downsample_factor=lr_downsample_factor)
     else:
         # Fallback to standard Flow Matching
         models = {name: getattr(pipe, name) for name in pipe.in_iteration_models}

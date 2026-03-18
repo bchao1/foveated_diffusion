@@ -694,6 +694,7 @@ class Flux2DiTFoveated(torch.nn.Module):
         # Foveation parameters
         resolution_mask: Optional[torch.Tensor] = None,
         resolution_mask_top_left: Optional[torch.Tensor] = None,
+        lr_factor: int = 2,
     ):
         """
         Forward pass with support for foveated generation via resolution_mask.
@@ -744,10 +745,10 @@ class Flux2DiTFoveated(torch.nn.Module):
         # For FLUX2: img_ids has shape [S, 4] with (T, H, W, L) format
         ids_hr = torch.cat((txt_ids, img_ids), dim=0)
         
-        # For LR grid, divide H and W coordinates by 2 (don't touch T and L)
+        # For LR grid, divide H and W coordinates by lr_factor (don't touch T and L)
         img_ids_lr = img_ids.clone()
-        img_ids_lr[:, 1] = img_ids_lr[:, 1] / 2.0  # H coordinate
-        img_ids_lr[:, 2] = img_ids_lr[:, 2] / 2.0  # W coordinate
+        img_ids_lr[:, 1] = img_ids_lr[:, 1] / float(lr_factor)  # H coordinate
+        img_ids_lr[:, 2] = img_ids_lr[:, 2] / float(lr_factor)  # W coordinate
         ids_lr = torch.cat((txt_ids, img_ids_lr), dim=0)
 
         # Compute dual RoPE embeddings

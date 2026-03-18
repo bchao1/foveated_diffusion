@@ -133,6 +133,7 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         detach_z_mix=False,
         is_foveated_pipeline=True,
         foveated_training_mode="random",
+        lr_downsample_factor=2,
     ):
         super().__init__()
         # Load models
@@ -148,6 +149,8 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         self.foveated_training_mode = foveated_training_mode
         assert foveated_training_mode in ("fixed", "random", "saliency", "bbox"), "foveated_training_mode must be one of: fixed, random, saliency, bbox"
         print("<Flux2FoveatedImageTrainingModule> ===> Foveated training mode: {}".format(self.foveated_training_mode))
+        self.lr_downsample_factor = lr_downsample_factor
+        print("<Flux2FoveatedImageTrainingModule> ===> LR downsample factor: {}".format(self.lr_downsample_factor))
 
         # set token upsampler and downsampler (register as our children so they're in the module tree for optimizer/grads)
         self.pipe.token_upsampler = token_upsampler
@@ -251,6 +254,7 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
             "prediction_type": self.prediction_type,
             "tokenAE_training": self.tokenAE_training,
             "foveated_training_mode": getattr(self, "foveated_training_mode", "random"),
+            "lr_downsample_factor": self.lr_downsample_factor,
         }
         inputs_shared = self.parse_extra_inputs(data, self.extra_inputs, inputs_shared)
         return inputs_shared, inputs_posi, inputs_nega
@@ -493,6 +497,7 @@ def flux2_parser():
     
     # Foveated pipeline arguments
     parser.add_argument("--is_foveated_pipeline", type=_str_to_bool, default=True, help="Is foveated pipeline (true/false).")
+    parser.add_argument("--lr_downsample_factor", type=int, default=2, choices=[2, 4], help="LR downsample factor for foveated diffusion (2=4x fewer tokens, 4=16x fewer tokens).")
     parser.add_argument(
         "--foveated_training_mode",
         type=str,
@@ -560,6 +565,7 @@ if __name__ == "__main__":
         detach_z_mix=args.detach_z_mix,
         is_foveated_pipeline=args.is_foveated_pipeline,
         foveated_training_mode=getattr(args, "foveated_training_mode", "random"),
+        lr_downsample_factor=args.lr_downsample_factor,
     )
     # Create logger (WandB or standard)
     if args.use_wandb:
@@ -583,6 +589,7 @@ if __name__ == "__main__":
                 "decode_mode": args.decode_mode,
                 "prediction_type": args.prediction_type,
                 "tokenAE_training": args.tokenAE_training,
+                "lr_downsample_factor": args.lr_downsample_factor,
             },
         )
     else:

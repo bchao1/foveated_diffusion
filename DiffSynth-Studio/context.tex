@@ -1,0 +1,509 @@
+\newcommand{\latentspace}{\mathbb{R}^{c \times (h \cdot w)}}
+\newcommand{\latentspacespatial}{\mathbb{R}^{h \times w}}
+\newcommand{\latentspacevideo}{\mathbb{R}^{c \times (f \cdot h \cdot w)}}
+\newcommand{\gaussiannoise}{\mathcal{N}(0, I)}
+\newcommand{\latentspacefoveated}{\mathbb{R}^{c \times L}}
+\newcommand{\latentspaceLR}{\mathbb{R}^{c \times (\frac{h}{2} \cdot \frac{w}{2})}}
+
+
+\newcommand{\spaceimage}{\mathbb{R}^{H \times W}}
+\newcommand{\spacevideo}{\mathbb{R}^{F \times H \times W}}
+\newcommand{\spacemasklatent}{\{0,1\}^{h \times w}}
+\newcommand{\spacemaskimage}{\{0,1\}^{H \times W}}
+
+% images
+\newcommand{\imageHR}{x^{\text{high}}}
+\newcommand{\imageLR}{x^{\text{low}}}
+\newcommand{\imageFOV}{x^{\text{fov}}}
+
+
+% latents
+
+\NewDocumentCommand{\latentHR}{O{t}}{z_{#1}^{\text{high}}}
+\NewDocumentCommand{\latentLR}{O{t}}{z_{#1}^{\text{low}}}
+\NewDocumentCommand{\latentFOV}{O{t}}{z_{#1}^{\mathrm{fov}}}
+\newcommand{\latentclean}{z_0}
+\newcommand{\latentnoise}{z_1}
+\NewDocumentCommand{\latent}{O{t}}{z_{#1}}
+
+
+
+% foveated training related
+\newcommand{\foveationmask}{M}
+\newcommand{\encoder}{E}
+\newcommand{\decoder}{D}
+\newcommand{\downsampler}{Down}
+\newcommand{\upsampler}{Up}
+\newcommand{\dit}{DiT}
+
+% paper editing
+
+\newcommand{\ctcell}{>{\centering\arraybackslash}}
+\newcommand{\bc}[1]{\textcolor{red}{[BC: #1]}}
+\newcommand{\edit}[1]{\textcolor{red}{#1}}
+\newcommand{\ly}[1]{\textcolor{violet}{[LY: #1]}}
+\newcommand{\hx}[1]{\textcolor{teal}{HX: #1}}
+
+\begin{figure}[!t]
+    \centering
+    \includegraphics[width=\textwidth]{figures/teaser.pdf}
+    % \vspace{-17pt}
+    \caption{\textbf{Foveated Diffusion.} (a) Given user-specified masks and text prompts as input, our method generates foveated content using fewer tokens than full high-resolution generation, resulting in faster inference while maintaining comparable perceptual quality.
+    (b, c) Foveated Diffusion is well suited for tasks where salient regions require high-resolution synthesis, while peripheral regions can be generated at a lower resolution.}
+    % \vspace{-3pt}
+    \label{fig:teaser}
+\end{figure}
+
+    
+Interactive image and streaming video generation place strict demands on the frame rates of emerging diffusion and flow matching models used for this purpose~\cite{bruce2024genie,alonso2024diffusion,che2024gamegen,decart2024oasis,feng2024matrix,jin2024pyramidal,kodaira2025genie3,song2025history,valevski2024diffusion,weng2024art,yu2025gamefactory,henschel2025streamingt2v,wu2025spmem,po2025long,zhang2025frame,yin2025slow}. At the same time, demands on image resolutions and video frame or context lengths are also growing. How can we generate an ever-increasing number of tokens at fast frame rates when the computational complexity of the attention mechanism in modern diffusion transformers (DiTs) \cite{peebles2023dit} grows quadratically with the token sequence length?
+
+
+Our work builds on an intuitive insight that answers this question: ultimately, a human observes the generated content, so why not exploit the unique characteristics of the human visual system to generate the content in a computationally efficient, perceptually motivated manner? Specifically, we build on the concept of foveation --- humans are able to perceive very high-resolution visual information in a small region around their gaze location (the foveal region) but their ability to resolve detail rapidly degrades in the visual periphery~\cite{anstis1974chart,weymouth1958visual}. 
+
+With this work, we introduce the concept of \emph{Foveated Diffusion} and develop a practical framework for post-training existing image or video generation models for foveated visual generation. Our framework starts with a foveation mask that guides the spatial layout of non-uniformly distributed tokens over the image or video frame that we wish to generate. Our key idea is eccentricity-dependent token allocation: given a foveation mask that defines the high-acuity foveal region, we allocate higher token density near the fovea and progressively fewer tokens toward the periphery, enabling spatially adaptive computation aligned with human perceptual sensitivity.
+% 
+Using a foveated token layout, we follow standard diffusion or flow-matching procedures to generate an image from Gaussian noise and conditioning text prompts (see Fig.~\ref{fig:teaser}); the key difference between Foveated Diffusion and conventional methods is that we operate with a significantly reduced set of tokens during denoising at all times, achieving substantial computational savings. We develop a simple yet highly effective mixed-resolution tokenization scheme, accompanied by a suitable modification of Rotary Positional Embeddings (RoPE)~\cite{su2024roformer,wu2025crpa}, along with a post-training strategy that transforms high-resolution pretrained models into foveated generative models. Together, these contributions establish a principled framework that preserves cross-resolution content consistency while achieving significant speedup.
+
+Our approach is inspired by foveated rendering~\cite{geisler1998foveated,guenter2012foveated3d,patney2016gazeVR}, a standard technique widely used in traditional computer graphics. Foveated Diffusion and rendering share the idea of leveraging the user's gaze location and a model of eccentricity-dependent acuity to reduce computation in the visual generation process. The key difference is that foveated rendering accelerates modules of the traditional graphics pipeline, such as the geometry and shading engines, whereas our approach seeks to achieve similar benefits for modern DiT-based diffusion and flow-matching models. While similar in spirit, these two approaches to foveated content creation differ substantially in their methods. 
+
+In summary, we propose a perceptually motivated framework for computationally efficient and spatially adaptive image and video generation. Our approach is backed by an extensive set of evaluations, including a detailed analysis of the compute--quality trade-off in various settings as well as a user study. \\
+Our key contributions are as follows:
+%
+\begin{itemize}
+    \item We introduce of the concept of \emph{Foveated Diffusion}: a perceptually motivated, mixed-resolution diffusion algorithm for efficient image and video generation.
+    \item We present a principled approach for tokenization, training, and inference of DiT-based generative models using spatially adaptive mixed-resolution tokens, providing cross-resolution content consistency by design.
+    \item We demonstrate significant speedups of up to $2\times$ and $4\times$ for image and video generation, respectively, while preserving perceptual quality, validated through a carefully designed user study and visual quality metrics.
+\end{itemize}
+
+
+
+
+\endinput
+
+Most visual content is created to be observed by human users, making gaze-contingent content creation particularly important for immersive and interactive environments. 
+% 
+This motivates the adoption of human-vision-inspired creation strategies, most notably \emph{foveation}. 
+% 
+Modeled after the human eye’s fovea (the small, central portion of the retina responsible for sharp details), foveation \cite{guenter2012foveated3d} allows for high-acuity rendering in the gaze-centered region while intentionally utilizing lower-resolution or perceptually-equivalent content in the periphery. 
+% 
+By exploiting these biological constraints, foveated rendering greatly reduces the computational overhead and the number of pixels processed without compromising perceived visual quality.
+
+
+While foveation techniques are well-established in rendering pipelines that rely on either explicit \cite{stengel2016adaptive} or implicit \cite{shi2024sceneFoVNeRF, deng2022fovnerf} scene representations, they remain largely unrealized in modern generative modeling.
+% 
+Generative models, based on either diffusion \cite{ song2021scorebased,ho2020denoising} or flow matching \cite{lipman2023flow}, have emerged in recent years as the state-of-the-art for visual generation.
+% 
+These models enable a wide range of user-interactive applications, including video world models \cite{wu2025spmem, bar2024navigationworldmodels} and generative simulation environments \cite{hafner2025trainingagentsinsidescalable, guo2025ctrl}, which all have significant implications for robotics and immersive AR/VR.
+% 
+Nonetheless, current generative models prioritize pixel-accurate, high-resolution image and video synthesis \cite{rombach2022latent,wan2025wan,labs2025flux1kontext}, offering no inherent mechanism for spatially adaptive computation.
+% 
+Moreover, modern architectures increasingly rely on Transformer-based backbones (e.g., DiTs) \cite{peebles2023dit, vaswani2017attention,esser2024scaling}, where the computational cost of self-attention layers scales quadratically with respect to the input token count.
+% 
+This results in high computational and memory overhead, limits context length, and potentially harms the long-range consistency required for immersive generation.
+
+\begin{figure}[!t]
+    \centering
+    \includegraphics[width=\textwidth]{figures/teaser.pdf}
+    \caption{\textbf{Foveation Diffusion achieves efficient visual generation through spatially-adaptive token allocation.} Foveated Diffusion is well suited for visual generation tasks in which perceptual or task-relevant regions require high-resolution synthesis, while peripheral regions can be rendered at lower resolution. }
+    \label{fig:placeholder}
+\end{figure}
+
+In this paper, we introduce foveation as a significant, untapped opportunity for efficiency in the rapidly advancing field of generative image and video synthesis.
+% 
+We present a principled scheme for foveation-based generation using a diffusion process, which we refer to as \emph{Foveated Diffusion}.
+% 
+Our key idea is inspired by the principle of foveation: allocate fewer tokens to low-resolution peripheral regions, where human visual acuity is lower, while retaining higher token density in high-resolution foveal regions.
+% 
+By doing so, we drastically reduce the total token count and achieve notable savings in transformer-based computation, while maintaining the overall perceptual fidelity and visual quality of the generated content.
+
+
+Existing techniques for reducing the computational cost of Diffusion Transformers (DiTs) include hardware-aware optimizations \cite{dao2022flashattention}, sparse-attention mechanisms \cite{zhang2025spargeattn, xi2025sparsevideogen}, KV caching \cite{yin2025causvid, huang2025selfforcing}, and token merging \cite{bolya2022tome, lu2025toma}.
+% 
+Whereas these methods typically preserve the underlying spatial tokenization of the input, our approach explicitly reduces the effective token count through spatially adaptive token allocation based on visual eccentricity. 
+% 
+Thus, foveated generation offers an orthogonal efficiency axis to attention-mechanism speedups; it is complementary to existing optimizations and can be combined with them to further reduce the computential cost of the generation.
+% 
+
+
+The most closely related line of work involves training-free methods that aim for mixed-resolution diffusion \cite{jeong2025upsample, wu2025crpa}.
+% 
+However, distinct from our gaze-contingent perspective, these works typically rely on saliency maps to characterize high-resolution regions. 
+% 
+% \iffalse
+% Moreover, because these frameworks ultimately reconstruct full high-resolution outputs, they require latent upsampling and downsampling during diffusion. This introduces re-noising heuristics to maintain noise statistics and necessitates multi-stage denoising, limiting compatibility with distilled or single-stage real-time diffusion models.
+% \fi
+% 
+In contrast, we address a different paradigm where spatial masks are explicitly provided, allowing for precise control over the region of interest based on the observer's focus. 
+% 
+% Our method operates \textit{entirely in the mixed-resolution token domain}, without any explicit downsampling, upsampling, or re-noising heuristics, yielding a standard and generalizable diffusion framework that can be readily extended to other applications.
+Our diffusion process is natively defined within a mixed resolution tokenizations, without any additional trained modules required to downsample or upsample the tokens density, or crafted re-noising strategies. This yields a unified generative framework that can be readily extended to other modalities.
+% 
+Most notably, our approach does not target pixel-perfect reconstruction in low-resolution peripheral regions; instead, we optimize for perceptual plausibility, ensuring that generated content remains visually coherent while maximizing computational efficiency.
+
+
+Our framework is generally applicable for visual synthesis, and we demonstrate the efficacy of Foveated Diffusion for both image and video generation.
+% 
+By adopting a simple multi-scale tokenization scheme and tuning a transformer-based model for spatial-perceptual consistency, we achieve significant computational savings through structured token reduction.
+% 
+We provide an extensive analysis of the compute-quality trade-off across varying foveation masks and token ratios, validating that our method delivers practical acceleration with negligible perceptual degradation.
+
+We summarize our key contributions as follows:
+
+\begin{itemize}
+    \item Introduce \emph{Foveated Diffusion}, the potential of foveation- or gaze-based generation for DiT-based generative models.
+    \item Present a principled tokenization, training, and inference framework for diffusion models with mixed-resolution tokens.
+    \item Achieve significant speedup while preserving perceptual consistency in both image and video generation, validated through carefully-designed physiological user studies and visual quality metrics.
+\end{itemize}
+
+
+
+
+
+
+
+% \begin{enumerate}
+% \item \textbf{Diffusion Models for Visual Generation}
+% \begin{enumerate}
+%     \item Diffusion models have emerged as state-of-the-art generative models for visual generation, powering systems such as Veo, Sora, FLUX, Nano-Banana, and Qwen-Image.
+    
+%     \item These models prioritize pixel-accurate, high-resolution image and video synthesis.
+    
+%     \item They enable a wide range of applications, including:
+%     \begin{itemize}
+%         \item Robotics and egocentric perception for policy learning,
+%         \item Gaming, interactive media, and immersive AR/VR experiences,
+%         \item Video world models and autoregressive visual models,
+%         \item Large-scale generative simulation environments.
+%     \end{itemize}
+% \end{enumerate}
+
+% \item \textbf{Computational Complexity of State-of-the-Art Diffusion Models}
+% \begin{enumerate}
+%     \item Modern diffusion architectures increasingly rely on Transformer-based backbones (e.g., DiTs).
+    
+%     \item The computational cost of attention and MLP layers scales quadratically with respect to the input token count (or linearly for linear attention variants).
+    
+%     \item This results in:
+%     \begin{itemize}
+%         \item High computational and memory cost,
+%         \item Limited context length,
+%         \item Reduced long-range consistency under fixed compute budgets,
+%         \item Extremely high requirements for immersive, high-fidelity, long-form generation.
+%     \end{itemize}
+    
+%     \item Existing efficiency improvements include:
+%     \begin{enumerate}
+%         \item \textit{Token merging/reduction techniques} (e.g., ToMe, ATC, etc.).
+%         \item \textit{Sparse and efficient attention mechanisms}, including:
+%         \begin{itemize}
+%             \item Linear attention,
+%             \item Sliding-window attention,
+%             \item Ring attention,
+%             \item Sparse attention,
+%             \item KV caching and other hardware-aware optimizations.
+%         \end{itemize}
+%     \end{enumerate}
+% \end{enumerate}
+
+% \item \textbf{Human-Centric and Multi-Resolution Generation}
+% \begin{enumerate}
+%     \item Most visual data is ultimately generated for human users, particularly in interactive and immersive settings.
+    
+%     \item This motivates human-vision-inspired generation strategies, especially \emph{foveation}, grounded in properties of the human visual system (HVS).
+    
+%     \item Related concepts include:
+%     \begin{itemize}
+%         \item Foveated rendering,
+%         \item Level-of-Detail (LoD) rendering,
+%         \item Multi-resolution visual processing.
+%     \end{itemize}
+    
+%     \item Key idea: allocate fewer tokens to low-resolution regions while preserving perceptual quality in high-importance regions, thereby:
+%     \begin{itemize}
+%         \item Reducing total token count,
+%         \item Achieving quadratic savings in transformer computation,
+%         \item Maintaining perceptual fidelity.
+%     \end{itemize}
+% \end{enumerate}
+
+% \item \textbf{Technical Overview of Our Approach}
+% \begin{enumerate}
+%     \item Core components:
+%     \begin{itemize}
+%         \item TokenAE for content and cross-resolution consistency,
+%         \item Learnable latent downsampler and upsampler,
+%         \item Mixed-resolution DiT training and inference.
+%     \end{itemize}
+    
+%     \item Orthogonality to existing efficiency methods:
+%     \begin{itemize}
+%         \item Sparse/linear attention reduces $O(N^2)$ complexity while keeping $N$ fixed.
+%         \item Our method directly reduces $N$.
+%         \item Thus, our approach is complementary and operates along a different axis.
+%     \end{itemize}
+    
+%     \item Distinction from token merging/pruning or training-free acceleration (e.g., CRPA, RaLU):
+%     \begin{enumerate}
+%         \item No heuristic selection of merge regions — spatial masks are explicitly defined (e.g., gaze-based).
+%         \item No noise injection heuristics.
+%         \item We do not target pixel-perfect reconstruction in low-resolution regions; instead, we optimize perceptual quality.
+%     \end{enumerate}
+    
+%     \item \textbf{Contributions:}
+%     \begin{itemize}
+%         \item A principled foveated diffusion framework for image and video generation.
+%         \item Joint training of backbone and resolution modules for perceptual consistency.
+%         \item Quadratic computational savings via structured token reduction.
+%         \item Compatibility with existing attention and token-efficiency methods.
+%     \end{itemize}
+% \end{enumerate}
+
+% \item \textbf{Experiments and Applications}
+% \begin{enumerate}
+%     \item Evaluation on both image and video generation tasks.
+%     \item Comparison under varying foveation masks and token ratios.
+%     \item Analysis of compute-quality trade-offs.
+%     \item Demonstration of practical acceleration with minimal perceptual degradation.
+% \end{enumerate}
+
+% \end{enumerate}
+
+In this section, we first review the basic concepts of foveated rendering in traditional graphics, as well as standard diffusion and flow-matching models in Sec. \ref{subsec:method_preliminaries}. We then introduce our Foveated Diffusion framework (Fig. \ref{fig:pipeline}) and explain its tokenization, inference, and training pipelines in Sec. \ref{subsec:method_foveated_diffusion}.
+
+\subsection{Preliminaries}
+\label{subsec:method_preliminaries}
+
+\subsubsection{Foveated Rendering.}\label{subsubsec:fovrend}
+Foveated rendering refers to the spatially adaptive computation where computational resources are allocated unevenly across the image according to a specified user gaze location. Modern real-time graphics systems leverage eye-tracking to render high-resolution imagery in the foveal regions while aggressively reducing shading, rasterization, or sampling rates in the peripheral regions \cite{bandera1989foveal, geisler1998foveated, guenter2012foveated3d, weier2016foveated, patney2016gazeVR, kaplanyan2019deepfovea}.
+
+Formally, we define a binary foveation mask $\foveationmask \in \spacemaskimage$ constructed from visual eccentricity, where $M(i,j)=1$ denotes high-resolution (HR) regions near the 
+fovea and $M(i,j)=0$ denotes low-resolution (LR) peripheral regions. The rendering quality is concentrated in the HR region near the fixation point (center of foveation), and progressively reduced toward the periphery. Most importantly, in foveated rendering, the scene content is unknown a priori and the foveation mask is known via gaze.
+
+We denote $x^{\text{high}} \in \mathbb{R}^{3 \times H \times W}$ as the underlying high-resolution content, and 
+$x^{\text{low}} \in \mathbb{R}^{3 \times (H/d) \times (W/d)}$ as the underlying low-resolution content, 
+where $d$ is the spatial downsampling factor. In this paper, we define $d=2$, allowing $4\times$ computational gain in the periphery. During foveated rendering, only pixels $(i,j)$ with $M(i,j)=1$ are synthesized at high resolution from $x^{\text{high}}$ (the foveal region), while pixels with $M(i,j)=0$ are synthesized from $x^{\text{low}}$ (the peripheral region). Thus, computation is performed exclusively on the masked regions at their respective resolutions, rather than producing full high- and low-resolution renderings. 
+Composing the final foveated image in pixel space is simply achieved by blending, that is:
+\begin{align}\label{eq:fov_image_merge}
+    x_{\text{fov}} 
+    = M \odot x^{\text{high}}
+    + (1 - M) \odot \mathrm{Up}(x^{\text{low}}),
+\end{align}
+where $\mathrm{Up}(\cdot)$ denotes the spatial upsampling operator, and $\odot$ denotes elementwise multiplication.
+
+\iffalse
+Foveated rendering should be clearly distinguished from simulating visual accuity in a high-resolution image. Here, the goal is not to save computation during rendering, but to approximate the human visual acuity through artifical degradation of the peripehral regions. Given a full-resolution image $x \in \mathbb{R}^{3\times H \times W}$, 
+a artificially degraded peripheral image is constructed by first blurring the original image with a eccentricity-dependet low-pass filter,
+\begin{align}
+    x^{\text{blur}} = \mathrm{Blur}(x) \in \mathbb{R}^{3\times H \times W},
+\end{align}
+and then composing the final image in pixel space as
+\begin{align}
+    x_{\text{fov}} 
+    = M \odot x 
+    + (1 - M) \odot x^{\text{blur}},
+    \label{prelim:fov_image_merge}
+\end{align}
+a standard procedure described in prior vision science research \cite{watson2014formula}.
+\fi
+
+\iffalse
+Foveated rendering allocates spatially varying resolution according to an 
+alpha mask $M \in [0,1]^{H \times W}$, typically constructed from the user’s 
+gaze location and the eccentricity-dependent falloff of visual acuity. 
+The mask partitions the image into concentric regions centered at the gaze 
+position, with spatial resolution decreasing as a function of retinal 
+eccentricity, where $M(i,j)=1$ denotes high-resolution (HR) regions near the 
+fovea and $M(i,j)=0$ denotes low-resolution (LR) peripheral regions.  Binary masks $M \in \{0,1\}^{H \times W}$ arise as a special case, corresponding 
+to a hard resolution transition at the foveation boundary.
+
+Given a full-resolution image $x \in \mathbb{R}^{3\times H \times W}$, 
+a foveated image is constructed by first downsampling peripheral regions,
+\begin{align}
+    x^{\text{low}} = \mathrm{Down}(x),
+\end{align}
+and then composing the final image in pixel space as
+\begin{align}
+    x_{\text{fov}} 
+    = M \odot x 
+    + (1 - M) \odot \mathrm{Up}(x^{\text{low}}),
+\end{align}
+where $\mathrm{Down}(\cdot)$ and $\mathrm{Up}(\cdot)$ denote spatial 
+downsampling upsampling operators, respectively, and 
+$\odot$ denotes elementwise multiplication. The upsampling and downsampling processes are also roughly analogous to applying a blur filter in the peripheral regions. Since peripheral regions are rendered at lower spatial resolution, the graphics pipeline can employ lower-resolution shading and rasterization operations in those regions, substantially reducing memory bandwidth and compute requirements and thereby enabling significant speedups in interactive rendering.
+\fi
+
+
+\subsubsection{Diffusion Models.} Diffusion models \cite{ho2020ddpm, ho2020denoising, song2020score} define a generative process that gradually transforms samples from an easy-to-sample distribution (i.e. Gaussian) into data samples via a learned reverse-time process. Modern large-scale diffusion models operate in a compressed latent space to improve computational efficiency \cite{peebles2023dit, rombach2022latent}. Given an image or a video, a variational autoencoder (VAE) \cite{Diederik_2019}, consisting of an encoder $\encoder$ and a decoder $\decoder$, maps it into a latent representation \( \latentclean \in \latentspace \) (images) or \( \latentclean \in \latentspacevideo \) (videos, with additional frame dimension $f$), where the diffusion process is defined.
+
+\iffalse
+In latent diffusion models, a noisy latent \( \latent{t} \) at timestep \( t \in [0,1] \) is obtained by interpolating between the clean latent and Gaussian noise:
+\begin{align}
+    \latent{t} = (1 - t)\latentclean + t \latentnoise, 
+    \qquad \latentnoise \sim \mathcal{N}(0, I).
+\end{align}
+A neural network parameterized by \( \theta \) is trained to predict the denoising direction, enabling iterative sampling from noise to data.
+\fi
+
+\subsubsection{Flow Matching.} Flow matching \cite{lipman2023flow} reformulates diffusion as a continuous-time optimal transport problem between the data distribution and a simple prior, usually a Gaussian distribution $\gaussiannoise$. Instead of learning to predict noise or score functions, flow matching learns a velocity field that deterministically transports samples along straight-line paths in latent space.
+
+Specifically, given a data sample $\latentclean$ and a noise sample $\latentnoise \sim \gaussiannoise$, the noise-to-data path is defined via a linear interpolation:
+\begin{align}
+    \latent[t]= (1 - t)\latentclean + t \latentnoise.
+    \label{eq:noisy_latent}
+\end{align}
+A neural network \( v_\theta(\latent[t], t) \) is optimized to predict its corresponding velocity field: \vspace{-10pt}
+\begin{align}
+    \frac{d}{dt} z_t = \latentnoise - \latentclean,
+    % \dot{z}_t = \latentnoise - \latentclean.
+\end{align}
+Therefore, the training objective is to minimize
+\begin{align}
+    \mathbb{E}_{\latentclean, \latentnoise, t}
+    \left[
+        \left\|
+            v_\theta(\latent[t], t) - (\latentnoise - \latentclean)
+        \right\|_2^2
+    \right].
+    \label{eq:pred_flow}
+\end{align}
+
+At inference time, data samples are generated through sampling $\latent[1]$ and solving the flow ODE: $\frac{d}{dt} z_t = v_\theta(\latent[t], t)$. Flow matching yields faster convergence and more stable training compared to score-based diffusion models.
+
+Almost all modern diffusion and flow matching models are built on top of the Diffusion Transformer (DiT) architecture \cite{peebles2023dit}. The computational efficiency of such generative models is therefore quadratically related to the number of tokens processed due to the expensive attention \cite{vaswani2017attention} and MLP operations in the DiT. This motivates our method, which generates images and videos using a reduced set of tokens where the low-resolution tokens are specified by spatial or spatiotemporal foveation masks, while preserving perceptual image quality.
+
+% preliminaries, discuss token efficiency, and how foveated diffusion reduces token counts, diffusion->flow matchign
+
+\subsection{Foveated Diffusion}
+\label{subsec:method_foveated_diffusion}
+
+\begin{figure}[t!]
+    \centering
+    \includegraphics[width=\textwidth]{figures/pipeline.pdf}
+    \vspace{-15pt}
+    \caption{\textbf{The Foveated Diffusion Pipeline.} In Foveated Generation (a), we iteratively denoise a foveated token sequence of reduced length instead of the full high-resolution sequence. The resulting tokens $\latentFOV[0]$ are split into high- and low-resolution grids, decoded by the VAE, and blended using a user-specified foveation mask. We employ Foveated Training (b) to adapt pretrained DiTs to foveated token sequences using low-rank adaptation (LoRA) \cite{hu2022lora}. The image and its downsampled version are independently encoded by the VAE encoder and merged into a clean foveated token sequence for flow-matching training.}
+    \label{fig:pipeline}
+\end{figure}
+
+\vspace{-3pt}
+To achieve true computational savings in foveated visual generation, we introduce \emph{Foveated Diffusion}, a principled training and generation framework that enables diffusion or flow-matching models to directly generate spatially foveated images and videos with reduced token complexity. We describe our pipeline using latent-space image generation models here, but this concept applies equally to video generation models, as can be seen in Sec. \ref{sec:results}.
+
+\vspace{-3pt}
+\subsubsection{Foveated Tokenization. }\label{subsubsc:fov_token}
+Let the latent space of a high-resolution image be $\latentspace$. The VAE encodes and patchifies each image $x\in \mathbb{R}^{3 \times H \times W}$ into a sequence of $h \times w$ tokens with feature dimension $c$. Standard DiTs perform training and generation directly on this full set of $h \cdot w$ tokens. 
+In Foveated Diffusion, we are given a foveation mask $\foveationmask \in \spacemasklatent$ that specifies the spatial locations where high-resolution tokens are retained; meanwhile, peripheral regions are represented with fewer tokens to reduce the sequence length and computational complexity. Consequently, we operate entirely in the \emph{foveated token space} $\latentspacefoveated$ where the token sequence has a variable length $L \ll h \cdot w$. In our setting, a single low-resolution token represents the spatial area of a $2\times 2$ block of high-resolution tokens. This results in a total sequence length of $L = m + (h \cdot w - m) / 4$, where $m$ is the number of effective tokens in the mask $M$.
+% Fig.~\ref{fig:pipeline} illustrates our mixed-resolution tokenization scheme.
+This approach directly parallels foveated rendering in traditional graphics (see Sec. \ref{subsubsec:fovrend}), where shading and rasterization are computed asymmetrically based on a user-specified mask to achieve computational savings.
+
+% \subsubsection{Foveated Tokenization. }
+% Suppose the latent space of a high-resolution image is $\latentspace$, where the VAE encodes and patchifies each image $x\in \mathbb{R}^{3 \times H \times W}$ into a sequence of $h \times w$ tokens with feature dimension $c$. Standard DiTs perform tokenization, training, and generation directly on this full set of $h \cdot w$ tokens. In Foveated Diffusion, we instead operate entirely in a \emph{foveated token space} $\latentspacefoveated$. The foveated token sequence has variable length $L \ll h \cdot w$, where $L$ is determined by a predefined foveation mask $\foveationmask \in \spacemasklatent$. The mask specifies the retained high-resolution token locations, while peripheral regions are represented with fewer tokens, thereby reducing sequence length and computational complexity.
+% In our setting, one low-resolution token represents the spatial area of $2\times 2$ high-resolution tokens, resulting with a new sequence length of $L = m + (h \cdot w - m) / 4$, where $m$ is the number of active tokens in the mask $M$. We refer the reader to Fig. \ref{fig:pipeline} for illustration of our mixed-resolution tokenization.
+% This setting directly parallels the case of foveated rendering (see Sec. \ref{subsubsec:fovrend}) in traditional graphics, where shading and rasterization is computed asymmetrically given a user-specified foveation mask to achieve computational savings.
+
+
+\subsubsection{Foveated Generation. }
+\label{subsubsec:fovinfer}
+Foveated generation is performed by sampling Gaussian noise $\latentFOV[1] \sim \mathcal{N}(0, I)$ in the foveated token space $\latentspacefoveated$ at a reduced sequence length $L$. The foveated token sequence is then iteratively denoised from $t=1$ to $t=0$,
+producing a clean foveated token sequence $\latentFOV[0] \in \latentspacefoveated$. This procedure can be done in a completely training-free setting using a pretrained generative model, which we refer to as \emph{Na\"ive Mixed-Resolution Denoising}.
+
+% In contrast to other methods that target full high resolution generation with mixed-resolution tokens \cite{jeong2025upsample, wu2025crpa}, our procedure, which we refer to as \emph{Na\"ive Mixed-Resolution Denoising}, assigns a single global noise level per timestep to all foveated tokens and performs joint denoising in the foveated token space, which completely removes the need for re-noising or specially crafted noise schedules 
+
+To obtain a full-resolution image, we first partition the clean foveated token sequence $\latentFOV[0]$ into 
+high-resolution and low-resolution components:
+\begin{align}
+    (\latentHR[0], \latentLR[0]) 
+    = \mathrm{Split}(\latentFOV[0], M).
+    \label{eq:split_fov_latent}
+\end{align}
+We then decode each subset separately with the VAE decoder $\decoder$:
+\begin{align}
+    \imageHR = \decoder(\latentHR[0]), 
+    \qquad
+    \imageLR = \decoder(\latentLR[0]).
+    \label{eq:vae_decode}
+\end{align}
+
+%\ly{why do we need to define this equation again? the only difference is that here we use $M'$, but we can simply replace the purpose of $M'$ to be in latent space and just refer to the equation in 1, and write: "... and blended with the high-resolution decoding to form the final image $\imageFOV$", following the procedure defined in Eq. \ref{eq:fov_image_merge}."}
+
+The decoded low-resolution image is spatially upsampled to the original 
+spatial resolution and blended with the high-resolution decoding to form the 
+final image using the upsampled latent foveation mask $M'=\mathrm{Up}(\foveationmask)\in \spaceimage$:
+\begin{align}
+    \imageFOV
+    = M' \odot \imageHR
+    + (1 - M') \odot \mathrm{Up}(\imageLR),
+    \label{eq:image_merge}
+\end{align}
+where $\mathrm{Up}(\cdot)$ denotes spatial upsampling and $\odot$ denotes 
+elementwise multiplication. The full generation pipeline is illustrated in Fig. \ref{fig:pipeline}-(a).
+
+\begin{wrapfigure}[12]{r}{0.3\textwidth} % r/l for right/left; width of the wrapped box
+  \centering
+  \vspace{-0.1\baselineskip} % users can freely adjust top position by changing this
+  \includegraphics[width=\linewidth]{figures/crpa.pdf}
+  \caption{\textbf{Adapting RoPE for mixed-resolution attention \cite{wu2025crpa}.}}
+  \label{fig:crpa}
+  \vspace{-1.0\baselineskip} % (optional) tighten space below
+\end{wrapfigure}
+\paragraph{Mixed-Resolution RoPE.} 
+Standard Rotary Positional Embedding (RoPE) \cite{su2024roformer} typically assumes a uniform grid with fixed-phase spacing (Fig. \ref{fig:crpa}(a)). However, because Foveated Diffusion introduces mixed-resolution tokenization, we must modify the RoPE indexing accordingly.
+% Changing the tokenization input to the DiT requies modifications to the Rotary Positional Embedding \cite{su2024roformer} (RoPE). \edit{Vanilla RoPE indexing follows a uniform grid with fixed-phase spacing,} as illustrated in Fig. \ref{fig:crpa}(a).
+% \edit{However, since Foveated Diffusion splits tokens into low- and high-resolution regions, RoPE indexing need to be adjusted to remove artifacts \cite{wu2025crpa}}. 
+Therefore, we follow Wu et al.\cite{wu2025crpa} and align the key RoPE phases with query RoPE phases based on their corresponding token resolutions. Specifically, when computing attention with high-resolution query tokens, we sub-sample low-resolution key tokens from the full-resolution tokens. For attention with low-resolution query tokens, we subsample high-resolution key tokens and normalize their RoPE indices to the low-resolution grid. Please see illustration in Fig. \ref{fig:crpa}(b) or refer to Wu et al. \cite{wu2025crpa} for more details. 
+% Modification to Rotary Positional Embeddings.
+% Since the DiT was never trained on mixed-resolution tokens and the positional embeddings of tokens are assumed to lie on a uniform rectangular grid with fixed phase increments, na\"ively re-sampling RoPE \cite{su2024roformer} to adapt to mixed-resolution tokens leads to severe visual degradation as presented in \cite{wu2025crpa}. We follow the RoPE adaptation as suggested by Cross-Resolution Phase-Aligned Attention (CRPA) \cite{wu2025crpa} for both our method and the na\"ive mixed-resolution baseline. In short, CRPA works by mapping all query and key embedding positions onto the query's specific reference resolution grid during each attention call, which ensures that equal physical distances always produce identical phase increments in RoPE. Please refer to the CRPA paper \cite{wu2025crpa} for more details.
+
+\paragraph{Failure of Na\"ive Mixed-Resolution Denoising.}
+\label{sec:failure}
+
+\begin{wrapfigure}{r}{0.3\textwidth} % r/l for right/left; width of the wrapped box
+  \centering
+  \vspace{-1.8\baselineskip} % users can freely adjust top position by changing this
+  \includegraphics[width=\linewidth]{figures/failure.pdf}
+  \caption{\textbf{Failure of Na\"ive mixed-resolution denoising.}}
+  \label{fig:failure}
+  \vspace{-2.0\baselineskip} % (optional) tighten space below
+\end{wrapfigure}
+
+A pretrained DiT is not, by default, compatible with a mixed-resolution, or foveated, token layout since tokens and positional embeddings are defined to be on a uniform grid. Even after adapting RoPE to handle mixed-resolution tokens, the low- and high-resolution regions still exhibit significant scale and structural inconsistencies, frequently resulting in duplicated objects or multiple entities fused together unnaturally (Fig. \ref{fig:failure}, and Fig. \ref{fig:baseline_image}). These findings suggest that high-quality foveated generation cannot be achieved with training-free mixed-resolution denoising, and a more principled approach is required to achieve our objective.
+
+\iffalse
+Consequently, if a model has never been adapted to mixed-resolution inputs, high-resolution (fovea) and low-resolution tokens (periphery) tend to be denoised as if they were independent denoising paths \ly{I don't think it is denoised as independent denoising paths cause the content is the same (you have the same child...) it is only the scale and boundaries are the big issues. let's just say:  "Consequently, if a model has never been adapted to mixed-resolution inputs, we can face with a scale imbalance between the high-resolution (fovea) and low-resolution (periphery) regions, and the boundary between the two is pretty noticeable." (remove also the following sentence, or combine/add what is required) }. When decoded and blended, the independently generated regions exhibit both semantic and scale inconsistencies, frequently resulting in duplicated objects or multiple entities fused together unnaturally, as shown in Fig. \ref{fig:failure}. These artifacts indicate that foveated generation requires explicit adaptation to enforce mixed-resolution during the denoising process \ly{perhaps let's repharse this more strongly to emphasize out contribution: "These artifacts indicate that foveated generation is not trivial to achieve via a mixed-resolution denoising, and a more principled approach is required for our objective.}.
+\fi
+
+
+\subsubsection{Foveated Training.}
+\label{sec:training}
+To address the aforementioned failure, we design an effective post-training procedure in the foveated token space by constructing foveated training targets that are mixed-resolution-consistent by design, as shown in Fig. \ref{fig:pipeline}-(b). Given a high-resolution training image $x$, we first form two latent token sequences using the VAE encoder $\encoder$. The high resolution token sequence is:
+\begin{equation}
+    \latentHR[0] = \encoder(x) \in \latentspace
+    \label{eq:HR_latents}
+\end{equation}
+The low-resolution token sequence is obtained by bicubically downsampling the image and encoding it:
+\begin{equation}
+    \latentLR[0] = \encoder(\mathrm{Down}(x)) \in \latentspaceLR
+    \label{eq:LR_latents}
+\end{equation}
+
+We then construct a clean foveated target token sequence by merging tokens from $\latentHR[0]$ and $\latentLR[0]$ according to the foveation mask:
+\begin{equation}
+\label{eq:fov_merge}
+\latentFOV[0] = \mathrm{Merge}(\latentHR[0], \latentLR[0], M) \in \latentspacefoveated.
+\end{equation}
+By construction, both $\latentHR[0]$ and $\latentLR[0]$ are derived from the same underlying image content, and thus $\latentFOV[0]$ defines a single coherent target token sequence for mixed-resolution denoising. This clean foveated token sequence $\latentFOV[0]$ exactly corresponds to the foveated image $\imageFOV$ through Equations $\ref{eq:split_fov_latent}$ to $\ref{eq:image_merge}$.
+
+We train our Foveated Diffusion model using the standard flow matching objective \cite{lipman2023flow}. Concretely, for a sampled timestep $t$ and noise $\latentnoise^{\text{fov}} \sim \gaussiannoise$, we generate a noisy foveated token sequence $\latentFOV[t]$ from $\latentFOV[0]$ following the flow-matching parameterization (Eq. \ref{eq:noisy_latent}) and optimize the model to predict the corresponding target velocity (Eq. \ref{eq:pred_flow}). Most importantly, all computations are performed on the variable-length $L$ foveated token sequence.
+
+
+\begin{figure}[!t]
+    \centering
+    \includegraphics[width=\textwidth]{figures/baseline.pdf}
+    \vspace{-15pt}
+    \caption{\textbf{Qualitative comparison for image generation.} Our method yields perceptually indistinguishable results from full high-resolution synthesis, whereas the naïve baseline introduces scale inconsistencies and structural artifacts across mixed-resolution regions. The high-resolution regions (fovea) are delineated with white borders.}
+    \label{fig:baseline_image}
+\end{figure}
+
+\subsubsection{Foveation Masking Strategies.} \label{subsub:foveation_mask_stragegy} Our Foveated Training procedure is agnostic to how the foveation masks $\foveationmask$ are designed, as it is simply a user-specified binary mask indicating the locations of high-resolution tokens. The form of the masks for training is therefore flexible and completely task-dependent. Specifically, we present two variants in the main paper: 
+\textit{randomized masks}, which produce a generative model agnostic to the specified foveation, allowing the gaze center to be shifted to arbitrary image regions; and 
+\textit{saliency-guided masks}, which encourage the foveal region to encompass salient objects in the scene, reflecting the regions where viewer attention is most likely to be directed. We additionally show \textit{bounding-box masks} results in the supplementary materials.
+
+Notably, training with different masking strategies does not require any modification to the model architecture or to the training objective; it only involves changing the foveation masks.

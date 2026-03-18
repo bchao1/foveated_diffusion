@@ -100,6 +100,7 @@ def create_foveation_mask(
     r: float = 0.25,
     shape: str = "circular",
     device: torch.device = None,
+    lr_factor: int = 2,
 ) -> torch.Tensor:
     """
     Create a low-res foveation mask and upsample to token grid size with nearest interpolation.
@@ -124,7 +125,7 @@ def create_foveation_mask(
         j = torch.arange(high_w, device=device, dtype=torch.long)
         ii, jj = torch.meshgrid(i, j, indexing="ij")
         return ((ii + jj) % 2 == 0).float()
-    low_h, low_w = high_h // 2, high_w // 2
+    low_h, low_w = high_h // lr_factor, high_w // lr_factor
     y_range = torch.arange(low_h, device=device, dtype=torch.float32)
     x_range = torch.arange(low_w, device=device, dtype=torch.float32)
     y_grid, x_grid = torch.meshgrid(y_range, x_range, indexing="ij")
@@ -342,7 +343,7 @@ def _create_multi_circle_mask(height: int, width: int, circles: list, device) ->
     return mask
 
 
-def generate_foveation_trajectory_masks(height, width, args, device):
+def generate_foveation_trajectory_masks(height, width, args, device, lr_factor: int = 2):
     """
     Generate a list of foveation masks for the trajectory grid.
     Uses args.foveation_trajectory_type:
@@ -371,7 +372,7 @@ def generate_foveation_trajectory_masks(height, width, args, device):
             r = float(r_list[col])
             m = create_foveation_mask(
                 height, width, center=(0, 0), r=r,
-                shape=getattr(args, "mask_shape", "circular"), device=device
+                shape=getattr(args, "mask_shape", "circular"), device=device, lr_factor=lr_factor
             )
             m_full = create_foveation_mask_full_res(
                 height, width, center=(0, 0), r=r,
@@ -406,7 +407,7 @@ def generate_foveation_trajectory_masks(height, width, args, device):
                 center = (float(x_positions[col]), float(y_positions[row]))
                 m = create_foveation_mask(
                     height, width, center=center, r=mask_radius,
-                    shape=getattr(args, "mask_shape", "circular"), device=device
+                    shape=getattr(args, "mask_shape", "circular"), device=device, lr_factor=lr_factor
                 )
                 m_full = create_foveation_mask_full_res(
                     height, width, center=center, r=mask_radius,
@@ -439,7 +440,7 @@ def generate_foveation_trajectory_masks(height, width, args, device):
             center = (orbit_radius * math.cos(angle), orbit_radius * math.sin(angle))
             m = create_foveation_mask(
                 height, width, center=center, r=mask_radius,
-                shape=getattr(args, "mask_shape", "circular"), device=device
+                shape=getattr(args, "mask_shape", "circular"), device=device, lr_factor=lr_factor
             )
             m_full = create_foveation_mask_full_res(
                 height, width, center=center, r=mask_radius,
@@ -511,7 +512,7 @@ def _gaussian_blur_mask_2d(mask_4d, sigma_pixels, device, dtype):
     return out
 
 
-def create_tokenization_mask_vis(foveation_mask, height, width):
+def create_tokenization_mask_vis(foveation_mask, height, width, lr_factor: int = 2):
     """
     Visualize token grid structure from a latent-space foveation mask.
 
@@ -539,8 +540,8 @@ def create_tokenization_mask_vis(foveation_mask, height, width):
     hr_grid[:, xx % 16 < border_px] = True
 
     lr_grid = np.zeros((height, width), dtype=bool)
-    lr_grid[yy % 32 < border_px, :] = True
-    lr_grid[:, xx % 32 < border_px] = True
+    lr_grid[yy % (16 * lr_factor) < border_px, :] = True
+    lr_grid[:, xx % (16 * lr_factor) < border_px] = True
 
     hr_region = upsampled > 0.5
     outline = (hr_grid & hr_region) | (lr_grid & ~hr_region)
@@ -786,7 +787,8 @@ def run_high_res(pipe, args, output_dir, prompt, prompt_idx, token_upsampler=Non
         foveation_mask=None,
         prediction_type=args.prediction_type,
         tokenAE_training=False,
-        decode_mode="direct"
+        decode_mode="direct",
+        lr_downsample_factor=getattr(args, "lr_downsample_factor", 2),
     )
     image.save(os.path.join(output_dir, f"img_{prompt_idx:010d}.png"))
 
@@ -808,6 +810,7 @@ def run_naive_mixed_res(pipe, args, output_dir, prompt, prompt_idx, token_upsamp
         prediction_type=args.prediction_type,
         tokenAE_training=args.tokenAE_training,
         soft_foveation_blend=getattr(args, "soft_foveation_blend", False),
+        lr_downsample_factor=getattr(args, "lr_downsample_factor", 2),
     )
     if full_res_foveation_mask is not None:
         pipe_kwargs["full_res_foveation_mask"] = full_res_foveation_mask
@@ -832,6 +835,7 @@ def run_ours(pipe, args, output_dir, prompt, prompt_idx, token_upsampler, token_
         prediction_type=args.prediction_type,
         tokenAE_training=args.tokenAE_training,
         soft_foveation_blend=getattr(args, "soft_foveation_blend", False),
+        lr_downsample_factor=getattr(args, "lr_downsample_factor", 2),
     )
     if full_res_foveation_mask is not None:
         pipe_kwargs["full_res_foveation_mask"] = full_res_foveation_mask
@@ -853,7 +857,8 @@ def run_full_eval(single_prompt_generation_func, pipe, args, output_dir, prompts
         mask_shape = getattr(args, "full_eval_mask", "square")
         r = getattr(args, "mask_radius", 0.5)
         default_mask = create_foveation_mask(
-            args.height, args.width, center=(0, 0), r=r, shape=mask_shape, device=pipe.device
+            args.height, args.width, center=(0, 0), r=r, shape=mask_shape, device=pipe.device,
+            lr_factor=getattr(args, "lr_downsample_factor", 2),
         )
         full_res_mask = create_foveation_mask_full_res(
             args.height, args.width, center=(0, 0), r=r, shape=mask_shape, device=pipe.device
@@ -923,7 +928,7 @@ def run_user_study(pipe, args, output_dir, token_upsampler, token_downsampler):
         center = (random.uniform(-0.3, 0.3), random.uniform(-0.3, 0.3))
         r = 0.33 # one third of the image size (fovea 5% v.s. blend 15%)
         shape = "circular"
-        foveation_mask = create_foveation_mask(height, width, center=center, r=r, shape=shape, device=device)
+        foveation_mask = create_foveation_mask(height, width, center=center, r=r, shape=shape, device=device, lr_factor=getattr(args, "lr_downsample_factor", 2))
         full_res_foveation_mask = create_foveation_mask_full_res(height, width, center=center, r=r, shape=shape, device=device)
         items.append((subdir, prompt, foveation_mask, full_res_foveation_mask, center))
 
@@ -1050,7 +1055,8 @@ def run_circular_traj(pipe, args, output_dir, token_upsampler, token_downsampler
         center = (center_x, center_y)
         
         foveation_mask = create_foveation_mask(
-            args.height, args.width, center=center, r=mask_radius, shape=args.mask_shape, device=pipe.device
+            args.height, args.width, center=center, r=mask_radius, shape=args.mask_shape, device=pipe.device,
+            lr_factor=getattr(args, "lr_downsample_factor", 2),
         )
         full_res_foveation_mask = create_foveation_mask_full_res(
             args.height, args.width, center=center, r=mask_radius, shape=args.mask_shape, device=pipe.device
@@ -1061,11 +1067,11 @@ def run_circular_traj(pipe, args, output_dir, token_upsampler, token_downsampler
             upscale = args.height / (args.height // 16)
             mask_to_save = _gaussian_blur_mask_2d(mask_to_save, upscale, pipe.device, mask_to_save.dtype)
         save_image(mask_to_save, os.path.join(output_dir, f"foveation_mask_{i:03d}.png"))
-        
+
         # Run diffusion pipeline
         torch.cuda.empty_cache()
         start_time = time.time()
-        
+
         vis_kwargs = {}
         foveation_mask_to_use = foveation_mask
         if getattr(args, "save_vis_vlow_x0", False):
@@ -1088,6 +1094,7 @@ def run_circular_traj(pipe, args, output_dir, token_upsampler, token_downsampler
             prediction_type=args.prediction_type,
             tokenAE_training=args.tokenAE_training,
             soft_foveation_blend=getattr(args, "soft_foveation_blend", False),
+            lr_downsample_factor=getattr(args, "lr_downsample_factor", 2),
             **vis_kwargs,
         )
         if foveation_mask_to_use is foveation_mask:
@@ -1110,7 +1117,8 @@ def run_vary_radius(pipe, args, output_dir, token_upsampler, token_downsampler):
         r_idx_str = str(r_idx).zfill(2)
         
         foveation_mask = create_foveation_mask(
-            args.height, args.width, center=(0, 0), r=r, shape=args.mask_shape, device=pipe.device
+            args.height, args.width, center=(0, 0), r=r, shape=args.mask_shape, device=pipe.device,
+            lr_factor=getattr(args, "lr_downsample_factor", 2),
         )
         full_res_foveation_mask = create_foveation_mask_full_res(
             args.height, args.width, center=(0, 0), r=r, shape=args.mask_shape, device=pipe.device
@@ -1121,11 +1129,11 @@ def run_vary_radius(pipe, args, output_dir, token_upsampler, token_downsampler):
             upscale = args.height / (args.height // 16)
             mask_to_save = _gaussian_blur_mask_2d(mask_to_save, upscale, pipe.device, mask_to_save.dtype)
         save_image(mask_to_save, os.path.join(output_dir, f"foveation_mask_{r_idx_str}.png"))
-        
+
         # Run pipeline
         torch.cuda.empty_cache()
         start_time = time.time()
-        
+
         vis_kwargs = {}
         foveation_mask_to_use = foveation_mask
         if getattr(args, "save_vis_vlow_x0", False):
@@ -1148,6 +1156,7 @@ def run_vary_radius(pipe, args, output_dir, token_upsampler, token_downsampler):
             prediction_type=args.prediction_type,
             tokenAE_training=args.tokenAE_training,
             soft_foveation_blend=getattr(args, "soft_foveation_blend", False),
+            lr_downsample_factor=getattr(args, "lr_downsample_factor", 2),
             **vis_kwargs,
         )
         if foveation_mask_to_use is foveation_mask:
@@ -1226,6 +1235,7 @@ def run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downs
             prediction_type=args.prediction_type,
             tokenAE_training=args.tokenAE_training,
             soft_foveation_blend=getattr(args, "soft_foveation_blend", False),
+            lr_downsample_factor=getattr(args, "lr_downsample_factor", 2),
             **vis_kwargs,
         )
 
@@ -1304,7 +1314,7 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
     device = pipe.device
 
     # Generate fixed foveation trajectory once (list of masks), reuse for all prompts
-    foveation_masks, full_res_foveation_masks = generate_foveation_trajectory_masks(height, width, args, device)
+    foveation_masks, full_res_foveation_masks = generate_foveation_trajectory_masks(height, width, args, device, lr_factor=getattr(args, "lr_downsample_factor", 2))
     num_cols = len(foveation_masks)
     print(f"Trajectory type={getattr(args, 'foveation_trajectory_type', 'circular')}, {num_cols} masks")
 
@@ -1312,7 +1322,7 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
     tok_mask_dir = os.path.join(output_dir, "tokenization_masks")
     os.makedirs(tok_mask_dir, exist_ok=True)
     for col, fov_mask in enumerate(foveation_masks):
-        tok_vis = create_tokenization_mask_vis(fov_mask, height, width)
+        tok_vis = create_tokenization_mask_vis(fov_mask, height, width, lr_factor=getattr(args, "lr_downsample_factor", 2))
         imageio.imwrite(os.path.join(tok_mask_dir, f"tokenization_mask_{col:04d}.png"), tok_vis)
     print(f"Saved {num_cols} tokenization masks to {tok_mask_dir}")
     exit()
@@ -1340,6 +1350,7 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
                 prediction_type=args.prediction_type,
                 tokenAE_training=args.tokenAE_training,
                 soft_foveation_blend=getattr(args, "soft_foveation_blend", False),
+                lr_downsample_factor=getattr(args, "lr_downsample_factor", 2),
             )
             pipe_kwargs["full_res_foveation_mask"] = full_res_foveation_masks[col]
             image = pipe(**pipe_kwargs)
@@ -1588,6 +1599,11 @@ if __name__ == "__main__":
     parser.add_argument('--downsampler_dit_use_temb', type=_str_to_bool, default=False,
                         help='Use time conditioning in DiT token downsampler (true/false).')
     
+    # Foveation downsampling factor
+    parser.add_argument('--lr_downsample_factor', type=int, default=2,
+                        help='Spatial downsampling factor for low-res regions (default: 2). '
+                             'Controls how many tokens are merged per block in the LR periphery.')
+
     # Eval configuration
     parser.add_argument('--tokenAE_training', type=_str_to_bool, default=False, help='Train token AE (true/false).')
 
