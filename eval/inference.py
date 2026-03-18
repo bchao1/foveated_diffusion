@@ -863,6 +863,9 @@ def run_full_eval(single_prompt_generation_func, pipe, args, output_dir, prompts
         full_res_mask = create_foveation_mask_full_res(
             args.height, args.width, center=(0, 0), r=r, shape=mask_shape, device=pipe.device
         )
+        default_mask_upsampled = F.interpolate(
+            default_mask.unsqueeze(0).unsqueeze(0), size=(args.height, args.width), mode="nearest"
+        ).squeeze(0).squeeze(0)
     prompt_list = []
     image_names = []
     subset_idx = getattr(args, "subset_idx", 0)
@@ -876,11 +879,12 @@ def run_full_eval(single_prompt_generation_func, pipe, args, output_dir, prompts
             continue
 
         prompt_idx = global_idx  # keep image ids consistent with single-GPU run
+
         single_prompt_generation_func(
             pipe, args, output_dir, prompt, prompt_idx,
             token_upsampler, token_downsampler,
             foveation_mask=default_mask,
-            full_res_foveation_mask=full_res_mask,
+            full_res_foveation_mask=default_mask_upsampled,
         )
         prompt_list.append(prompt)
         image_names.append(f"img_{prompt_idx:010d}.png")
@@ -1325,7 +1329,6 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
         tok_vis = create_tokenization_mask_vis(fov_mask, height, width, lr_factor=getattr(args, "lr_downsample_factor", 2))
         imageio.imwrite(os.path.join(tok_mask_dir, f"tokenization_mask_{col:04d}.png"), tok_vis)
     print(f"Saved {num_cols} tokenization masks to {tok_mask_dir}")
-    exit()
 
     for prompt_idx, prompt in enumerate(prompts):
         prompt_dir = os.path.join(output_dir, f"{prompt_idx:03d}")

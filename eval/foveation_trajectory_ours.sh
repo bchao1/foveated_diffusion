@@ -11,7 +11,7 @@ CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment foveation_trajectory_grid \
     --foveation_trajectory_type ${foveation_trajectory_type} \
     --decode_mode merge \
-    --output_dir ../results/eccv2026_final_v2/website/teaser_grid_5x5 \
+    --output_dir ../results/eccv2026_final_v2/website/teaser_grid_5x5_down_4x \
     --seed 42 \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
@@ -22,6 +22,7 @@ CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --grid_cols 5 \
     --foveation_outline true \
     --soft_foveation_blend true \
-    --outline_width_frac 0.005 
+    --outline_width_frac 0.005 \
+    --lr_downsample_factor 4
 
 # 'radius', 'circular', 'polygons', 'multi_circle
