@@ -129,8 +129,8 @@ def create_foveation_mask(
     y_range = torch.arange(low_h, device=device, dtype=torch.float32)
     x_range = torch.arange(low_w, device=device, dtype=torch.float32)
     y_grid, x_grid = torch.meshgrid(y_range, x_range, indexing="ij")
-    cx = int((center[0] + 0.5) * low_w)
-    cy = int((center[1] + 0.5) * low_h)
+    cx = (center[0] + 0.5) * low_w - 0.5
+    cy = (center[1] + 0.5) * low_h - 0.5
 
     if shape == "square":
         # r = ratio to image size: 1 = full, 0 = all black. Side length = r * min(low_h, low_w)
@@ -529,7 +529,8 @@ def create_tokenization_mask_vis(foveation_mask, height, width, lr_factor: int =
     upsampled = np.repeat(np.repeat(mask_np, 16, axis=0), 16, axis=1)[:height, :width]
 
     vis = np.full((height, width, 3), 255, dtype=np.uint8)
-    vis[upsampled < 0.5] = [225, 225, 225]
+    if lr_factor > 1:
+        vis[upsampled < 0.5] = [225, 225, 225]
 
     yy = np.arange(height)
     xx = np.arange(width)
@@ -1337,6 +1338,13 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
             f.write(prompt)
 
         for col, foveation_mask in enumerate(foveation_masks):
+            # use foveation mask from latents
+            foveation_mask_upsampled = F.interpolate(
+                foveation_mask.unsqueeze(0).unsqueeze(0),
+                size=(height, width),
+                mode='nearest'
+            ).squeeze(0).squeeze(0)
+
             torch.cuda.empty_cache()
             pipe_kwargs = dict(
                 prompt=prompt,
@@ -1355,7 +1363,7 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
                 soft_foveation_blend=getattr(args, "soft_foveation_blend", False),
                 lr_downsample_factor=getattr(args, "lr_downsample_factor", 2),
             )
-            pipe_kwargs["full_res_foveation_mask"] = full_res_foveation_masks[col]
+            pipe_kwargs["full_res_foveation_mask"] = foveation_mask_upsampled
             image = pipe(**pipe_kwargs)
             # Optionally draw foveation outline on image
             image_np = np.array(image)

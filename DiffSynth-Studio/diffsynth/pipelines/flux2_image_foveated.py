@@ -1093,7 +1093,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
                 
             if soft_foveation_blend:
                 # Soft edge: Gaussian falloff over ~upscale_factor pixels at high-res
-                upscale = height / latent_height * (lr_downsample_factor // 2)
+                upscale = height / latent_height
                 high_res_foveation_mask = _gaussian_blur_mask_2d(
                     high_res_foveation_mask, sigma_pixels=upscale, device=latents.device, dtype=latents.dtype
                 )

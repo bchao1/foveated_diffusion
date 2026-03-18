@@ -2,7 +2,7 @@ export DIFFSYNTH_MODEL_BASE_PATH="/miele/brian/modelscope"
 export DIFFSYNTH_SKIP_DOWNLOAD=True
 cd ..
 
-exp_name="rank_32_bbox"
+exp_name="rank_32_4x"
 accelerate launch train_foveated.py \
   --dataset_base_path /local/brian/Aesthetic-Train-V2/ \
   --dataset_metadata_path /local/brian/Aesthetic-Train-V2/metadata_train.csv \
@@ -15,7 +15,7 @@ accelerate launch train_foveated.py \
   --learning_rate 1e-4 \
   --tokenAE_learning_rate 1e-4 \
   --tokenAE_train_steps 0 \
-  --num_epochs 1 \
+  --num_epochs 5 \
   --remove_prefix_in_ckpt "pipe.dit." \
   --output_path "/local/brian/foveated_diffusion/models/eccv2026_final/$exp_name" \
   --lora_base_model "dit" \
@@ -36,5 +36,6 @@ accelerate launch train_foveated.py \
   --task sft_no_tokenAE \
   --find_unused_parameters \
   --decode_mode "merge" \
-  --foveated_training_mode bbox
+  --foveated_training_mode random \
+  --lr_downsample_factor 4
 cd lora
