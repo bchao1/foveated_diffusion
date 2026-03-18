@@ -1,6 +1,8 @@
 export DIFFSYNTH_MODEL_BASE_PATH="/miele/brian/modelscope"
 export DIFFSYNTH_SKIP_DOWNLOAD=True
 
+# Usage: ./vary_radius.sh <gpu_id> <model>
+#   model: random | bbox | saliency  (selects checkpoint and output subdir)
 GPU_ID=${1:-0}
 MODEL=${2:?Usage: $0 <gpu_id> <model>   model must be: random | bbox | saliency}
 
@@ -8,6 +10,10 @@ case "$MODEL" in
   random)
     step=5000
     ckpt_folder="/local/brian/foveated_diffusion/models/eccv2026_final/rank_32_fov_more_steps/"
+    ;;
+  random_4x)
+    step=23000
+    ckpt_folder="/local/brian/foveated_diffusion/models/eccv2026_final/rank_32_4x/"
     ;;
   bbox)
     step=11000
@@ -28,7 +34,7 @@ CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment foveation_trajectory_grid \
     --foveation_trajectory_type grid \
     --decode_mode merge \
-    --output_dir ../results/eccv2026_final_v2/website/fov_traj_grid_10x10/${MODEL} \
+    --output_dir ../results/eccv2026_final_v2/website/fov_traj_grid_10x10_4x/${MODEL} \
     --seed 42 \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
@@ -40,4 +46,5 @@ CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --grid_cols 10 \
     --foveation_outline true \
     --soft_foveation_blend true \
-    --outline_width_frac 0.005
+    --outline_width_frac 0.005 \
+    --lr_downsample_factor 4
