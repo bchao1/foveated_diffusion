@@ -10,18 +10,27 @@ case "$MODEL" in
   random)
     step=5000
     ckpt_folder="/local/brian/foveated_diffusion/models/eccv2026_final/rank_32_fov_more_steps/"
+    lr_downsample_factor=2
     ;;
   random_4x)
-    step=23000
+    step=28000
     ckpt_folder="/local/brian/foveated_diffusion/models/eccv2026_final/rank_32_4x/"
+    lr_downsample_factor=4
+    ;;
+  random_4x_distill)
+    step=30000
+    ckpt_folder="/local/brian/foveated_diffusion/models/eccv2026_final/rank_32_4x_distill/"
+    lr_downsample_factor=4    
     ;;
   bbox)
     step=11000
     ckpt_folder="/local/brian/foveated_diffusion/models/eccv2026_final/rank_32_bbox/"
+    lr_downsample_factor=2
     ;;
   saliency)
     step=11000
     ckpt_folder="/local/brian/foveated_diffusion/models/eccv2026_final/rank_32_saliency/"
+    lr_downsample_factor=2
     ;;
   *)
     echo "Unknown model: $MODEL (use: random | bbox | saliency)"
@@ -34,11 +43,11 @@ CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment foveation_trajectory_grid \
     --foveation_trajectory_type grid \
     --decode_mode merge \
-    --output_dir ../results/eccv2026_final_v2/website/fov_traj_grid_10x10_4x/${MODEL} \
+    --output_dir ../results/eccv2026_final_v2/website/fov_traj_grid_10x10_${lr_downsample_factor}x_v2/${MODEL} \
     --seed 42 \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
-    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/website_prompts_landscapes.csv \
+    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/website_prompts_landscapes_v2.csv \
     --num_prompts 100 \
     --orbit_radius 0.3 \
     --mask_radius 0.3 \
@@ -47,4 +56,4 @@ CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --foveation_outline true \
     --soft_foveation_blend true \
     --outline_width_frac 0.005 \
-    --lr_downsample_factor 4
+    --lr_downsample_factor ${lr_downsample_factor}
