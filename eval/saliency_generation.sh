@@ -43,7 +43,7 @@ CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment foveation_trajectory_grid \
     --foveation_trajectory_type grid \
     --decode_mode merge \
-    --output_dir ../results/eccv2026_final_v2/website/fov_traj_grid_10x10_${lr_downsample_factor}x_v2/${MODEL} \
+    --output_dir ../results/eccv2026_final_v2/website/teaser_grid_10x10_${lr_downsample_factor}x_v2/${MODEL} \
     --seed 42 \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
@@ -53,7 +53,7 @@ CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --mask_radius 0.3 \
     --grid_rows 10 \
     --grid_cols 10 \
-    --foveation_outline true \
+    --foveation_outline false \
     --soft_foveation_blend true \
     --outline_width_frac 0.005 \
     --lr_downsample_factor ${lr_downsample_factor}

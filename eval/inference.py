@@ -129,8 +129,8 @@ def create_foveation_mask(
     y_range = torch.arange(low_h, device=device, dtype=torch.float32)
     x_range = torch.arange(low_w, device=device, dtype=torch.float32)
     y_grid, x_grid = torch.meshgrid(y_range, x_range, indexing="ij")
-    cx = (center[0] + 0.5) * low_w - 0.5
-    cy = (center[1] + 0.5) * low_h - 0.5
+    cx = math.floor((center[0] + 0.5) * low_w - 0.5) + 0.5
+    cy = math.floor((center[1] + 0.5) * low_h - 0.5) + 0.5
 
     if shape == "square":
         # r = ratio to image size: 1 = full, 0 = all black. Side length = r * min(low_h, low_w)
@@ -399,9 +399,23 @@ def generate_foveation_trajectory_masks(height, width, args, device, lr_factor: 
     elif traj_type == "grid":
         grid_rows = getattr(args, "grid_rows", 3)
         grid_cols = getattr(args, "grid_cols", 3)
-        grid_range = orbit_radius
-        x_positions = np.linspace(-grid_range, grid_range, grid_cols)
-        y_positions = np.linspace(-grid_range, grid_range, grid_rows)
+        # Compute center range so the circle just touches each border (no cutoff, fully symmetric).
+        # Work in low-res pixel space: snapped center is n+0.5; leftmost valid n = floor(r_px - 0.5).
+        low_h_g = height // 16 // lr_factor
+        low_w_g = width // 16 // lr_factor
+        diagonal_g = (low_h_g ** 2 + low_w_g ** 2) ** 0.5
+        radius_px_g = mask_radius * (diagonal_g / 2.0)
+        n_min_x = math.floor(radius_px_g - 0.5)
+        n_min_y = math.floor(radius_px_g - 0.5)
+        n_max_x = low_w_g - 2 - n_min_x
+        n_max_y = low_h_g - 2 - n_min_y
+        # Normalized center that maps to snapped pixel n+0.5: center = (n+1)/low_w - 0.5
+        x_min = (n_min_x + 1) / low_w_g - 0.5
+        x_max = (n_max_x + 1) / low_w_g - 0.5
+        y_min = (n_min_y + 1) / low_h_g - 0.5
+        y_max = (n_max_y + 1) / low_h_g - 0.5
+        x_positions = np.linspace(x_min, x_max, grid_cols)
+        y_positions = np.linspace(y_min, y_max, grid_rows)
         for row in range(grid_rows):
             for col in range(grid_cols):
                 center = (float(x_positions[col]), float(y_positions[row]))
@@ -1330,6 +1344,7 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
         tok_vis = create_tokenization_mask_vis(fov_mask, height, width, lr_factor=getattr(args, "lr_downsample_factor", 2))
         imageio.imwrite(os.path.join(tok_mask_dir, f"tokenization_mask_{col:04d}.png"), tok_vis)
     print(f"Saved {num_cols} tokenization masks to {tok_mask_dir}")
+    exit()
 
     for prompt_idx, prompt in enumerate(prompts):
         prompt_dir = os.path.join(output_dir, f"{prompt_idx:03d}")
