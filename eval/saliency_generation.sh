@@ -43,17 +43,17 @@ CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --experiment foveation_trajectory_grid \
     --foveation_trajectory_type grid \
     --decode_mode merge \
-    --output_dir ../results/eccv2026_final_v2/website/teaser_grid_10x10_${lr_downsample_factor}x_v2/${MODEL} \
+    --output_dir ../results/eccv2026_final_v2/website/teaser_grid_10x10_${lr_downsample_factor}x_v3/${MODEL} \
     --seed 42 \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
-    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/website_prompts_landscapes_v2.csv \
-    --num_prompts 100 \
+    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/website_prompts.csv \
+    --prompt_ids 014 015 016 018 019 \
     --orbit_radius 0.3 \
     --mask_radius 0.3 \
     --grid_rows 10 \
     --grid_cols 10 \
-    --foveation_outline false \
+    --foveation_outline true \
     --soft_foveation_blend true \
     --outline_width_frac 0.005 \
     --lr_downsample_factor ${lr_downsample_factor}
