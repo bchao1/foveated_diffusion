@@ -48,8 +48,8 @@ CUDA_VISIBLE_DEVICES=$1 python inference.py \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
     --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/website_prompts_landscapes_v2.csv \
-    --prompt_ids 006 \
-    --num_cols 15 \
+    --prompt_ids 003 006 011 012 013 \
+    --num_cols 12 \
     --foveation_outline true \
     --soft_foveation_blend true \
     --outline_width_frac 0.005 \
