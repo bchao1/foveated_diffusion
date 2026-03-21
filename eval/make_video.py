@@ -262,6 +262,29 @@ def _draw_text_on_frame(
     return np.array(img)
 
 
+def _make_header_bar(text: str, width: int, font: ImageFont.FreeTypeFont,
+                     color: tuple, padding: int, outline_width: int,
+                     bar_h: int | None = None) -> np.ndarray:
+    """Create a black horizontal bar with `text` pixel-centered in it.
+
+    If bar_h is None, the height is inferred from text metrics + padding.
+    Pass bar_h explicitly to enforce a shared fixed height across multiple bars.
+    """
+    dummy = Image.new("RGB", (1, 1))
+    bbox = ImageDraw.Draw(dummy).textbbox((0, 0), text, font=font, stroke_width=outline_width)
+    text_h = bbox[3] - bbox[1]
+    text_w = bbox[2] - bbox[0]
+    if bar_h is None:
+        bar_h = _round_even(text_h + 2 * padding)
+    bar = Image.new("RGB", (width, bar_h), (0, 0, 0))
+    draw = ImageDraw.Draw(bar)
+    # Subtract bbox offsets so rendered pixels (not the anchor) are truly centered
+    xy = ((width - text_w) // 2 - bbox[0], (bar_h - text_h) // 2 - bbox[1])
+    draw.text(xy, text, font=font, fill=color,
+              stroke_width=outline_width, stroke_fill=(0, 0, 0) if outline_width > 0 else None)
+    return np.array(bar)
+
+
 def add_text_overlay(
     video_path: str | Path,
     output_path: str | Path,
@@ -272,32 +295,51 @@ def add_text_overlay(
     position: str = "bottom-center",
     padding: int = 20,
     outline_width: int = 0,
+    header: bool = False,
+    header_height: int | None = None,
 ) -> None:
     """
-    Burn text onto every frame of a video.
+    Burn text onto every frame of a video, or prepend a black header bar above each frame.
 
     Args:
-        video_path:    Input video path.
-        output_path:   Output video path.
-        text:          Text string to render on each frame.
-        font_path:     Path to a .ttf font file. Default: CMU Serif Regular.
-        font_size:     Font size in points. Default: 48.
-        color:         RGB text color. Default: white (255, 255, 255).
-        position:      One of: top-left, top-center, top-right,
-                       center, bottom-left, bottom-center, bottom-right.
-        padding:       Pixel margin from the frame edge. Default: 20.
-        outline_width: Black outline stroke width in pixels. 0 = no outline. Default: 0.
+        video_path:     Input video path.
+        output_path:    Output video path.
+        text:           Text string to render on each frame.
+        font_path:      Path to a .ttf font file. Default: CMU Serif Regular.
+        font_size:      Font size in points. Default: 48.
+        color:          RGB text color. Default: white (255, 255, 255).
+        position:       One of: top-left, top-center, top-right,
+                        center, bottom-left, bottom-center, bottom-right.
+                        Ignored when header=True.
+        padding:        Pixel margin from the frame edge (overlay) or inside bar (header). Default: 20.
+        outline_width:  Black outline stroke width in pixels. 0 = no outline. Default: 0.
+        header:         If True, prepend a black label bar above the video instead of
+                        overlaying text on the frame. Output video is taller by bar height.
+        header_height:  Fix the bar height in pixels (useful to match bars across multiple videos).
+                        If None (default), height is inferred from text metrics + padding.
     """
     frames, fps = _read_video(video_path)
     font = ImageFont.truetype(str(font_path), font_size)
-    writer = _make_writer(output_path, fps)
-    try:
-        for frame in frames:
-            writer.append_data(_draw_text_on_frame(frame, text, font, color, position, padding, outline_width))
-    finally:
-        writer.close()
     h, w = frames[0].shape[:2]
-    print(f"Text overlay saved to {output_path}  ({w}×{h} @ {fps:.1f} fps, text='{text}', pos={position})")
+
+    if header:
+        bar = _make_header_bar(text, w, font, color, padding, outline_width, bar_h=header_height)
+        bar_h = bar.shape[0]
+        writer = _make_writer(output_path, fps)
+        try:
+            for frame in frames:
+                writer.append_data(np.concatenate([bar, frame], axis=0))
+        finally:
+            writer.close()
+        print(f"Header bar saved to {output_path}  ({w}×{h + bar_h} @ {fps:.1f} fps, text='{text}')")
+    else:
+        writer = _make_writer(output_path, fps)
+        try:
+            for frame in frames:
+                writer.append_data(_draw_text_on_frame(frame, text, font, color, position, padding, outline_width))
+        finally:
+            writer.close()
+        print(f"Text overlay saved to {output_path}  ({w}×{h} @ {fps:.1f} fps, text='{text}', pos={position})")
 
 
 # ---------------------------------------------------------------------------
@@ -538,6 +580,10 @@ def _parse_args():
                    help="Text anchor position (default: bottom-center)")
     t.add_argument("--padding", type=int, default=20, help="Pixel margin from frame edge (default: 20)")
     t.add_argument("--outline-width", type=int, default=0, help="Black outline stroke width in pixels (default: 0 = none)")
+    t.add_argument("--header", action="store_true", default=False,
+                   help="Prepend a black label bar above the video instead of overlaying text on the frame")
+    t.add_argument("--header-height", type=int, default=None,
+                   help="Fix header bar height in pixels (use same value across videos for matched bars)")
 
     # --- images ---
     i = sub.add_parser("images", help="Compile images from a folder into a video")
@@ -605,6 +651,8 @@ def main():
             position=args.position,
             padding=args.padding,
             outline_width=args.outline_width,
+            header=args.header,
+            header_height=args.header_height,
         )
 
 
