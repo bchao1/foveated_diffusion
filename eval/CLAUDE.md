@@ -7,7 +7,11 @@ Video composition utilities. Use the `imp_tome` conda environment to run.
 | Function | Description |
 |---|---|
 | `stack_videos(video_paths, output_path, grid_x, grid_y, margin, bg_color)` | Arrange videos in a `grid_x × grid_y` grid with pixel margin between cells. Shorter clips hold their last frame. |
-| `concat_videos(video_paths, output_path, sleep_duration, fps)` | Concatenate clips sequentially with a black pause of `sleep_duration` seconds between each. |
+| `concat_videos(video_paths, output_path, sleep_duration, fps, freeze)` | Concatenate clips sequentially with a black pause or frozen last frame between each. |
+| `add_text_overlay(video_path, output_path, text, font_path, font_size, color, position, padding, outline_width, header, header_height)` | Overlay text on every frame, or prepend a black header bar. When `header=True`, text is pixel-centered in a black bar prepended above the video. Use `header_height` to enforce matching bar heights across multiple videos. |
+| `images_to_video(folder, output_path, fps, image_order, pattern, trajectory, num_frames, grid_rows, grid_cols, lissajous_a, lissajous_b, lissajous_delta)` | Compile images from a folder into a video. Supports smooth trajectory curves through image grids via `trajectory=`. |
+
+**Trajectory types** (`--trajectory`): `lissajous`, `spiral`, `rose`, `epitrochoid`, `hypotrochoid`, `butterfly`
 
 **CLI:**
 ```bash
@@ -15,12 +19,147 @@ Video composition utilities. Use the `imp_tome` conda environment to run.
 conda run -n imp_tome python make_video.py stack a.mp4 b.mp4 c.mp4 d.mp4 \
   --output stacked.mp4 --grid-x 2 --grid-y 2 --margin 20
 
-# Sequential with 2-second black gap
+# Sequential with 2-second frozen-frame gap
 conda run -n imp_tome python make_video.py concat a.mp4 b.mp4 c.mp4 \
-  --output concat.mp4 --sleep 2.0
+  --output concat.mp4 --sleep 2.0 --freeze
+
+# Add black header bar above video
+conda run -n imp_tome python make_video.py text input.mp4 \
+  --output out.mp4 --text "My Label" --font /home/brianchc/fonts/cmu-serif/cmunbx.ttf \
+  --font-size 82 --color 255,255,255 --padding 20 --header --header-height 114
+
+# Rose trajectory through 10×10 image grid (240 frames, 30fps)
+conda run -n imp_tome python make_video.py images /path/to/folder \
+  --output out.mp4 --fps 30 --trajectory rose --num-frames 240 --grid-rows 10 --grid-cols 10
 ```
 
 Invoke `/make_video` to have Claude pick the right function and run it.
+
+---
+
+## Animation Workflows
+
+Standard parameters shared across all workflows unless noted:
+- Font: CMU Serif Bold (`/home/brianchc/fonts/cmu-serif/cmunbx.ttf`)
+- Header font size: **82px** (8% of 1024px image height), header bar height: **114px** (forced via `--header-height`)
+- Bottom-center overlay font size: **77px** (5% × 1.5 of 1024px), white, black outline (`--outline-width 3`)
+- Stack margin: **20px**, `--target-size none`
+- Trajectory: **rose**, 240 frames at 30fps (unless a different duration is specified)
+- Default output: `/home/brianchc/foveated_diffusion/twitter_videos/<descriptive_name>.mp4`
+- Temp files: `/tmp/make_video_<name>/`
+
+---
+
+### Workflow 1 — Foveation Trajectory Grid (2×2 stack)
+
+Stack the first four `video_with_circle.mp4` clips from a `fov_traj` result folder into a 2×2 grid video.
+
+```
+Input:  /home/brianchc/fov_video/results/fov_traj/{ID}/000/video_with_circle.mp4
+        /home/brianchc/fov_video/results/fov_traj/{ID}/001/video_with_circle.mp4
+        /home/brianchc/fov_video/results/fov_traj/{ID}/002/video_with_circle.mp4
+        /home/brianchc/fov_video/results/fov_traj/{ID}/003/video_with_circle.mp4
+Output: twitter_videos/fov_traj_{ID}_2x2.mp4
+```
+
+```bash
+conda run -n imp_tome python make_video.py stack \
+  /home/brianchc/fov_video/results/fov_traj/{ID}/000/video_with_circle.mp4 \
+  /home/brianchc/fov_video/results/fov_traj/{ID}/001/video_with_circle.mp4 \
+  /home/brianchc/fov_video/results/fov_traj/{ID}/002/video_with_circle.mp4 \
+  /home/brianchc/fov_video/results/fov_traj/{ID}/003/video_with_circle.mp4 \
+  --output .../twitter_videos/fov_traj_{ID}_2x2.mp4 \
+  --grid-x 2 --grid-y 2 --margin 10
+```
+
+Output: `1862×1078 @ 15fps` (source clips are 832×480, scaled ~1.11×, 10px margin between cells).
+
+---
+
+### Workflow 2 — Naive vs Ours Baseline Comparison (1×2 with headers)
+
+Side-by-side comparison of naive mixed-resolution and our method for a given video ID,
+with header bars and optional bottom-center text overlays.
+
+```
+Input:  baseline_comparison/naive_720p/videos_with_circle/{ID}.mp4
+        baseline_comparison/ours_720p/videos_with_circle/{ID}.mp4
+Output: twitter_videos/naive_vs_ours_id{ID}_header_1x2.mp4
+```
+
+Pipeline:
+1. Add header "Naive mixed-resolution" → `naive_labeled.mp4` (font 55px = 5%×1.5×736, header-height 96)
+2. Add header "Foveated Diffusion (Ours)" → `ours_labeled.mp4` (same height)
+3. Stack 1×2 with 15px margin, `--target-size none`
+
+---
+
+### Workflow 3 — Saliency 3×3 Grid (circle videos, rose trajectory)
+
+Stack nine 720p saliency circle videos in a 3×3 grid (VR Gaming, Autonomous Driving, Robotics).
+
+```
+Input:  saliency/{games,av,robotics}_fix_radius_720p/videos_with_circle/{ID}.mp4
+IDs:    games=[8,15,25], av=[2,6,11], robotics=[11,67,65]
+Output: twitter_videos/saliency_circle_3x3.mp4
+```
+
+```bash
+conda run -n imp_tome python make_video.py stack \
+  games_fix_radius_720p/videos_with_circle/8.mp4  ... (9 videos total) \
+  --output .../saliency_circle_3x3.mp4 \
+  --grid-x 3 --grid-y 3 --margin 15
+```
+
+---
+
+### Workflow 4 — Foveation Trajectory + Tokenization (1×/2×/4× concat with rose curve)
+
+Full pipeline: rose trajectory video for each resolution, paired 1×2 with tokenization masks,
+labeled with resolution at bottom-center, concatenated across resolutions with 1s freeze.
+
+```
+Input (images):
+  fov_traj_grid_10x10_1x_v2/random/{ID}/          → 1x (full res)
+  fov_traj_grid_10x10_2x_v2/random/{ID}/          → 2x
+  fov_traj_grid_10x10_4x_v2/random_4x_distill/{ID}/ → 4x
+
+Input (tokenization masks):
+  fov_traj_grid_10x10_1x_v2/random/tokenization_masks/
+  fov_traj_grid_10x10_2x_v2/random/tokenization_masks/
+  teaser_grid_10x10_4x_v2/random_4x_distill/tokenization_masks/
+
+Output: twitter_videos/fov_traj_{ID}_rose_1x_2x_4x_tok_labeled_concat.mp4
+```
+
+Per-resolution pipeline (repeat for 1×/2×/4×, with `--num-frames 90` for 1× and `240` for 2×/4×):
+1. `images` with `--trajectory rose --num-frames N --grid-rows 10 --grid-cols 10` → image rose video
+2. Same for tokenization masks → tok rose video
+3. `text --header --header-height 114 --text "Generated Image"` → img_h.mp4
+4. `text --header --header-height 114 --text "Tokenization"` → tok_h.mp4
+5. `stack --grid-x 2 --grid-y 1 --margin 20 --target-size none` → stacked.mp4
+6. `text --position bottom-center --outline-width 3 --text "Full high-resolution"/"1/2x periphery"/"1/4x periphery"` → final.mp4
+
+Then: `concat 1x_final.mp4 2x_final.mp4 4x_final.mp4 --sleep 1.0 --freeze`
+
+---
+
+### Workflow 5 — Saliency-guided vs Randomized Mask (1×2 with headers)
+
+Side-by-side rose trajectory comparison of random vs saliency-guided foveation positioning
+for a given prompt ID. No tokenization masks, no bottom-center overlay.
+
+```
+Input:  vary_position_grid_10x10/random/{ID}/     → Randomized Mask (left)
+        vary_position_grid_10x10/saliency/{ID}/   → Saliency-guided (right)
+Output: twitter_videos/vary_position_{ID}_rose_1x2.mp4
+```
+
+Pipeline:
+1. `images --trajectory rose --num-frames 240 --fps 30 --grid-rows 10 --grid-cols 10` for each folder
+2. `text --header --header-height 114 --text "Randomized Mask"` (font 82px, CMU Bold)
+3. `text --header --header-height 114 --text "Saliency-guided"` (same)
+4. `stack --grid-x 2 --grid-y 1 --margin 20 --target-size none`
 
 ---
 
