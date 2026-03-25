@@ -163,6 +163,39 @@ Pipeline:
 
 ---
 
+### Workflow 6 — Rose Trajectory with Wipe Transition to Tokenization Mask
+
+Rose animation for a single prompt ID that wipes to the tokenization mask at the midpoint
+and back, with text labels transitioning alongside the content via the slider.
+
+```
+Input (images):   .../website/fov_traj_grid_10x10_4x_v2/random_4x_distill/{ID}/
+Input (masks):    .../website/teaser_grid_10x10_4x_v2/random_4x_distill/tokenization_masks/
+Script:           /tmp/make_rose_wipe_{ID}.py  (custom per-run)
+Output:           twitter_videos/fov_traj_{ID}_rose_wipe.mp4
+```
+
+**Video structure** (390 frames = 13s @ 30fps):
+
+| Segment | Frames | Duration | Content |
+|---|---|---|---|
+| Image rose animation | 0–119 | 4s | rose trajectory over images — "Generated Image" label |
+| Freeze image | 120–134 | 0.5s | frozen image — "Generated Image" label |
+| Wipe L→R | 135–164 | 1s | mask grows from left, image retreats right — both labels slide with content |
+| Hold mask | 165–224 | 2s | frozen mask — "Tokenization" label |
+| Freeze mask | 225–239 | 0.5s | frozen mask — "Tokenization" label |
+| Wipe R→L | 240–269 | 1s | mask shrinks from right (left edge fixed) — both labels slide with content |
+| Continue image rose | 270–389 | 4s | rose trajectory continues — "Generated Image" label |
+
+**Key parameters:**
+- Rose trajectory: 240 frames, 10×10 grid, `k=4` (8 petals)
+- Slider bar: 10px white vertical bar at the wipe edge
+- Text: CMU Serif Bold 82px, white, black outline (3px), top-center, padding 20px
+- Labels pre-baked onto each side before compositing so they transition with the content
+- Script: `/tmp/make_rose_wipe_006.py` (update `IMG_DIR`, `MASK_DIR`, `OUTPUT` for other IDs)
+
+---
+
 ## Agent Instructions
 
 Whenever `inference.py` is edited (arguments added/removed, experiments added, mask types changed,
