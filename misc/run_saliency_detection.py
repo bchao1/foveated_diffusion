@@ -193,6 +193,15 @@ def predict_saliency_and_mask(model, pil_image, device):
     return mask_np, smoothed_smap, center, r
 
 
+def center_crop_square(pil_image):
+    """Center-crop a PIL image to a square (min side)."""
+    w, h = pil_image.size
+    side = min(w, h)
+    left = (w - side) // 2
+    top = (h - side) // 2
+    return pil_image.crop((left, top, left + side, top + side))
+
+
 def collect_image_paths(root_dir):
     """Recursively collect all image paths under root_dir."""
     root = Path(root_dir).resolve()
@@ -220,7 +229,7 @@ def save_saliency_heatmap(saliency_np, out_path, size_orig=None):
         ).astype(np.float32) / 255.0
 
     plt.figure(figsize=(saliency_np.shape[1] / 100, saliency_np.shape[0] / 100), dpi=100)
-    plt.imshow(saliency_np, cmap="hot", vmin=0, vmax=1)
+    plt.imshow(saliency_np, cmap="rainbow", vmin=0, vmax=1)
     plt.axis("off")
     plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
     plt.savefig(out_path, bbox_inches="tight", pad_inches=0)
@@ -240,7 +249,7 @@ def main():
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="/home/brianchc/foveated_diffusion/results/saliency_detection/",
+        default="/home/brianchc/foveated_diffusion/results/visualizations_and_video/saliency_detection/",
         help="Output directory for images, saliency maps, and masks",
     )
     parser.add_argument(
@@ -258,6 +267,13 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     device = args.device if torch.cuda.is_available() else "cpu"
 
+    # Save rainbow colormap strip (512x64, horizontal gradient, no text)
+    import matplotlib.cm as cm
+    gradient = np.linspace(0, 1, 512)[np.newaxis, :]  # (1, 512)
+    strip_rgb = (cm.rainbow(gradient)[0, :, :3] * 255).astype(np.uint8)  # (512, 3)
+    strip_img = Image.fromarray(np.tile(strip_rgb, (64, 1, 1)))  # (64, 512, 3)
+    strip_img.save(output_dir / "rainbow_colormap_strip.png")
+
     print("Loading DeepGaze IIE saliency model...")
     model = load_deepgaze_model(device)
 
@@ -266,13 +282,15 @@ def main():
 
     for i, path in enumerate(image_paths):
         rel = path.relative_to(images_dir)
-        out_sub = output_dir / rel.parent
-        out_sub.mkdir(parents=True, exist_ok=True)
         stem = path.stem
-        out_image_path = out_sub / f"{stem}_image{path.suffix}"
-        out_saliency_path = out_sub / f"{stem}_saliency.png"
-        out_mask_path = out_sub / f"{stem}_foveation_mask.png"
-        out_foveated_path = out_sub / f"{stem}_foveated_preview{path.suffix}"
+        out_sub = output_dir / rel.parent / stem
+        out_sub.mkdir(parents=True, exist_ok=True)
+        out_image_path = out_sub / f"image{path.suffix}"
+        out_saliency_path = out_sub / "saliency.png"
+        out_mask_path = out_sub / "foveation_mask.png"
+        out_mask_binary_path = out_sub / "foveation_mask_binary.png"
+        out_mask_pix_path = out_sub / "foveation_mask_pix64_up512.png"
+        out_foveated_path = out_sub / f"foveated_preview{path.suffix}"
 
         if out_saliency_path.exists() and out_mask_path.exists():
             print(f"[{i+1}/{len(image_paths)}] Skip (exists): {rel}")
@@ -280,6 +298,9 @@ def main():
 
         try:
             pil_image = Image.open(path).convert("RGB")
+            w_orig, h_orig = pil_image.size
+
+            pil_image = center_crop_square(pil_image)
             w_orig, h_orig = pil_image.size
 
             if args.max_size is not None and max(w_orig, h_orig) > args.max_size:
@@ -300,6 +321,14 @@ def main():
             mask_uint8 = (np.clip(mask_np, 0, 1) * 255).astype(np.uint8)
             Image.fromarray(mask_uint8).save(out_mask_path)
 
+            # Save binarized mask (threshold at 0.5)
+            mask_binary = (mask_np >= 0.5).astype(np.uint8) * 255
+            Image.fromarray(mask_binary).save(out_mask_binary_path)
+
+            # Downsample binary mask to 64x64 then upsample to 512x512 (nearest), for pixelated look
+            mask_pix = Image.fromarray(mask_binary).resize((64, 64), Image.NEAREST).resize((512, 512), Image.NEAREST)
+            mask_pix.save(out_mask_pix_path)
+
             if args.save_foveated_preview:
                 img_tensor = torch.from_numpy(np.array(pil_image)).permute(2, 0, 1).float().unsqueeze(0) / 255.0
                 mask_tensor = torch.from_numpy(mask_np).float().unsqueeze(0).unsqueeze(0)
@@ -310,7 +339,7 @@ def main():
                 Image.fromarray(fov_np).save(out_foveated_path)
 
             # Save image with foveation circle drawn
-            circle_path = out_sub / f"{stem}_circle{path.suffix}"
+            circle_path = out_sub / f"circle{path.suffix}"
             if _HAS_FOV_UTILS:
                 img_np = np.array(pil_image)
                 frames_with_circle = draw_foveation_circle_from_params([img_np], [center], [r])
@@ -318,7 +347,7 @@ def main():
             else:
                 _draw_foveation_circle_on_image(pil_image, center, r).save(circle_path)
 
-            print(f"[{i+1}/{len(image_paths)}] {rel} -> saliency, mask, circle")
+            print(f"[{i+1}/{len(image_paths)}] {rel} -> saliency, mask, mask_binary, mask_pix64, circle")
         except Exception as e:
             import traceback
             print(f"[{i+1}/{len(image_paths)}] Error {path}: {e}")

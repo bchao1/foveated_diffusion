@@ -12,6 +12,10 @@ Functions:
   add_text_overlay(video_path, output_path, text, font_path, font_size, color, position, padding)
       Burn text onto every frame of a video with configurable font, color, size, and position.
 
+  wipe_video(img_folder, mask_folder, output_path, ...)
+      Rose-trajectory video that wipes to a tokenization mask at the midpoint and back.
+      Text labels slide with the wipe slider.
+
 Dependencies: imageio, imageio-ffmpeg, numpy, Pillow
 """
 
@@ -25,6 +29,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 DEFAULT_FONT_DIR = "/home/brianchc/fonts/cmu-serif"
 DEFAULT_FONT_PATH = f"{DEFAULT_FONT_DIR}/cmunrm.ttf"
+DEFAULT_BOLD_FONT_PATH = f"{DEFAULT_FONT_DIR}/cmunbx.ttf"
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +541,180 @@ def images_to_video(
 
 
 # ---------------------------------------------------------------------------
+# 5. Wipe video — trajectory animation with horizontal slider to mask
+# ---------------------------------------------------------------------------
+
+def _label_frame_top_center(
+    frame: np.ndarray,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    color: tuple,
+    padding: int,
+    outline_width: int,
+) -> np.ndarray:
+    """Draw text top-center with correct bbox-offset centering and black outline."""
+    img = Image.fromarray(frame.copy())
+    draw = ImageDraw.Draw(img)
+    W_f, _ = img.size
+    bbox = draw.textbbox((0, 0), text, font=font, stroke_width=outline_width)
+    tw = bbox[2] - bbox[0]
+    xy = ((W_f - tw) // 2 - bbox[0], padding - bbox[1])
+    draw.text(xy, text, font=font, fill=color,
+              stroke_width=outline_width, stroke_fill=(0, 0, 0) if outline_width > 0 else None)
+    return np.array(img)
+
+
+def wipe_video(
+    img_folder: str | Path,
+    mask_folder: str | Path,
+    output_path: str | Path,
+    fps: float = 30.0,
+    num_frames: int = 240,
+    grid_rows: int = 10,
+    grid_cols: int = 10,
+    trajectory: str = "rose",
+    wipe_frames: int = 30,
+    hold_frames: int = 60,
+    freeze_frames: int = 15,
+    slider_width: int = 10,
+    img_label: str = "Generated Image",
+    mask_label: str = "Tokenization",
+    font_path: str | Path = DEFAULT_BOLD_FONT_PATH,
+    font_size: int = 82,
+    color: tuple[int, int, int] = (255, 255, 255),
+    outline_width: int = 3,
+    padding: int = 20,
+    img_pattern: str = "img_*.png",
+    mask_pattern: str = "tokenization_mask_*.png",
+    mask_offset: int = 0,
+) -> None:
+    """
+    Generate a trajectory animation over img_folder that wipes to the corresponding
+    tokenization mask at the midpoint, then wipes back and continues.
+
+    Both text labels are pre-baked onto their respective frames before compositing,
+    so they slide with the wipe slider.
+
+    Video structure (default params → 390 frames = 13s @ 30fps):
+      0 .. half-1              : trajectory animation — img_label
+      half .. half+freeze-1    : freeze image (0.5s) — img_label
+      ..+wipe-1                : wipe L→R (1s) — labels composite with slider
+      ..+hold-1                : hold mask (2s) — mask_label
+      ..+freeze-1              : freeze mask (0.5s) — mask_label
+      ..+wipe-1                : wipe R→L (1s) — labels composite with slider
+      ..+half-1                : continue trajectory — img_label
+
+    Args:
+        img_folder:     Folder of generated images (e.g. 10×10 grid).
+        mask_folder:    Folder of tokenization mask images.
+        output_path:    Output .mp4 path.
+        fps:            Output frame rate. Default: 30.
+        num_frames:     Total trajectory frames. Default: 240.
+        grid_rows:      Grid rows for trajectory. Default: 10.
+        grid_cols:      Grid columns for trajectory. Default: 10.
+        trajectory:     Trajectory type (see _TRAJECTORY_FNS). Default: "rose".
+        wipe_frames:    Duration of each wipe in frames. Default: 30 (1s @ 30fps).
+        hold_frames:    Duration of mask hold in frames. Default: 60 (2s @ 30fps).
+        freeze_frames:  Duration of freeze before each wipe. Default: 15 (0.5s @ 30fps).
+        slider_width:   Width of the white slider bar in pixels. Default: 10.
+        img_label:      Text label for the image side. Default: "Generated Image".
+        mask_label:     Text label for the mask side. Default: "Tokenization".
+        font_path:      Path to .ttf font. Default: CMU Serif Bold.
+        font_size:      Font size in points. Default: 82.
+        color:          Text color (RGB). Default: white.
+        outline_width:  Black outline stroke width. Default: 3.
+        padding:        Pixel padding from the top edge. Default: 20.
+        img_pattern:    Glob pattern for image files. Default: "img_*.png".
+        mask_pattern:   Glob pattern for mask files. Default: "tokenization_mask_*.png".
+        mask_offset:    Integer shift applied to mask indices to correct alignment.
+                        E.g. -1 uses the mask one position earlier in sorted order. Default: 0.
+    """
+    img_folder  = Path(img_folder)
+    mask_folder = Path(mask_folder)
+    output_path = Path(output_path)
+
+    imgs  = sorted(img_folder.glob(img_pattern))
+    masks = sorted(mask_folder.glob(mask_pattern))
+    if not imgs:
+        raise FileNotFoundError(f"No images matching '{img_pattern}' in {img_folder}")
+    if not masks:
+        raise FileNotFoundError(f"No masks matching '{mask_pattern}' in {mask_folder}")
+    print(f"Found {len(imgs)} images, {len(masks)} masks.")
+
+    # Build trajectory index sequence
+    indices = _trajectory_order(
+        trajectory, imgs, num_frames, grid_rows, grid_cols,
+    )
+    # indices is a list of Paths; convert to integer indices into imgs/masks
+    idx_list = [imgs.index(p) for p in indices]
+
+    def load_rgb(path):
+        return np.array(Image.open(path).convert("RGB"))
+
+    print("Loading frames...")
+    img_frames  = [load_rgb(imgs[i % len(imgs)])                        for i in idx_list]
+    mask_frames = [load_rgb(masks[(i + mask_offset) % len(masks)]) for i in idx_list]
+    print("Done loading.")
+
+    H, W = img_frames[0].shape[:2]
+    WHITE = np.full((H, slider_width, 3), 255, dtype=np.uint8)
+
+    font = ImageFont.truetype(str(font_path), font_size)
+
+    def label(frame, text):
+        return _label_frame_top_center(frame, text, font, color, padding, outline_width)
+
+    # Pre-label all image frames; mask frames only needed at the midpoint
+    img_labeled  = [label(f, img_label) for f in img_frames]
+    half = num_frames // 2
+
+    freeze_img_labeled  = img_labeled[half - 1]
+    freeze_mask_raw     = mask_frames[half - 1]
+    freeze_mask_labeled = label(freeze_mask_raw, mask_label)
+    resume_img_labeled  = img_labeled[half]
+
+    def composite(left_labeled, right_labeled, x_div):
+        """Composite two labeled frames with a white bar at x_div."""
+        out = right_labeled.copy()
+        out[:, :x_div] = left_labeled[:, :x_div]
+        x0, x1 = x_div, min(x_div + slider_width, W)
+        if x0 < x1:
+            out[:, x0:x1] = 255
+        return out
+
+    def wipe_in(t):
+        x_div = int(W * t / (wipe_frames - 1)) if wipe_frames > 1 else W
+        return composite(freeze_mask_labeled, freeze_img_labeled, x_div)
+
+    def wipe_out(t):
+        x_div = int(W * (wipe_frames - 1 - t) / (wipe_frames - 1)) if wipe_frames > 1 else 0
+        return composite(freeze_mask_labeled, resume_img_labeled, x_div)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    writer = _make_writer(output_path, fps)
+    n = 0
+    try:
+        for i in range(half):
+            writer.append_data(img_labeled[i]); n += 1
+        for _ in range(freeze_frames):
+            writer.append_data(freeze_img_labeled); n += 1
+        for t in range(wipe_frames):
+            writer.append_data(wipe_in(t)); n += 1
+        for _ in range(hold_frames):
+            writer.append_data(freeze_mask_labeled); n += 1
+        for _ in range(freeze_frames):
+            writer.append_data(freeze_mask_labeled); n += 1
+        for t in range(wipe_frames):
+            writer.append_data(wipe_out(t)); n += 1
+        for i in range(half, num_frames):
+            writer.append_data(img_labeled[i]); n += 1
+    finally:
+        writer.close()
+
+    print(f"Wipe video saved to {output_path}  ({W}×{H} @ {fps:.1f} fps, {n} frames = {n/fps:.1f}s)")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -584,6 +763,35 @@ def _parse_args():
                    help="Prepend a black label bar above the video instead of overlaying text on the frame")
     t.add_argument("--header-height", type=int, default=None,
                    help="Fix header bar height in pixels (use same value across videos for matched bars)")
+
+    # --- wipe ---
+    w = sub.add_parser("wipe", help="Trajectory animation that wipes to a tokenization mask and back")
+    w.add_argument("img_folder",  help="Folder of generated images (e.g. 10×10 grid)")
+    w.add_argument("mask_folder", help="Folder of tokenization mask images")
+    w.add_argument("--output", "-o", required=True, help="Output path")
+    w.add_argument("--fps", type=float, default=30.0, help="Output frame rate (default: 30)")
+    w.add_argument("--num-frames", type=int, default=240, help="Total trajectory frames (default: 240)")
+    w.add_argument("--grid-rows", type=int, default=10, help="Grid rows for trajectory (default: 10)")
+    w.add_argument("--grid-cols", type=int, default=10, help="Grid columns for trajectory (default: 10)")
+    w.add_argument("--trajectory", type=str, default="rose", choices=list(_TRAJECTORY_FNS),
+                   help="Trajectory type (default: rose)")
+    w.add_argument("--wipe-frames",   type=int, default=30, help="Frames per wipe (default: 30 = 1s @ 30fps)")
+    w.add_argument("--hold-frames",   type=int, default=60, help="Frames to hold mask (default: 60 = 2s @ 30fps)")
+    w.add_argument("--freeze-frames", type=int, default=15, help="Frames to freeze before each wipe (default: 15 = 0.5s @ 30fps)")
+    w.add_argument("--slider-width",  type=int, default=10, help="White slider bar width in pixels (default: 10)")
+    w.add_argument("--img-label",  type=str, default="Generated Image", help="Label for the image side (default: 'Generated Image')")
+    w.add_argument("--mask-label", type=str, default="Tokenization",    help="Label for the mask side (default: 'Tokenization')")
+    w.add_argument("--font", type=str, default=DEFAULT_BOLD_FONT_PATH, help="Path to .ttf font (default: CMU Serif Bold)")
+    w.add_argument("--font-size", type=int, default=82, help="Font size in points (default: 82)")
+    w.add_argument("--color", type=str, default="255,255,255", help="Text color as R,G,B (default: white)")
+    w.add_argument("--outline-width", type=int, default=3, help="Black outline stroke width (default: 3)")
+    w.add_argument("--padding", type=int, default=20, help="Pixel padding from top edge (default: 20)")
+    w.add_argument("--img-pattern",  type=str, default="img_*.png",
+                   help="Glob pattern for image files (default: img_*.png)")
+    w.add_argument("--mask-pattern", type=str, default="tokenization_mask_*.png",
+                   help="Glob pattern for mask files (default: tokenization_mask_*.png)")
+    w.add_argument("--mask-offset", type=int, default=0,
+                   help="Shift mask index by N to correct alignment (e.g. -1 uses previous mask). Default: 0")
 
     # --- images ---
     i = sub.add_parser("images", help="Compile images from a folder into a video")
@@ -655,6 +863,33 @@ def main():
             header_height=args.header_height,
         )
 
+
+    elif args.command == "wipe":
+        color = tuple(int(x) for x in args.color.split(","))
+        wipe_video(
+            img_folder=args.img_folder,
+            mask_folder=args.mask_folder,
+            output_path=args.output,
+            fps=args.fps,
+            num_frames=args.num_frames,
+            grid_rows=args.grid_rows,
+            grid_cols=args.grid_cols,
+            trajectory=args.trajectory,
+            wipe_frames=args.wipe_frames,
+            hold_frames=args.hold_frames,
+            freeze_frames=args.freeze_frames,
+            slider_width=args.slider_width,
+            img_label=args.img_label,
+            mask_label=args.mask_label,
+            font_path=args.font,
+            font_size=args.font_size,
+            color=color,
+            outline_width=args.outline_width,
+            padding=args.padding,
+            img_pattern=args.img_pattern,
+            mask_pattern=args.mask_pattern,
+            mask_offset=args.mask_offset,
+        )
 
     elif args.command == "images":
         images_to_video(

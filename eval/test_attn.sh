@@ -1,0 +1,24 @@
+export DIFFSYNTH_MODEL_BASE_PATH="/miele/brian/modelscope"
+export DIFFSYNTH_SKIP_DOWNLOAD=True
+
+step=5000
+ckpt_folder="/local/brian/foveated_diffusion/models/eccv2026_final/rank_32_fov_more_steps/"
+lora_checkpoint="${ckpt_folder}/step-${step}.safetensors"
+
+# Normal run
+export DIFFSYNTH_ATTENTION_IMPLEMENTATION="sparge_attention"
+CUDA_VISIBLE_DEVICES=$1 python inference.py \
+    --experiment ours \
+    --decode_mode merge \
+    --output_dir ../results/test_attn_0325/attn_$DIFFSYNTH_ATTENTION_IMPLEMENTATION \
+    --seed 42 \
+    --tokenAE_training false \
+    --lora_checkpoint ${lora_checkpoint} \
+    --full_eval_mask circular \
+    --foveation_outline true \
+    --soft_foveation_blend true \
+    --prompt "A lion lounges calmly, displaying its powerful physique, with a soft focus highlighting its majestic mane and intense gaze." \
+    --mask_radius 0.3 \
+    --lr_downsample_factor 2 \
+    --height 1024 \
+    --width 1024

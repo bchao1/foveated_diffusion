@@ -10,8 +10,11 @@ Video composition utilities. Use the `imp_tome` conda environment to run.
 | `concat_videos(video_paths, output_path, sleep_duration, fps, freeze)` | Concatenate clips sequentially with a black pause or frozen last frame between each. |
 | `add_text_overlay(video_path, output_path, text, font_path, font_size, color, position, padding, outline_width, header, header_height)` | Overlay text on every frame, or prepend a black header bar. When `header=True`, text is pixel-centered in a black bar prepended above the video. Use `header_height` to enforce matching bar heights across multiple videos. |
 | `images_to_video(folder, output_path, fps, image_order, pattern, trajectory, num_frames, grid_rows, grid_cols, lissajous_a, lissajous_b, lissajous_delta)` | Compile images from a folder into a video. Supports smooth trajectory curves through image grids via `trajectory=`. |
+| `wipe_video(img_folder, mask_folder, output_path, fps, num_frames, grid_rows, grid_cols, trajectory, wipe_frames, hold_frames, freeze_frames, slider_width, img_label, mask_label, ...)` | Trajectory animation that wipes to a tokenization mask at the midpoint and back. Text labels slide with the wipe slider. |
 
 **Trajectory types** (`--trajectory`): `lissajous`, `spiral`, `rose`, `epitrochoid`, `hypotrochoid`, `butterfly`
+
+**CLI subcommands:** `stack`, `concat`, `text`, `images`, `wipe`
 
 **CLI:**
 ```bash
@@ -192,7 +195,15 @@ Output:           twitter_videos/fov_traj_{ID}_rose_wipe.mp4
 - Slider bar: 10px white vertical bar at the wipe edge
 - Text: CMU Serif Bold 82px, white, black outline (3px), top-center, padding 20px
 - Labels pre-baked onto each side before compositing so they transition with the content
-- Script: `/tmp/make_rose_wipe_006.py` (update `IMG_DIR`, `MASK_DIR`, `OUTPUT` for other IDs)
+
+```bash
+conda run -n imp_tome python make_video.py wipe \
+  .../website/fov_traj_grid_10x10_4x_v2/random_4x_distill/{ID} \
+  .../website/teaser_grid_10x10_4x_v2/random_4x_distill/tokenization_masks \
+  --output .../twitter_videos/fov_traj_{ID}_rose_wipe.mp4
+```
+
+All parameters (fps, num-frames, grid-rows/cols, wipe-frames, hold-frames, freeze-frames, slider-width, img-label, mask-label, font, font-size, color, outline-width, padding) use the defaults shown above unless overridden.
 
 ---
 
