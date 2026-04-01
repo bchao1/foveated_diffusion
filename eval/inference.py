@@ -1240,7 +1240,8 @@ def run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downs
     """Run runtime experiments."""
     print("Running runtime experiments...")
     args.mask_shape = "square"
-    args.num_frames = 32 # low-res latents
+    lr_downsample_factor = getattr(args, "lr_downsample_factor", 2)
+    #args.num_frames = 32 # low-res latents
     # add first one again in the beginning
     #token_ratio_list = np.linspace(0.25, 1.0, args.num_frames)
     # reverse list 
@@ -1254,16 +1255,20 @@ def run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downs
     actual_token_ratio_list = []
     #print(token_ratio_list)
     #print(r_list)
-    r_list = np.arange(0, args.num_frames + 1) # 0 to 32
+    r_list = np.arange(0, 64 // lr_downsample_factor + 1) # 0 to 64/x
     r_list = r_list[::-1] # 32 to 0
-    r_list = np.concatenate([[r_list[0]], r_list]) # 32, 32, ..., 0
-
+    r_list = np.concatenate([[r_list[0]], r_list]) # 64/x, 64/x, ...0
+    print(r_list)
 
 
     for r_idx, r in enumerate(r_list):
         r_idx_str = str(r_idx).zfill(2)
         
-        foveation_mask = torch.zeros(args.height // 32, args.width // 32, device=pipe.device, dtype=torch.float32) # latent tokens of shape 32x32
+        foveation_mask = torch.zeros(
+            args.height // 16 // lr_downsample_factor, 
+            args.width // 16 // lr_downsample_factor, 
+            device=pipe.device, dtype=torch.float32
+        )
         foveation_mask[:r, :r] = 1.0
         foveation_mask = F.interpolate(
             foveation_mask.unsqueeze(0).unsqueeze(0),
@@ -1272,9 +1277,10 @@ def run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downs
         ).squeeze(0).squeeze(0)
 
         
+        lr_downsample_factor = getattr(args, "lr_downsample_factor", 2)
         total_orig_tokens = foveation_mask.shape[-2] * foveation_mask.shape[-1]
         num_hr_tokens = foveation_mask.sum()
-        num_lr_tokens = (total_orig_tokens - num_hr_tokens) // 4
+        num_lr_tokens = (total_orig_tokens - num_hr_tokens) // (lr_downsample_factor ** 2)
         total_tokens = num_hr_tokens + num_lr_tokens
 
         token_ratio = total_tokens / total_orig_tokens
@@ -1305,15 +1311,13 @@ def run_runtime_experiments(pipe, args, output_dir, token_upsampler, token_downs
             **vis_kwargs,
         )
 
-        num_repeats = 5
+        num_repeats = 3
         runtimes = []
         saved_image = None
         for rep in range(num_repeats):
             torch.cuda.empty_cache()
-            start_time = time.time()
             image = pipe(**pipe_kwargs)
-            end_time = time.time()
-            runtimes.append(end_time - start_time)
+            runtimes.append(pipe.vit_timing)
             # Save only the first image for this radius to avoid clutter
             if rep == 0:
                 saved_image = image

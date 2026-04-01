@@ -101,7 +101,7 @@ def generate_runtime_figure(base_dir, output_path=None):
 
     with plt.rc_context(FIGURE_RC):
         fig, ax = plt.subplots(figsize=(4, 4))
-        setup_academic_axes(ax, grid=True)
+        setup_academic_axes(ax, grid=False)
 
         x_min_global = np.inf
         x_max_global = -np.inf
@@ -197,7 +197,7 @@ def generate_runtime_quality_two_col(runtime_and_radius_list_path, output_path=N
 
         fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(8, 4))
         for ax in (ax_left, ax_right):
-            setup_academic_axes(ax, grid=True)
+            setup_academic_axes(ax, grid=False)
             ax.set_xlabel("Tokens (% of original)")
             ax.set_xlim(x.min() - 1, x.max() + 1)
             ax.invert_xaxis()
@@ -263,6 +263,191 @@ def generate_runtime_quality_two_col(runtime_and_radius_list_path, output_path=N
         )
         plt.close(fig)
         print(f"Saved: {output_path}")
+
+
+def generate_runtime_joint_figure(base_dir, output_path=None, fov_deg=15.0, fov_max=180.0):
+    """
+    Three-panel runtime figure for lr_2, lr_4, lr_8 (runtime_apollo_v2 layout).
+
+    Panel 1 (original): Token % (inverted x) vs Speedup.
+    Panel 2: Visual field FOV (degrees) vs Speedup.
+    Panel 3: Visual field FOV (degrees) vs Token % of original.
+
+    FOV is computed assuming the high-res foveal region always subtends `fov_deg`
+    degrees.  Given radius r and the maximum possible radius max_r (full image),
+    the full-image full FoV is:  FOV = fov_deg * max_r / r.
+
+    Theoretical maximum speedups (1/min_token_ratio):
+      lr=2 → 4×,  lr=4 → 16×,  lr=8 → 64×
+    """
+    LR_CONFIGS = [
+        (2, COLORS["primary"],   "2× downsampling"),
+        (4, COLORS["secondary"], "4× downsampling"),
+        (8, COLORS["accent"],    "8× downsampling"),
+    ]
+    # Minimum token ratio when ALL periphery is at LR resolution: (1/lr)^2
+    MIN_TOKEN = {2: 1 / 4, 4: 1 / 16, 8: 1 / 64}
+    markers = {2: "o", 4: "s", 8: "^"}
+
+    curves = {}
+    for lr, color, label in LR_CONFIGS:
+        npz_path = os.path.join(base_dir, f"lr_{lr}", "runtime_and_radius_list.npz")
+        if not os.path.isfile(npz_path):
+            raise FileNotFoundError(f"Missing: {npz_path}")
+        data = np.load(npz_path, allow_pickle=True)
+        runtime_list = np.asarray(data["runtime_list"]).flatten()
+        token_ratio = np.asarray(data["token_ratio_list"]).flatten()
+        r_arr = np.asarray(data["r_list"]).flatten()
+        token_pct = token_ratio * 100
+        baseline_runtime = runtime_list[np.argmax(token_pct)]
+        speedup = baseline_runtime / runtime_list
+
+        # ── Token % vs Speedup (original panel) ──────────────────────────────
+        order = np.argsort(token_pct)
+
+        # ── FOV-indexed curves ────────────────────────────────────────────────
+        # Deduplicate: for each unique r, average runtime and token_ratio
+        max_r = int(r_arr.max())
+        unique_r = np.unique(r_arr)
+        runtime_dedup = np.array([runtime_list[r_arr == rv].mean() for rv in unique_r])
+        token_dedup   = np.array([token_ratio[r_arr == rv].mean()   for rv in unique_r])
+        speedup_dedup = baseline_runtime / runtime_dedup
+
+        # Exclude r=0 (full LR — FOV would be infinite)
+        valid = unique_r > 0
+        fov_arr    = fov_deg * max_r / unique_r[valid]   # degrees
+        fov_speedup    = speedup_dedup[valid]
+        fov_token_pct  = token_dedup[valid] * 100
+
+        # Sort by ascending FOV, then clamp at 180°
+        fov_order = np.argsort(fov_arr)
+        fov_arr       = fov_arr[fov_order]
+        fov_speedup   = fov_speedup[fov_order]
+        fov_token_pct = fov_token_pct[fov_order]
+        clamp = fov_arr <= fov_max
+        fov_arr       = fov_arr[clamp]
+        fov_speedup   = fov_speedup[clamp]
+        fov_token_pct = fov_token_pct[clamp]
+
+        curves[lr] = dict(
+            x=token_pct[order], y=speedup[order],
+            fov=fov_arr, fov_speedup=fov_speedup, fov_token_pct=fov_token_pct,
+            color=color, label=label, max_r=max_r,
+        )
+
+    # Partition boundaries (%)
+    b8 = MIN_TOKEN[8] * 100   # 1.5625
+    b4 = MIN_TOKEN[4] * 100   # 6.25
+    b2 = MIN_TOKEN[2] * 100   # 25.0
+
+    # Derive per-panel output paths from the base output_path
+    if output_path is None:
+        output_path = os.path.join(base_dir, "runtime_joint_figure.pdf")
+    base, ext = os.path.splitext(output_path)
+    panel_paths = [
+        output_path,                        # panel 1: token % vs speedup
+        f"{base}_fov_speedup{ext}",         # panel 2: FOV vs speedup
+        f"{base}_fov_tokens{ext}",          # panel 3: FOV vs token %
+    ]
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)) or ".", exist_ok=True)
+
+    SAVE_KW = dict(dpi=300, bbox_inches="tight", facecolor="white", edgecolor="none")
+    W169, H169 = 16/2.0, 9/2.0   # 16:9 figure size (inches)
+    fov_all = np.concatenate([curves[lr]["fov"] for lr in (2, 4, 8)])  # already clamped
+
+    with plt.rc_context(FIGURE_RC):
+
+        # ══════════════════════════════════════════════════════════════════════
+        # Figure 1 — Token % vs Speedup (original)
+        # ══════════════════════════════════════════════════════════════════════
+        fig, ax = plt.subplots(figsize=(W169, H169))
+        setup_academic_axes(ax, grid=False)
+
+        ax.axvspan(b8, b4,  alpha=0.10, color=COLORS["accent"],    zorder=0)
+        ax.axvspan(b4, b2,  alpha=0.08, color=COLORS["secondary"], zorder=0)
+        ax.axvspan(b2, 101, alpha=0.06, color="#4488ff",           zorder=0)
+
+        ax.text((b8 + b4) / 2, 0.97, "8×",
+                transform=ax.get_xaxis_transform(), ha="center", va="top",
+                fontsize=8, color=COLORS["accent"], style="italic")
+        ax.text((b4 + b2) / 2, 0.97, "4× / 8×",
+                transform=ax.get_xaxis_transform(), ha="center", va="top",
+                fontsize=8, color=COLORS["secondary"], style="italic")
+        ax.text((b2 + 100) / 2, 0.97, "2× / 4× / 8×",
+                transform=ax.get_xaxis_transform(), ha="center", va="top",
+                fontsize=8, color="#4466cc", style="italic")
+
+        for lr, color, label in LR_CONFIGS:
+            c = curves[lr]
+            ax.plot(c["x"], c["y"], color=c["color"], linewidth=2.0,
+                    marker=markers[lr], markersize=4,
+                    markeredgecolor="white", markeredgewidth=0.7, label=label, zorder=3)
+
+        for lr, xb, theoretical in [(8, b8, 64)]:
+            color = curves[lr]["color"]
+            ax.annotate(f"{theoretical}×", xy=(xb, theoretical),
+                        xytext=(xb + 1.5, theoretical), fontsize=7.5, color=color,
+                        va="center", arrowprops=dict(arrowstyle="-", color=color, lw=0.6), zorder=4)
+
+        ax.set_xlabel("Tokens (% of original)")
+        ax.set_ylabel("Speedup (vs. full resolution)")
+        ax.set_title("Speedup vs. token count")
+        x_all = np.concatenate([curves[lr]["x"] for lr in (2, 4, 8)])
+        ax.set_xlim(x_all.min() - 0.5, 101)
+        ax.invert_xaxis()
+        ax.set_ylim(bottom=1.0)
+        ax.legend(loc="upper left", framealpha=0.95, edgecolor="#cccccc", fontsize=10)
+
+        fig.tight_layout(pad=1.0)
+        fig.savefig(panel_paths[0], **SAVE_KW)
+        plt.close(fig)
+        print(f"Saved: {panel_paths[0]}")
+
+        # ══════════════════════════════════════════════════════════════════════
+        # Figure 2 — FOV (degrees) vs Speedup
+        # ══════════════════════════════════════════════════════════════════════
+        fig, ax = plt.subplots(figsize=(W169, H169))
+        setup_academic_axes(ax, grid=False)
+
+        for lr, color, label in LR_CONFIGS:
+            c = curves[lr]
+            ax.plot(c["fov"], c["fov_speedup"], color=c["color"], linewidth=2.0,
+                    label=label, zorder=3)
+
+        ax.set_xlabel("Full FoV (degrees)")
+        ax.set_ylabel("Speedup (vs. full resolution)")
+        ax.set_title(f"Speedup vs. full FoV\n(fovea = {fov_deg:.0f}°)")
+        ax.set_xlim(fov_deg * 0.9, fov_max)
+        ax.set_ylim(bottom=1.0)
+        ax.legend(loc="upper left", framealpha=0.95, edgecolor="#cccccc", fontsize=10)
+
+        fig.tight_layout(pad=1.0)
+        fig.savefig(panel_paths[1], **SAVE_KW)
+        plt.close(fig)
+        print(f"Saved: {panel_paths[1]}")
+
+        # ══════════════════════════════════════════════════════════════════════
+        # Figure 3 — FOV (degrees) vs Token %
+        # ══════════════════════════════════════════════════════════════════════
+        fig, ax = plt.subplots(figsize=(W169, H169))
+        setup_academic_axes(ax, grid=False)
+
+        for lr, color, label in LR_CONFIGS:
+            c = curves[lr]
+            ax.plot(c["fov"], c["fov_token_pct"], color=c["color"], linewidth=2.0,
+                    label=label, zorder=3)
+
+        ax.set_xlabel("Full FoV (degrees)")
+        ax.set_ylabel("Tokens (% of original)")
+        ax.set_title(f"Token count vs. full FoV\n(fovea = {fov_deg:.0f}°)")
+        ax.set_xlim(fov_deg * 0.9, fov_max)
+        ax.set_ylim(bottom=0.0, top=105)
+        ax.legend(loc="upper right", framealpha=0.95, edgecolor="#cccccc", fontsize=10)
+
+        fig.tight_layout(pad=1.0)
+        fig.savefig(panel_paths[2], **SAVE_KW)
+        plt.close(fig)
+        print(f"Saved: {panel_paths[2]}")
 
 
 def _downsample_by_factor(arr, factor):
@@ -1273,6 +1458,7 @@ if __name__ == "__main__":
         choices=[
             "runtime",
             "runtime_quality",
+            "runtime_joint",
             "baselines",
             "baselines_video",
             "foveation_trajectory",
@@ -1283,7 +1469,8 @@ if __name__ == "__main__":
         ],
     )
     parser.add_argument("--output", "-o", type=str, default=None, help="Output path for the figure")
-    parser.add_argument("--base-dir", type=str, default=None, help="Base dir (default: ../results/eccv2026_final)")
+    parser.add_argument("--base-dir", type=str, default=None, help="Base dir (default: ../results/eccv2026_final_v2)")
+    parser.add_argument("--fov-max", type=float, default=180.0, help="Maximum full FoV (degrees) shown in FOV panels of runtime_joint figure (default: 180)")
     parser.add_argument("--padding-frac", type=float, default=0.02, help="Padding between images as fraction of image width")
     parser.add_argument("--downsample", type=int, default=None, help="Downsample factor for foveation_trajectory (optional)")
     parser.add_argument(
@@ -1378,6 +1565,12 @@ if __name__ == "__main__":
     elif args.figure == "runtime_quality":
         file_path = os.path.join(args.base_dir, "runtime_and_radius_list.npz")
         generate_runtime_quality_two_col(file_path, output_path=args.output)
+    elif args.figure == "runtime_joint":
+        base_dir = args.base_dir or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "results", "eccv2026_final_v2", "runtime_apollo_v2",
+        )
+        generate_runtime_joint_figure(base_dir, output_path=args.output, fov_max=args.fov_max)
     elif args.figure == "baselines":
         base_dir = args.base_dir or default_base
         generate_baseline_comparison_grid(

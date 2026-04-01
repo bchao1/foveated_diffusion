@@ -37,6 +37,7 @@ from ..models.flux2_vae import Flux2VAE
 from ..models.z_image_text_encoder import ZImageTextEncoder
 from scipy.ndimage import zoom, gaussian_filter
 from scipy.datasets import face as scipy_face
+import time
 
 import deepgaze_pytorch
 
@@ -912,6 +913,8 @@ class Flux2FoveatedImagePipeline(BasePipeline):
             )
         print('decode mode', decode_mode)
         
+        
+        start_t = time.time()
         for progress_id, timestep in enumerate(progress_bar_cmd(self.scheduler.timesteps)):
             timestep_val = timestep.unsqueeze(0).to(dtype=self.torch_dtype, device=self.device)
             batch_size = latents.shape[0]
@@ -1033,6 +1036,7 @@ class Flux2FoveatedImagePipeline(BasePipeline):
                 latents = self.step(self.scheduler, progress_id=progress_id, noise_pred=noise_pred, latents=latents_high_res_step)
             else:
                 latents = self.step(self.scheduler, progress_id=progress_id, noise_pred=noise_pred, latents=latents)
+        vit_end_t = time.time()
         
         inputs_shared["latents"] = latents
         
@@ -1106,6 +1110,11 @@ class Flux2FoveatedImagePipeline(BasePipeline):
             latents_spatial = rearrange(latents, "B (H W) C -> B C H W", H=latent_height, W=latent_width)
             image = self.vae.decode(latents_spatial)
             image = self.vae_output_to_image(image)
+        vae_end_t = time.time()
+
+        # individually track time
+        self.vit_timing = vit_end_t - start_t
+        self.vae_timing = vae_end_t - vit_end_t
             
         self.load_models_to_device([])
 
