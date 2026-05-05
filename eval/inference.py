@@ -493,6 +493,22 @@ def generate_foveation_trajectory_masks(height, width, args, device, lr_factor: 
             ).squeeze(0).squeeze(0)
             masks.append(m)
             full_res_masks.append(m_full)
+    elif traj_type == "random_circular":
+        # Like circular but with uniformly random angles instead of evenly spaced
+        angles = rng.uniform(0, 2 * math.pi, size=num_cols)
+        for col in range(num_cols):
+            angle = float(angles[col])
+            center = (orbit_radius * math.cos(angle), orbit_radius * math.sin(angle))
+            m = create_foveation_mask(
+                height, width, center=center, r=mask_radius,
+                shape=getattr(args, "mask_shape", "circular"), device=device, lr_factor=lr_factor
+            )
+            m_full = create_foveation_mask_full_res(
+                height, width, center=center, r=mask_radius,
+                shape=getattr(args, "mask_shape", "circular"), device=device
+            )
+            masks.append(m)
+            full_res_masks.append(m_full)
     else:
         # circular: mask center moves on orbit
         angles = [2 * math.pi * (c / num_cols) for c in range(num_cols)]
@@ -946,7 +962,7 @@ def run_full_eval(single_prompt_generation_func, pipe, args, output_dir, prompts
             pipe, args, output_dir, prompt, prompt_idx,
             token_upsampler, token_downsampler,
             foveation_mask=default_mask,
-            full_res_foveation_mask=default_mask_upsampled,
+            full_res_foveation_mask=full_res_mask,
         )
         prompt_list.append(prompt)
         image_names.append(f"img_{prompt_idx:010d}.png")
@@ -1383,18 +1399,26 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
     height, width = args.height, args.width
     device = pipe.device
 
-    # Generate fixed foveation trajectory once (list of masks), reuse for all prompts
-    foveation_masks, full_res_foveation_masks = generate_foveation_trajectory_masks(height, width, args, device, lr_factor=getattr(args, "lr_downsample_factor", 2))
-    num_cols = len(foveation_masks)
-    print(f"Trajectory type={getattr(args, 'foveation_trajectory_type', 'circular')}, {num_cols} masks")
+    traj_type = getattr(args, "foveation_trajectory_type", "circular")
+    per_prompt_random_mask = (traj_type == "random_circular")
 
-    # Save tokenization mask visualizations (shared across prompts)
-    tok_mask_dir = os.path.join(output_dir, "tokenization_masks")
-    os.makedirs(tok_mask_dir, exist_ok=True)
-    for col, fov_mask in enumerate(foveation_masks):
-        tok_vis = create_tokenization_mask_vis(fov_mask, height, width, lr_factor=getattr(args, "lr_downsample_factor", 2))
-        imageio.imwrite(os.path.join(tok_mask_dir, f"tokenization_mask_{col:04d}.png"), tok_vis)
-    print(f"Saved {num_cols} tokenization masks to {tok_mask_dir}")
+    # For random_circular, masks are generated per prompt; otherwise generate once and reuse.
+    if not per_prompt_random_mask:
+        foveation_masks, full_res_foveation_masks = generate_foveation_trajectory_masks(height, width, args, device, lr_factor=getattr(args, "lr_downsample_factor", 2))
+        num_cols = len(foveation_masks)
+        print(f"Trajectory type={traj_type}, {num_cols} masks (shared across prompts)")
+
+        tok_mask_dir = os.path.join(output_dir, "tokenization_masks")
+        os.makedirs(tok_mask_dir, exist_ok=True)
+        for col, fov_mask in enumerate(foveation_masks):
+            tok_vis = create_tokenization_mask_vis(fov_mask, height, width, lr_factor=getattr(args, "lr_downsample_factor", 2))
+            imageio.imwrite(os.path.join(tok_mask_dir, f"tokenization_mask_{col:04d}.png"), tok_vis)
+        print(f"Saved {num_cols} tokenization masks to {tok_mask_dir}")
+    else:
+        # Seed a single rng to draw one fresh mask per prompt reproducibly
+        rng = np.random.default_rng(getattr(args, "seed", 0))
+        num_cols = 1
+        print(f"Trajectory type={traj_type}, 1 mask per prompt (random per prompt)")
     #exit()
 
     for prompt_idx, prompt in enumerate(prompts):
@@ -1403,6 +1427,23 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
         os.makedirs(prompt_dir, exist_ok=True)
         with open(os.path.join(prompt_dir, "prompt.txt"), "w") as f:
             f.write(prompt)
+
+        if per_prompt_random_mask:
+            orbit_radius = getattr(args, "orbit_radius", 0.25)
+            mask_radius = getattr(args, "mask_radius", 0.30)
+            lr_factor = getattr(args, "lr_downsample_factor", 2)
+            angle = float(rng.uniform(0, 2 * math.pi))
+            center = (orbit_radius * math.cos(angle), orbit_radius * math.sin(angle))
+            fov_mask = create_foveation_mask(
+                height, width, center=center, r=mask_radius,
+                shape=getattr(args, "mask_shape", "circular"), device=device, lr_factor=lr_factor
+            )
+            fov_mask_full = create_foveation_mask_full_res(
+                height, width, center=center, r=mask_radius,
+                shape=getattr(args, "mask_shape", "circular"), device=device
+            )
+            foveation_masks = [fov_mask]
+            full_res_foveation_masks = [fov_mask_full]
 
         for col, foveation_mask in enumerate(foveation_masks):
             # use foveation mask from latents
@@ -1459,7 +1500,7 @@ def run_foveation_trajectory_grid(pipe, args, output_dir, token_upsampler, token
             mask_high = np.clip(mask_high, 0.0, 1.0)
             mask_uint8 = (mask_high * 255).astype(np.uint8)
             mask_path = os.path.join(prompt_dir, f"mask_{col:04d}.png")
-            #imageio.imwrite(mask_path, mask_uint8)
+            imageio.imwrite(mask_path, mask_uint8)
             print(f"Saved {folder_id:03d}/img_{col:04d}.png, {folder_id:03d}/mask_{col:04d}.png")
     print(f"Done. Grid saved under {output_dir}")
 
@@ -1608,8 +1649,8 @@ if __name__ == "__main__":
     parser.add_argument('--num_prompts', type=int, default=None, help='Number of prompts to run')
     parser.add_argument('--num_cols', type=int, default=4, help='Number of columns (foveation steps per row) for foveation_trajectory_grid')
     parser.add_argument('--foveation_trajectory_type', type=str, default='circular',
-                        choices=['radius', 'circular', 'polygons', 'multi_circle', 'grid', 'spiral'],
-                        help='Trajectory for foveation_trajectory_grid: radius, circular, polygons (triangle/square/hexagon/star), multi_circle (2-3 disjoint circles per mask), grid (M*N grid of positions), or spiral (two-pass spiral: outward+grow then inward+grow)')
+                        choices=['radius', 'circular', 'random_circular', 'polygons', 'multi_circle', 'grid', 'spiral'],
+                        help='Trajectory for foveation_trajectory_grid: radius, circular, random_circular (circular orbit with random angles), polygons (triangle/square/hexagon/star), multi_circle (2-3 disjoint circles per mask), grid (M*N grid of positions), or spiral (two-pass spiral: outward+grow then inward+grow)')
     parser.add_argument('--grid_rows', type=int, default=3, help='Number of rows (M) for grid foveation trajectory')
     parser.add_argument('--grid_cols', type=int, default=3, help='Number of columns (N) for grid foveation trajectory')
     parser.add_argument('--outline_width_frac', type=float, default=0.005, help='Foveation outline line width as fraction of image width (default 0.01)')

@@ -31,23 +31,23 @@ esac
 lora_checkpoint="${ckpt_folder}/step-${step}.safetensors"
 
 
-foveation_trajectory_type="grid"
-CUDA_VISIBLE_DEVICES=$1 python inference.py \
+foveation_trajectory_type="multi_circle"
+CUDA_VISIBLE_DEVICES=$GPU_ID python inference.py \
     --experiment foveation_trajectory_grid \
     --foveation_trajectory_type ${foveation_trajectory_type} \
     --decode_mode merge \
-    --output_dir ../results/eccv2026_final_v2/website/teaser_grid_10x10_4x \
+    --output_dir ../results/eccv2026_rebuttal/multi_object/${MODEL} \
     --seed 42 \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
-    --prompt "A lion lounges calmly, displaying its powerful physique, with a soft focus highlighting its majestic mane and intense gaze." \
+    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/saliency_multi_object.csv \
+    --num_prompts 100 \
     --orbit_radius 0.3 \
     --mask_radius 0.3 \
-    --grid_rows 10 \
-    --grid_cols 10 \
-    --foveation_outline true \
+    --num_cols 3 \
+    --foveation_outline false \
     --soft_foveation_blend true \
-    --outline_width_frac 0.005 \
-    --lr_downsample_factor 4
+    --outline_width_frac 0.000 \
+    --lr_downsample_factor 2
 
 # 'radius', 'circular', 'polygons', 'multi_circle

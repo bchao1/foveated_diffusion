@@ -251,6 +251,7 @@ Used by `foveation_trajectory_grid`. One trajectory is generated once and reused
 | Value | Description |
 |---|---|
 | `circular` | (default) Mask center orbits in a circle of radius `--orbit_radius`. Mask shape/size fixed. |
+| `random_circular` | Same as `circular` but angles are sampled uniformly at random (seeded) instead of evenly spaced. |
 | `radius` | Mask stays at center; radius sweeps linearly from 0.3 to 0.7 across columns. |
 | `grid` | Mask center steps over an M×N grid (`--grid_rows` × `--grid_cols`). Center range auto-computed so the circle never exits the frame. |
 | `spiral` | Two-pass: outward spiral (r grows 0→0.5, orbit grows 0→max) then inward spiral (r grows 0.5→1.0, orbit shrinks). Two full rotations total. |

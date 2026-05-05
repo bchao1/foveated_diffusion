@@ -5,19 +5,23 @@ step=15000
 ckpt_folder="/local/brian/foveated_diffusion/models/eccv2026_final/finetuned_no_fov/" # new, no tokenAE
 lora_checkpoint="${ckpt_folder}/step-${step}.safetensors"
 
-for foveation_trajectory_type in radius circular polygons multi_circle; do  
-CUDA_VISIBLE_DEVICES=$1 python inference.py \
+GPU_ID=${1:-0}
+
+foveation_trajectory_type="multi_circle"
+CUDA_VISIBLE_DEVICES=$GPU_ID python inference.py \
     --experiment foveation_trajectory_grid \
     --foveation_trajectory_type ${foveation_trajectory_type} \
     --decode_mode merge \
-    --output_dir ../results/eccv2026_final_v2/foveation_trajectory/naive_${foveation_trajectory_type} \
+    --output_dir ../results/eccv2026_rebuttal/multi_object/naive \
     --seed 42 \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
-    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/claude_prompts.csv \
-    --prompt_ids 7 11 21 50 66 75 82 85 88 \
+    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/saliency_multi_object.csv \
+    --num_prompts 100 \
+    --orbit_radius 0.3 \
+    --mask_radius 0.3 \
     --num_cols 3 \
-    --foveation_outline true \
+    --foveation_outline false \
     --soft_foveation_blend true \
-    --outline_width_frac 0.005
-done
+    --outline_width_frac 0.000 \
+    --lr_downsample_factor 2
