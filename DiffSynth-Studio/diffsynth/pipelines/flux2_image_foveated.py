@@ -300,14 +300,15 @@ class Flux2FoveatedImagePipeline(BasePipeline):
 
             low_res_coords = grid_blocks[..., 0, :]
             output_grid = grid_blocks.clone()
-            output_grid[is_low_res_block, 0, :] = low_res_coords[is_low_res_block]
+            # Flatten before mask indexing — torch 2.5.1 mishandles 2D bool mask + int/slice.
+            output_grid.view(h_d * w_d, n_per_block, 4)[is_low_res_block.view(-1), 0, :] = low_res_coords[is_low_res_block]
 
             res_mask_blocks = resolution_mask_grid.view(h_d, lr_factor, w_d, lr_factor).permute(0, 2, 1, 3).reshape(h_d, w_d, n_per_block)
             output_res_mask = res_mask_blocks.clone()
             output_res_mask[is_low_res_block, :] = 0.0
 
             valid_tokens = torch.ones(h_d, w_d, n_per_block, device=device, dtype=torch.bool)
-            valid_tokens[is_low_res_block, 1:] = False
+            valid_tokens.view(h_d * w_d, n_per_block)[is_low_res_block.view(-1), 1:] = False
 
             output_grid = output_grid.reshape(-1, 4)
             output_res_mask = output_res_mask.reshape(-1)
@@ -403,10 +404,17 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         is_high_res_block = (mask_blocks.sum(dim=-1) > 0)
         is_low_res_block = ~is_high_res_block
 
-        output_latents[:, is_low_res_block, 0, :] = low_res_packed[:, is_low_res_block, :].to(output_latents.dtype)
+        # Flatten the (h_d, w_d) dims before mask indexing — torch 2.5.1 mishandles
+        # mixing a 2D bool mask with an integer index in adjacent slots.
+        output_latents_flat = output_latents.view(batch_size, h_d * w_d, n_per_block, channels)
+        low_res_packed_flat = low_res_packed.view(batch_size, h_d * w_d, channels)
+        is_low_res_block_flat = is_low_res_block.view(-1)
+        output_latents_flat[:, is_low_res_block_flat, 0, :] = low_res_packed_flat[:, is_low_res_block_flat, :].to(output_latents.dtype)
 
         valid_tokens = torch.ones(h_d, w_d, n_per_block, device=latents.device, dtype=torch.bool)
-        valid_tokens[is_low_res_block, 1:] = False
+        # Flatten before mask indexing — torch 2.5.1 mishandles 2D bool mask + slice.
+        valid_tokens_flat = valid_tokens.view(h_d * w_d, n_per_block)
+        valid_tokens_flat[is_low_res_block.view(-1), 1:] = False
 
         output_latents = output_latents.view(batch_size, -1, channels)
         valid_tokens = valid_tokens.view(-1)
@@ -439,7 +447,8 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         is_low_res_block = ~is_high_res_block
 
         layout_mask = torch.ones(h_d, w_d, n_per_block, device=device, dtype=torch.bool)
-        layout_mask[is_low_res_block, 1:] = False
+        # Flatten before mask indexing — torch 2.5.1 mishandles 2D bool mask + slice.
+        layout_mask.view(h_d * w_d, n_per_block)[is_low_res_block.view(-1), 1:] = False
 
         if layout_mask.sum() != reduced_len:
             raise ValueError(f"Latent length {reduced_len} != mask topology {layout_mask.sum()}")
@@ -453,7 +462,10 @@ class Flux2FoveatedImagePipeline(BasePipeline):
 
             if downsample_mode == "average":
                 pooled_val = high_res_tokens.mean(dim=2)
-                reconstructed_blocks[:, is_high_res_block, 0, :] = pooled_val
+                # Flatten spatial dims before mask indexing — torch 2.5.1 mishandles
+                # mixing a 2D bool mask with an integer index in adjacent slots.
+                reconstructed_blocks_flat = reconstructed_blocks.view(batch_size, h_d * w_d, n_per_block, channels)
+                reconstructed_blocks_flat[:, is_high_res_block.view(-1), 0, :] = pooled_val
 
         final_grid = reconstructed_blocks[:, :, :, 0, :]
         return final_grid.reshape(batch_size, h_d * w_d, channels)
@@ -487,7 +499,8 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         is_low_res_block = ~is_high_res_block
 
         layout_mask = torch.ones(h_d, w_d, n_per_block, device=device, dtype=torch.bool)
-        layout_mask[is_low_res_block, 1:] = False
+        # Flatten before mask indexing — torch 2.5.1 mishandles 2D bool mask + slice.
+        layout_mask.view(h_d * w_d, n_per_block)[is_low_res_block.view(-1), 1:] = False
 
         if layout_mask.sum() != reduced_len:
             raise ValueError(f"Latent length {reduced_len} does not match mask topology {layout_mask.sum()}.")
@@ -498,8 +511,11 @@ class Flux2FoveatedImagePipeline(BasePipeline):
 
         if upsample_mode == "nearest":
             if is_low_res_block.any():
-                low_res_vals = reconstructed_blocks[:, is_low_res_block, 0:1, :]
-                reconstructed_blocks[:, is_low_res_block, :, :] = low_res_vals.expand(-1, -1, n_per_block, -1)
+                # Flatten before mask indexing — torch 2.5.1 mishandles 2D bool mask + slice.
+                rb_flat = reconstructed_blocks.view(batch_size, h_d * w_d, n_per_block, channels)
+                low_res_block_flat = is_low_res_block.view(-1)
+                low_res_vals = rb_flat[:, low_res_block_flat, 0:1, :]
+                rb_flat[:, low_res_block_flat, :, :] = low_res_vals.expand(-1, -1, n_per_block, -1)
 
             final_output = reconstructed_blocks.view(batch_size, h_d, w_d, lr_factor, lr_factor, channels)
             final_output = final_output.permute(0, 1, 3, 2, 4, 5).reshape(batch_size, height, width, channels)
@@ -686,7 +702,8 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         is_low_res_block = ~is_high_res_block
 
         layout_mask = torch.ones(h_d, w_d, n_per_block, device=device, dtype=torch.bool)
-        layout_mask[is_low_res_block, 1:] = False
+        # Flatten before mask indexing — torch 2.5.1 mishandles 2D bool mask + slice.
+        layout_mask.view(h_d * w_d, n_per_block)[is_low_res_block.view(-1), 1:] = False
 
         reconstructed_blocks = torch.zeros(
             batch_size, h_d * w_d * n_per_block, channels, device=device, dtype=dtype
@@ -695,8 +712,11 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         reconstructed_blocks = reconstructed_blocks.view(batch_size, h_d, w_d, n_per_block, -1)
 
         if is_low_res_block.any():
-            lrt = reconstructed_blocks[:, is_low_res_block, 0:1, :]
-            reconstructed_blocks[:, is_low_res_block, 1:, :] = lrt
+            # Flatten before mask indexing — torch 2.5.1 mishandles 2D bool mask + slice.
+            rb_flat = reconstructed_blocks.view(batch_size, h_d * w_d, n_per_block, -1)
+            low_res_block_flat = is_low_res_block.view(-1)
+            lrt = rb_flat[:, low_res_block_flat, 0:1, :]
+            rb_flat[:, low_res_block_flat, 1:, :] = lrt
 
         dense_packed_grid = reconstructed_blocks.view(
             batch_size, h_d, w_d, lr_factor, lr_factor, -1
