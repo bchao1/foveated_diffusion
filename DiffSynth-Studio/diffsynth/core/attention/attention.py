@@ -2,41 +2,48 @@ import torch, os
 from einops import rearrange
 
 
-try:
-    import flash_attn_interface
-    FLASH_ATTN_3_AVAILABLE = True
-except ModuleNotFoundError:
-    FLASH_ATTN_3_AVAILABLE = False
+FLASH_ATTN_3_AVAILABLE = False
+FLASH_ATTN_2_AVAILABLE = False
+SAGE_ATTN_AVAILABLE = False
+XFORMERS_AVAILABLE = False
+SPARGE_ATTN_2_AVAILABLE = False
+SPARGE_ATTN_1_AVAILABLE = False
 
-try:
-    import flash_attn
-    FLASH_ATTN_2_AVAILABLE = True
-except ModuleNotFoundError:
-    FLASH_ATTN_2_AVAILABLE = False
+# try:
+#     import flash_attn_interface
+#     FLASH_ATTN_3_AVAILABLE = True
+# except ModuleNotFoundError:
+#     FLASH_ATTN_3_AVAILABLE = False
 
-try:
-    from sageattention import sageattn
-    SAGE_ATTN_AVAILABLE = True
-except ModuleNotFoundError:
-    SAGE_ATTN_AVAILABLE = False
+# try:
+#     import flash_attn
+#     FLASH_ATTN_2_AVAILABLE = True
+# except ModuleNotFoundError:
+#     FLASH_ATTN_2_AVAILABLE = False
 
-try:
-    import xformers.ops as xops
-    XFORMERS_AVAILABLE = True
-except ModuleNotFoundError:
-    XFORMERS_AVAILABLE = False
+# try:
+#     from sageattention import sageattn
+#     SAGE_ATTN_AVAILABLE = True
+# except ModuleNotFoundError:
+#     SAGE_ATTN_AVAILABLE = False
 
-try:
-    from spas_sage_attn import spas_sage2_attn_meansim_topk_cuda
-    SPARGE_ATTN_2_AVAILABLE = True
-except (ModuleNotFoundError, ImportError):
-    SPARGE_ATTN_2_AVAILABLE = False
+# try:
+#     import xformers.ops as xops
+#     XFORMERS_AVAILABLE = True
+# except ModuleNotFoundError:
+#     XFORMERS_AVAILABLE = False
 
-try:
-    from spas_sage_attn import spas_sage_attn_meansim_topk_cuda
-    SPARGE_ATTN_1_AVAILABLE = True
-except (ModuleNotFoundError, ImportError):
-    SPARGE_ATTN_1_AVAILABLE = False
+# try:
+#     from spas_sage_attn import spas_sage2_attn_meansim_topk_cuda
+#     SPARGE_ATTN_2_AVAILABLE = True
+# except (ModuleNotFoundError, ImportError):
+#     SPARGE_ATTN_2_AVAILABLE = False
+
+# try:
+#     from spas_sage_attn import spas_sage_attn_meansim_topk_cuda
+#     SPARGE_ATTN_1_AVAILABLE = True
+# except (ModuleNotFoundError, ImportError):
+#     SPARGE_ATTN_1_AVAILABLE = False
 
 SPARGE_ATTN_AVAILABLE = SPARGE_ATTN_2_AVAILABLE or SPARGE_ATTN_1_AVAILABLE
 
