@@ -12,12 +12,12 @@ CUDA_VISIBLE_DEVICES=$GPU_ID python inference.py \
     --experiment foveation_trajectory_grid \
     --foveation_trajectory_type ${foveation_trajectory_type} \
     --decode_mode merge \
-    --output_dir ../results/eccv2026_rebuttal/multi_object/naive \
+    --output_dir ../results/eccv2026_rebuttal/multi_object_1000_prompts/naive \
     --seed 42 \
     --tokenAE_training false \
     --lora_checkpoint ${lora_checkpoint} \
-    --prompt_dataset_path /home/brianchc/foveated_diffusion/eval/prompts/saliency_multi_object.csv \
-    --num_prompts 100 \
+    --prompt_dataset_path /home/brianchc/IQA_metrics/T2I-CompBench/examples/dataset/complex_prompts.csv \
+    --num_prompts 1000 \
     --orbit_radius 0.3 \
     --mask_radius 0.3 \
     --num_cols 3 \
