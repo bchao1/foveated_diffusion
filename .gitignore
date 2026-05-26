@@ -5,3 +5,8 @@ results/
 DiffSynth-Studio/paper_figures/
 paper_figures/
 twitter_videos/
+
+# release branch
+src/
+tests/
+hf/

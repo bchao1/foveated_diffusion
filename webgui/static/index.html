@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Foveated Diffusion — GUI</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --panel: #ffffff;
+      --border: #d9d9d9;
+      --border-strong: #111111;
+      --text: #111111;
+      --muted: #555555;
+      --accent: #111111;
+      --accent-fg: #ffffff;
+      --soft: #f4f4f4;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+    h1 { font-size: 18px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+    .topbar { padding: 14px 20px; border-bottom: 1px solid var(--border);
+              display: flex; align-items: center; justify-content: space-between; }
+    .topbar .sub { color: var(--muted); font-size: 13px; margin-left: 12px;
+                   text-decoration: underline; text-underline-offset: 3px;
+                   text-decoration-color: var(--border); }
+    .topbar .sub:hover { color: var(--text); text-decoration-color: var(--text); }
+    .layout { display: grid; grid-template-columns: 340px 1fr; gap: 20px; padding: 20px; }
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+             padding: 16px; }
+    .panel h2 { margin: 0 0 12px; font-size: 12px; text-transform: uppercase;
+                letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+    label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+    textarea, input[type="text"], input[type="number"], select {
+      width: 100%; padding: 8px 10px; background: #ffffff; color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px; font-size: 13px;
+      font-family: inherit; outline: none;
+    }
+    textarea:focus, input:focus, select:focus { border-color: var(--border-strong); }
+    select:disabled { opacity: 0.5; cursor: not-allowed; }
+    textarea { resize: vertical; min-height: 90px; }
+    button {
+      background: var(--accent); color: var(--accent-fg); border: 1px solid var(--accent);
+      border-radius: 4px; padding: 10px 14px; font-weight: 600; font-size: 13px;
+      cursor: pointer;
+    }
+    button.secondary { background: #ffffff; color: var(--text); border-color: var(--border); }
+    button.secondary:hover { border-color: var(--border-strong); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .row > * { flex: 1 1 auto; }
+
+    /* Two side-by-side panes: left = mask/tokenization, right = generated image */
+    .stages { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .stage { display: flex; flex-direction: column; gap: 6px; }
+    .stage .title { font-size: 12px; color: var(--muted);
+                    text-transform: uppercase; letter-spacing: 0.08em; }
+    .canvas-wrap { position: relative; background: #ffffff;
+                   border: 1px solid var(--border); border-radius: 6px;
+                   overflow: hidden; aspect-ratio: 1 / 1; width: 100%; }
+    .canvas-wrap canvas { position: absolute; inset: 0;
+                          width: 100%; height: 100%; display: block; }
+    #tokCanvas { background: #ffffff; }
+    #maskCanvas { cursor: crosshair; opacity: 0.35; }
+    #imgCanvas  { background: var(--soft); }
+
+    .slider-row { display: flex; align-items: center; gap: 8px; }
+    .slider-row input[type=range] { flex: 1; }
+    .slider-row span { font-variant-numeric: tabular-nums; font-size: 12px;
+                       color: var(--muted); min-width: 32px; text-align: right; }
+    .pillrow { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+    .pill { background: #ffffff; border: 1px solid var(--border); color: var(--text);
+            padding: 6px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; }
+    .pill:hover { border-color: var(--border-strong); }
+    .pill.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+    .hint { font-size: 12px; color: var(--muted); }
+    .status { font-size: 12px; color: var(--muted); margin-top: 8px; min-height: 16px; }
+    .status.err { color: #b00020; }
+
+    /* Progress bar */
+    .progress { margin-top: 10px; height: 6px; background: var(--soft);
+                border: 1px solid var(--border); border-radius: 999px; overflow: hidden;
+                display: none; }
+    .progress.show { display: block; }
+    .progress-fill { height: 100%; width: 0%; background: var(--accent);
+                     transition: width 0.18s ease; }
+    .progress-row { display: flex; justify-content: space-between;
+                    font-size: 12px; color: var(--muted); margin-top: 6px; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div style="display:flex; align-items:center;">
+      <h1>Foveated Diffusion: Efficient Spatially Aware Image and Video Generation</h1>
+      <a class="sub" href="https://bchao1.github.io/foveated-diffusion/" target="_blank" rel="noopener">Project website</a>
+    </div>
+  </div>
+
+  <div class="layout">
+    <!-- Left: controls -->
+    <div class="panel">
+      <h2>Prompt</h2>
+      <textarea id="prompt">Plitvice Lakes cascade through a series of sixteen terraced turquoise pools connected by hundreds of waterfalls in a forested Croatian valley. The travertine barriers between each pool, the moss and the mineral deposits, and the submerged fallen logs in the crystal-clear water are all equally sharp. The surrounding beech and fir forest is in full autumn colour—gold, russet, and dark green—and the waterfalls range from wide curtains to thin threads, all frozen sharp in the even overcast light. The water's colour shifts from pale aquamarine in the shallows to deep teal in the pools.</textarea>
+
+      <label for="seed">Seed</label>
+      <input type="number" id="seed" value="0" />
+
+      <label for="loraSelect">LoRA model</label>
+      <select id="loraSelect" disabled>
+        <option>loading…</option>
+      </select>
+      <div class="status" id="loraStatus"></div>
+
+      <h2 style="margin-top:18px;">Mask source</h2>
+      <div class="pillrow" id="modePills">
+        <div class="pill active" data-mode="drawn">Draw</div>
+        <div class="pill" data-mode="preset">Preset (circle)</div>
+      </div>
+
+      <div id="drawControls" style="margin-top:12px;">
+        <label>Brush size <span id="brushLabel">80px</span></label>
+        <div class="slider-row">
+          <input type="range" id="brush" min="8" max="300" value="80" />
+        </div>
+        <div class="row" style="margin-top:8px;">
+          <button class="secondary" id="clearBtn">Clear</button>
+          <button class="secondary" id="fillBtn">Fill all</button>
+        </div>
+        <div class="hint" style="margin-top:6px;">
+          Drag on the canvas to paint the foveal (high-resolution) region.
+          Shift-drag to erase.
+        </div>
+      </div>
+
+      <div id="presetControls" style="display:none; margin-top:12px;">
+        <div class="hint">
+          Drag on the canvas: <b>press</b> sets the center, <b>release</b>
+          sets the radius. The mask updates live as you drag.
+        </div>
+        <div class="row" style="margin-top:8px;">
+          <button class="secondary" id="presetClearBtn">Clear</button>
+        </div>
+      </div>
+
+      <div style="margin-top:18px;">
+        <button id="generateBtn">Generate</button>
+        <div class="progress" id="progressBar"><div class="progress-fill" id="progressFill"></div></div>
+        <div class="progress-row" id="progressLabels" style="display:none;">
+          <span id="progressStep">0 / 0</span>
+          <span id="progressPct">0%</span>
+        </div>
+        <div class="status" id="status"></div>
+      </div>
+    </div>
+
+    <!-- Right: stage (side-by-side) -->
+    <div class="panel">
+      <div class="stages">
+        <div class="stage">
+          <div class="title">Tokenization mask</div>
+          <div class="canvas-wrap" id="leftStage">
+            <canvas id="tokCanvas" width="1024" height="1024"></canvas>
+            <canvas id="maskCanvas" width="1024" height="1024"></canvas>
+          </div>
+          <div class="hint">White = HR (foveal) tokens · gray = LR (peripheral). Overlay is your mask.</div>
+        </div>
+        <div class="stage">
+          <div class="title">Generated image</div>
+          <div class="canvas-wrap">
+            <canvas id="imgCanvas" width="1024" height="1024"></canvas>
+          </div>
+          <div class="hint">Appears here after generation finishes.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+// ---------- canvases ----------
+const tokCanvas  = document.getElementById('tokCanvas');
+const tokCtx     = tokCanvas.getContext('2d');
+const maskCanvas = document.getElementById('maskCanvas');
+const maskCtx    = maskCanvas.getContext('2d');
+const imgCanvas  = document.getElementById('imgCanvas');
+const imgCtx     = imgCanvas.getContext('2d');
+
+imgCtx.fillStyle = '#f4f4f4';
+imgCtx.fillRect(0, 0, 1024, 1024);
+
+// Draw the resting all-LR tokenization grid client-side so it shows
+// immediately on load (no dependence on the /tokenization round-trip).
+function drawEmptyLRGrid() {
+  const W = tokCanvas.width, H = tokCanvas.height;
+  // Background = light gray (matches create_tokenization_mask_vis LR fill).
+  tokCtx.fillStyle = 'rgb(225, 225, 225)';
+  tokCtx.fillRect(0, 0, W, H);
+  // 32-px LR grid lines, 4 px thick (matches the server-side border_px).
+  const border = 4;
+  const cell = 16 * 2; // 16 px per HR token x lr_factor=2
+  tokCtx.fillStyle = '#000';
+  for (let y = 0; y < H; y += cell) tokCtx.fillRect(0, y, W, border);
+  for (let x = 0; x < W; x += cell) tokCtx.fillRect(x, 0, border, H);
+  // Outer frame.
+  tokCtx.fillRect(0, 0, W, border);
+  tokCtx.fillRect(0, H - border, W, border);
+  tokCtx.fillRect(0, 0, border, H);
+  tokCtx.fillRect(W - border, 0, border, H);
+}
+drawEmptyLRGrid();
+
+// ---------- mode toggle ----------
+let mode = 'drawn';
+document.querySelectorAll('#modePills .pill').forEach(p => {
+  p.addEventListener('click', () => {
+    document.querySelectorAll('#modePills .pill').forEach(x => x.classList.remove('active'));
+    p.classList.add('active');
+    mode = p.dataset.mode;
+    document.getElementById('drawControls').style.display   = mode === 'drawn'  ? '' : 'none';
+    document.getElementById('presetControls').style.display = mode === 'preset' ? '' : 'none';
+    // Switching modes clears any in-flight live overlay; tokenization vis is
+    // re-rendered from whichever spec is current (snapshot for drawn, preset
+    // params for preset, else empty all-LR grid).
+    maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    refreshTokVis();
+  });
+});
+
+// ---------- draw mode ----------
+let brushSize = 80;
+let drawing = false;
+let erasing = false;
+let lastPt = null;
+// Snapshot of the drawn mask (data URL), captured at the end of each stroke
+// so we can clear the live overlay without losing the actual mask data.
+let drawnSnapshot = null;
+
+const brushInput = document.getElementById('brush');
+const brushLabel = document.getElementById('brushLabel');
+brushInput.addEventListener('input', () => {
+  brushSize = parseInt(brushInput.value, 10);
+  brushLabel.textContent = brushSize + 'px';
+});
+
+document.getElementById('clearBtn').addEventListener('click', () => {
+  maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+  drawnSnapshot = null;
+  refreshTokVis();
+});
+document.getElementById('fillBtn').addEventListener('click', () => {
+  maskCtx.globalCompositeOperation = 'source-over';
+  maskCtx.fillStyle = 'rgba(17, 17, 17, 1)';
+  maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+  drawnSnapshot = maskCanvas.toDataURL('image/png');
+  refreshTokVis();
+});
+
+function canvasPointFromEvent(e) {
+  const rect = maskCanvas.getBoundingClientRect();
+  const sx = maskCanvas.width / rect.width;
+  const sy = maskCanvas.height / rect.height;
+  return {
+    x: Math.max(0, Math.min(maskCanvas.width  - 1, (e.clientX - rect.left) * sx)),
+    y: Math.max(0, Math.min(maskCanvas.height - 1, (e.clientY - rect.top)  * sy)),
+  };
+}
+
+function strokeSeg(from, to, erase) {
+  maskCtx.globalCompositeOperation = erase ? 'destination-out' : 'source-over';
+  maskCtx.strokeStyle = 'rgba(17, 17, 17, 1)';
+  maskCtx.lineWidth = brushSize;
+  maskCtx.lineCap = 'round';
+  maskCtx.lineJoin = 'round';
+  maskCtx.beginPath();
+  maskCtx.moveTo(from.x, from.y);
+  maskCtx.lineTo(to.x, to.y);
+  maskCtx.stroke();
+}
+
+// ---------- preset (circle) mode ----------
+// Drag: press = center, current pointer = radius (live).
+let presetActive = false;
+let presetCenter = null;          // {x, y} in canvas pixels
+let presetRadiusPx = 0;           // canvas pixels
+let presetCommitted = false;      // true after first complete drag
+// Cached normalized preset (passed to backend on generate / tokenization refresh).
+let presetNorm = null;            // {cx, cy, r} or null
+
+document.getElementById('presetClearBtn').addEventListener('click', () => {
+  presetCenter = null;
+  presetRadiusPx = 0;
+  presetCommitted = false;
+  presetNorm = null;
+  drawPresetOverlay();
+  scheduleTokVisRefresh();
+});
+
+function drawPresetOverlay() {
+  maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+  if (presetCenter && presetRadiusPx > 0) {
+    maskCtx.globalCompositeOperation = 'source-over';
+    maskCtx.fillStyle = 'rgba(17, 17, 17, 1)';
+    maskCtx.beginPath();
+    maskCtx.arc(presetCenter.x, presetCenter.y, presetRadiusPx, 0, 2 * Math.PI);
+    maskCtx.fill();
+  }
+}
+
+// Convert (cxPx, cyPx, rPx) on the 1024x1024 canvas to the (cx_norm, cy_norm, r)
+// convention expected by create_foveation_mask: cx, cy in [-0.5, 0.5];
+// r relative to half the image diagonal.
+function presetToNormalized() {
+  if (!presetCenter || presetRadiusPx <= 0) return null;
+  const W = maskCanvas.width, H = maskCanvas.height;
+  const diagHalf = Math.sqrt(W * W + H * H) / 2.0;
+  return {
+    cx: presetCenter.x / W - 0.5,
+    cy: presetCenter.y / H - 0.5,
+    r:  presetRadiusPx / diagHalf,
+  };
+}
+
+// ---------- pointer dispatch ----------
+maskCanvas.addEventListener('mousedown', e => {
+  if (mode === 'drawn') {
+    drawing = true;
+    erasing = e.shiftKey;
+    lastPt = canvasPointFromEvent(e);
+    strokeSeg(lastPt, lastPt, erasing);
+  } else if (mode === 'preset') {
+    presetActive = true;
+    presetCommitted = false;
+    presetCenter = canvasPointFromEvent(e);
+    presetRadiusPx = 0;
+    drawPresetOverlay();
+  }
+});
+
+window.addEventListener('mousemove', e => {
+  if (mode === 'drawn' && drawing) {
+    const pt = canvasPointFromEvent(e);
+    strokeSeg(lastPt, pt, erasing);
+    lastPt = pt;
+  } else if (mode === 'preset' && presetActive) {
+    const pt = canvasPointFromEvent(e);
+    const dx = pt.x - presetCenter.x;
+    const dy = pt.y - presetCenter.y;
+    presetRadiusPx = Math.sqrt(dx * dx + dy * dy);
+    drawPresetOverlay();
+  }
+});
+
+window.addEventListener('mouseup', () => {
+  if (mode === 'drawn' && drawing) {
+    drawing = false;
+    lastPt = null;
+    // Snapshot the live drawing now, before refreshTokVis clears the overlay.
+    drawnSnapshot = maskCanvas.toDataURL('image/png');
+    refreshTokVis();
+  } else if (mode === 'preset' && presetActive) {
+    presetActive = false;
+    if (presetRadiusPx > 0) {
+      presetCommitted = true;
+      presetNorm = presetToNormalized();
+      refreshTokVis();
+    } else {
+      presetCenter = null;
+      drawPresetOverlay();
+    }
+  }
+});
+
+// ---------- tokenization vis refresh (debounced) ----------
+let tokTimer = null;
+function scheduleTokVisRefresh() {
+  if (tokTimer) clearTimeout(tokTimer);
+  tokTimer = setTimeout(refreshTokVis, 220);
+}
+
+async function refreshTokVis() {
+  const spec = currentMaskSpec();
+  if (!spec) {
+    // No mask: render the resting all-LR grid locally and clear any overlay.
+    drawEmptyLRGrid();
+    maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    return;
+  }
+  try {
+    const resp = await fetch('/tokenization', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mask: spec }),
+    });
+    const body = await resp.json();
+    if (!resp.ok) throw new Error(body.error || 'tokenization failed');
+    const img = new Image();
+    img.onload = () => {
+      tokCtx.drawImage(img, 0, 0, tokCanvas.width, tokCanvas.height);
+      // Server-quantized tokenization grid is visible; clear the pixel-
+      // precise overlay so the grid is the only source of truth.
+      maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    };
+    img.src = 'data:image/png;base64,' + body.tokenization;
+  } catch (err) {
+    console.warn('tokenization refresh failed:', err.message);
+  }
+}
+
+function currentMaskSpec() {
+  if (mode === 'preset') {
+    const n = presetNorm;
+    if (!n) return null;
+    return { kind: 'preset', shape: 'circular', cx: n.cx, cy: n.cy, r: n.r };
+  }
+  if (!drawnSnapshot) return null;
+  return { kind: 'drawn', data: drawnSnapshot };
+}
+
+// ---------- generate + progress ----------
+const status = document.getElementById('status');
+const generateBtn = document.getElementById('generateBtn');
+const progressBar = document.getElementById('progressBar');
+const progressFill = document.getElementById('progressFill');
+const progressLabels = document.getElementById('progressLabels');
+const progressStep = document.getElementById('progressStep');
+const progressPct = document.getElementById('progressPct');
+
+function setStatus(msg, isErr) {
+  status.textContent = msg;
+  status.className = 'status' + (isErr ? ' err' : '');
+}
+
+function showProgress(show) {
+  progressBar.classList.toggle('show', show);
+  progressLabels.style.display = show ? 'flex' : 'none';
+  if (!show) {
+    progressFill.style.width = '0%';
+    progressStep.textContent = '0 / 0';
+    progressPct.textContent = '0%';
+  }
+}
+
+function updateProgress(step, total) {
+  const pct = total > 0 ? Math.min(100, Math.round(100 * step / total)) : 0;
+  progressFill.style.width = pct + '%';
+  progressStep.textContent = step + ' / ' + total;
+  progressPct.textContent = pct + '%';
+}
+
+async function pollProgress(jobId) {
+  while (true) {
+    let body;
+    try {
+      const resp = await fetch('/progress');
+      body = await resp.json();
+    } catch (e) {
+      await new Promise(r => setTimeout(r, 500));
+      continue;
+    }
+    if (body.job_id !== jobId) {
+      // A newer job superseded ours; bail out quietly.
+      return null;
+    }
+    updateProgress(body.step, body.total);
+    if (!body.running) return body;
+    await new Promise(r => setTimeout(r, 400));
+  }
+}
+
+async function generate() {
+  const prompt = document.getElementById('prompt').value.trim();
+  const seed = parseInt(document.getElementById('seed').value, 10) || 0;
+  if (!prompt) { setStatus('Prompt is required.', true); return; }
+
+  const mask = currentMaskSpec();
+  if (!mask) { setStatus('Mask is empty — paint a region or drag a circle.', true); return; }
+
+  generateBtn.disabled = true;
+  loraSelect.disabled = true;
+  showProgress(true);
+  updateProgress(0, 50);
+  setStatus('Submitting…');
+
+  let startResp;
+  try {
+    const resp = await fetch('/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, seed, mask }),
+    });
+    startResp = await resp.json();
+    if (!resp.ok) throw new Error(startResp.error || ('HTTP ' + resp.status));
+  } catch (err) {
+    setStatus('Error: ' + err.message, true);
+    showProgress(false);
+    generateBtn.disabled = false;
+    loraSelect.disabled = false;
+    return;
+  }
+
+  updateProgress(0, startResp.total);
+  setStatus('Denoising…');
+
+  const final = await pollProgress(startResp.job_id);
+  if (final == null) {
+    setStatus('Job superseded.', true);
+    showProgress(false);
+    generateBtn.disabled = false;
+    loraSelect.disabled = false;
+    return;
+  }
+  if (final.error) {
+    setStatus('Error: ' + final.error, true);
+    showProgress(false);
+    generateBtn.disabled = false;
+    loraSelect.disabled = false;
+    return;
+  }
+
+  const img = new Image();
+  img.onload = () => imgCtx.drawImage(img, 0, 0, imgCanvas.width, imgCanvas.height);
+  img.src = 'data:image/png;base64,' + final.image;
+  setStatus('Done.');
+  generateBtn.disabled = false;
+  loraSelect.disabled = false;
+  // Leave the progress bar at 100% briefly, then hide.
+  setTimeout(() => showProgress(false), 600);
+}
+
+generateBtn.addEventListener('click', generate);
+
+// ---------- LoRA dropdown ----------
+const loraSelect = document.getElementById('loraSelect');
+const loraStatus = document.getElementById('loraStatus');
+
+function setLoraStatus(msg, isErr) {
+  loraStatus.textContent = msg;
+  loraStatus.className = 'status' + (isErr ? ' err' : '');
+}
+
+async function loadLoras() {
+  try {
+    const resp = await fetch('/loras');
+    const body = await resp.json();
+    if (!resp.ok) throw new Error(body.error || 'failed to load loras');
+    loraSelect.innerHTML = '';
+    for (const name of body.loras) {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      if (name === body.current) opt.selected = true;
+      loraSelect.appendChild(opt);
+    }
+    loraSelect.disabled = false;
+    setLoraStatus('');
+  } catch (err) {
+    setLoraStatus('LoRA list failed: ' + err.message, true);
+  }
+}
+
+loraSelect.addEventListener('change', async () => {
+  const name = loraSelect.value;
+  const prev = loraSelect.dataset.current || name;
+  loraSelect.disabled = true;
+  generateBtn.disabled = true;
+  setLoraStatus('Switching to ' + name + '…');
+  try {
+    const resp = await fetch('/switch_lora', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    const body = await resp.json();
+    if (!resp.ok) throw new Error(body.error || ('HTTP ' + resp.status));
+    loraSelect.dataset.current = body.current;
+    setLoraStatus('Active: ' + body.current);
+  } catch (err) {
+    setLoraStatus('Switch failed: ' + err.message, true);
+    loraSelect.value = prev;
+  } finally {
+    loraSelect.disabled = false;
+    generateBtn.disabled = false;
+  }
+});
+
+loadLoras();
+
+// ---------- initial render: all-LR tokenization grid ----------
+refreshTokVis();
+</script>
+</body>
+</html>
