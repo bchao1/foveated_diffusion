@@ -1,0 +1,24 @@
+{
+  "_comment": [
+    "Exact tile composition of paper_figures/supp/baseline_{1,2,3,101}.png, recovered by",
+    "pixel-matching each tile of the existing PNGs against the 58 candidate stacks named in",
+    "make_supp_figures.py:make_baseline_comparison_figure. Needed because that function",
+    "shuffles with an unseeded np.random.shuffle, so the tile->figure assignment and the",
+    "within-figure order are not otherwise reproducible.",
+    "Each entry is [prompt_set, image_id] -> results/eccv2026_final_v2/",
+    "baseline_comparison_randomized_<prompt_set>/stacked/<image_id:05d>.png, listed in",
+    "figure reading order (baseline_1..3: 9 rows x 2 cols, row-major, downsample 4;",
+    "baseline_101: 4 rows x 1 col, downsample 1).",
+    "Match quality: worst best-match L1 4.45/255 vs nearest runner-up 27.1/255 for 1..3;",
+    "exact (0.000) for 101.",
+    "prompt_set 1 = prompts/claude_prompts.csv, 2 = claude_prompts_extended.csv,",
+    "3 = claude_prompts_extended_v2.csv; image_id == CSV row index."
+  ],
+  "1": [[1,13],[3,39],[3,81],[2,32],[3,12],[3,64],[1,28],[2,0],[1,45],
+        [1,55],[2,62],[3,22],[2,81],[2,33],[3,31],[2,37],[1,52],[2,65]],
+  "2": [[3,37],[1,62],[2,34],[3,45],[3,30],[2,98],[3,74],[2,8],[3,98],
+        [1,95],[1,2],[3,79],[3,21],[1,31],[2,24],[2,20],[3,59],[1,6]],
+  "3": [[3,83],[2,92],[1,86],[3,27],[3,93],[3,76],[1,32],[3,55],[3,50],
+        [2,83],[3,88],[1,30],[3,13],[1,7],[3,25],[3,53],[3,33],[1,39]],
+  "101": [[3,16],[3,86],[2,19],[2,75]]
+}
