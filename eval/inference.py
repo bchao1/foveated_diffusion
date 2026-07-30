@@ -18,6 +18,8 @@ import math
 import time
 import random
 import subprocess
+
+from shard_manifest import ShardManifest
 import yaml
 
 import torch
@@ -148,6 +150,94 @@ def create_foveation_mask(
 
     mask_high = F.interpolate(mask_low, size=(high_h, high_w), mode="nearest")
     return mask_high.squeeze(0).squeeze(0)
+
+
+def max_center_offset_in_frame(
+    r: float,
+    shape: str = "circular",
+    height: int = 1024,
+    width: int = 1024,
+    lr_factor: int = 2,
+) -> tuple:
+    """Largest per-axis |center| offset that keeps the whole mask inside the frame.
+
+    The foveal region's half-extent grows with r, so the room left for the fixation point
+    shrinks with it: this is the (0.5 - half_extent) bound, minus one low-res cell so the
+    center snapping in create_foveation_mask (floor to a cell center) cannot push the last
+    row/column of blocks past the border.
+
+    Circular r is a radius relative to half the *diagonal*, so its half-extent is
+    r * diag / 2 in cell units, which is larger than r/2 per axis; square r is a side
+    length as a fraction of min(H, W), so its half-extent is r/2.
+
+    Returns:
+        tuple: (max_x, max_y) in normalized coords, clamped at 0. Both are 0 when the mask
+        does not fit inside the frame even when centered (e.g. circular r=0.75, whose disc
+        already extends past the border), which pins the center and disables randomization.
+    """
+    low_h = (height // 16) // lr_factor
+    low_w = (width // 16) // lr_factor
+    if shape == "square":
+        half_x = r * min(low_h, low_w) / 2.0 / low_w
+        half_y = r * min(low_h, low_w) / 2.0 / low_h
+    elif shape == "circular":
+        radius_cells = r * ((low_h ** 2 + low_w ** 2) ** 0.5 / 2.0)
+        half_x, half_y = radius_cells / low_w, radius_cells / low_h
+    else:
+        raise ValueError(f"cannot bound the center for mask shape {shape!r}")
+    return (max(0.0, 0.5 - half_x - 1.0 / low_w),
+            max(0.0, 0.5 - half_y - 1.0 / low_h))
+
+
+def random_mask_center_range(
+    requested_range: float,
+    r: float,
+    shape: str,
+    height: int = 1024,
+    width: int = 1024,
+    lr_factor: int = 2,
+    clamp_to_frame: bool = True,
+) -> tuple:
+    """Per-axis sampling range for randomized centers: the requested range, capped so the
+    mask never crosses the frame edge. Every baseline calls this so they cap identically."""
+    if not clamp_to_frame:
+        return (requested_range, requested_range)
+    limit = max_center_offset_in_frame(r, shape, height, width, lr_factor)
+    return (min(requested_range, limit[0]), min(requested_range, limit[1]))
+
+
+def foveation_center_for_index(
+    index: int,
+    seed: int = 42,
+    max_offset=0.3,
+) -> tuple:
+    """Randomized fixation point for one prompt, addressable by its global index.
+
+    Every baseline (ours, naive, ToMe, RALU) calls this with the same (index, seed,
+    max_offset) and gets the same center, so all arms foveate an identical region without
+    sharing any state. Being *index-addressable* is the point: a sequentially-advanced RNG
+    would depend on how many prompts a process has already visited, and --full_eval shards
+    across GPUs (shard 3 of 8 sees prompts 3, 11, 19, ...), so shard count would change the
+    masks. `default_rng([seed, index])` depends on nothing but its arguments.
+
+    Args:
+        index (int): global prompt index, i.e. the number in img_%010d.png.
+        seed (int): mask-center seed, independent of the sampling seed.
+        max_offset (float or tuple): half-width of the uniform sampling box, either one
+            value for both axes or (max_x, max_y). Pass the output of
+            random_mask_center_range to keep the mask inside the frame.
+
+    Returns:
+        tuple: (x, y) normalized center in [-0.5, 0.5], for create_foveation_mask.
+    """
+    max_x, max_y = max_offset if isinstance(max_offset, (tuple, list)) else (max_offset, max_offset)
+    rng = np.random.default_rng([int(seed), int(index)])
+    # Draw on the unit box and scale, so the two draws are consumed the same way whatever the
+    # range is: a config with a tighter cap gets the same direction pattern, just pulled in.
+    # (rng.uniform is affine in the same underlying draw, so scaling reproduces the numbers
+    # rng.uniform(-max, max) would have given.)
+    return (float(rng.uniform(-1.0, 1.0)) * max_x,
+            float(rng.uniform(-1.0, 1.0)) * max_y)
 
 
 def create_foveation_mask_full_res(
@@ -931,12 +1021,18 @@ def run_full_eval(single_prompt_generation_func, pipe, args, output_dir, prompts
     """Run full-prompt generation. Passes foveation mask for naive/ours (shape from args.full_eval_mask); None for high_res."""
     default_mask = None
     full_res_mask = None
-    if single_prompt_generation_func is not run_high_res:
-        mask_shape = getattr(args, "full_eval_mask", "square")
-        r = getattr(args, "mask_radius", 0.5)
+    needs_mask = single_prompt_generation_func is not run_high_res
+    # When on, each prompt gets its own fixation point from foveation_center_for_index, so
+    # the mask is rebuilt inside the loop instead of once up front. Off = centered, the
+    # historical behaviour, bit-identical to before this flag existed.
+    random_center = needs_mask and getattr(args, "random_mask_center", False)
+    lr_factor = getattr(args, "lr_downsample_factor", 2)
+    mask_shape = getattr(args, "full_eval_mask", "square")
+    r = getattr(args, "mask_radius", 0.5)
+    if needs_mask and not random_center:
         default_mask = create_foveation_mask(
             args.height, args.width, center=(0, 0), r=r, shape=mask_shape, device=pipe.device,
-            lr_factor=getattr(args, "lr_downsample_factor", 2),
+            lr_factor=lr_factor,
         )
         full_res_mask = create_foveation_mask_full_res(
             args.height, args.width, center=(0, 0), r=r, shape=mask_shape, device=pipe.device
@@ -944,10 +1040,27 @@ def run_full_eval(single_prompt_generation_func, pipe, args, output_dir, prompts
         default_mask_upsampled = F.interpolate(
             default_mask.unsqueeze(0).unsqueeze(0), size=(args.height, args.width), mode="nearest"
         ).squeeze(0).squeeze(0)
-    prompt_list = []
-    image_names = []
+    center_range = None
+    if random_center:
+        center_range = random_mask_center_range(
+            getattr(args, "mask_center_range", 0.3), r, mask_shape,
+            args.height, args.width, lr_factor,
+            clamp_to_frame=getattr(args, "clamp_mask_to_frame", True),
+        )
+        print(f"Randomized mask centers: seed={getattr(args, 'mask_center_seed', 42)}, "
+              f"requested range=+/-{getattr(args, 'mask_center_range', 0.3)}, "
+              f"effective range=+/-({center_range[0]:.4f}, {center_range[1]:.4f}) "
+              f"[capped so the {mask_shape} r={r} mask stays inside the frame], "
+              f"one center per prompt index")
     subset_idx = getattr(args, "subset_idx", 0)
     num_subsets = max(1, getattr(args, "num_subsets", 1))
+    # Append-only manifest with resume: required for preemptible Slurm arrays, harmless
+    # locally. Same filename and schema as the one-shot metadata_%05d.csv written before.
+    columns = ["image", "prompt"] + (["center_x", "center_y"] if random_center else [])
+    manifest = ShardManifest(output_dir, subset_idx, columns=columns)
+    if len(manifest):
+        print(f"Resuming: {len(manifest)} sample(s) already complete in this shard")
+    generated = 0
     for global_idx, prompt in enumerate(prompts):
         # Respect global num_prompts limit
         if args.num_prompts is not None and global_idx >= args.num_prompts:
@@ -957,18 +1070,42 @@ def run_full_eval(single_prompt_generation_func, pipe, args, output_dir, prompts
             continue
 
         prompt_idx = global_idx  # keep image ids consistent with single-GPU run
+        image_name = f"img_{prompt_idx:010d}.png"
+        if manifest.is_done(image_name):
+            continue          # row and image both present: nothing to redo
+
+        prompt_mask, prompt_full_res_mask = default_mask, full_res_mask
+        if random_center:
+            center = foveation_center_for_index(
+                prompt_idx,
+                seed=getattr(args, "mask_center_seed", 42),
+                max_offset=center_range,
+            )
+            prompt_mask = create_foveation_mask(
+                args.height, args.width, center=center, r=r, shape=mask_shape,
+                device=pipe.device, lr_factor=lr_factor,
+            )
+            prompt_full_res_mask = create_foveation_mask_full_res(
+                args.height, args.width, center=center, r=r, shape=mask_shape, device=pipe.device
+            )
 
         single_prompt_generation_func(
             pipe, args, output_dir, prompt, prompt_idx,
             token_upsampler, token_downsampler,
-            foveation_mask=default_mask,
-            full_res_foveation_mask=full_res_mask,
+            foveation_mask=prompt_mask,
+            full_res_foveation_mask=prompt_full_res_mask,
         )
-        prompt_list.append(prompt)
-        image_names.append(f"img_{prompt_idx:010d}.png")
-    # write metadata.csv: full image filename and prompt per row
-    metadata = pd.DataFrame({"image": image_names, "prompt": prompt_list})
-    metadata.to_csv(os.path.join(output_dir, f"metadata_{subset_idx:05d}.csv"), index=False)
+        # The image is on disk by now, so the row may be flushed.
+        row = {"image": image_name, "prompt": prompt}
+        if random_center:
+            row["center_x"], row["center_y"] = center[0], center[1]
+        manifest.append(row)
+        generated += 1
+
+    manifest.mark_complete()
+    manifest.close()
+    print(f"Shard {subset_idx}/{num_subsets}: {generated} generated this run, "
+          f"{len(manifest)} complete total -> {output_dir}")
 
 
 def run_user_study(pipe, args, output_dir, token_upsampler, token_downsampler):
@@ -1645,6 +1782,25 @@ if __name__ == "__main__":
                         help='Total number of subsets for distributed full_eval')
     parser.add_argument('--full_eval_mask', type=str, default='square', choices=['square', 'checkerboard', 'circular'],
                         help='Foveation mask for full eval: square (center region) or checkerboard (interleaved)')
+    parser.add_argument('--random_mask_center', type=_str_to_bool, default=False,
+                        help='Randomize the foveation mask center per prompt in full_eval, instead of '
+                             'centering it. The center for prompt i comes from '
+                             'foveation_center_for_index(i, mask_center_seed, mask_center_range), so it '
+                             'is identical across baselines and across shard counts. Centers are '
+                             'recorded as center_x/center_y columns in metadata_*.csv.')
+    parser.add_argument('--mask_center_seed', type=int, default=42,
+                        help='Seed for --random_mask_center, independent of --seed. Every baseline in a '
+                             'comparison must be given the same value.')
+    parser.add_argument('--mask_center_range', type=float, default=0.3,
+                        help='Centers are drawn uniformly from [-range, range]^2 in normalized coords '
+                             '(0.3 matches the user_study path). Capped per axis so the mask never '
+                             'crosses the frame edge, see --clamp_mask_to_frame.')
+    parser.add_argument('--clamp_mask_to_frame', type=_str_to_bool, default=True,
+                        help='Cap --mask_center_range at 0.5 - mask_half_extent - one low-res cell, so a '
+                             'randomized mask never cuts the frame edge. The cap is a function of '
+                             '--mask_radius and --full_eval_mask, so larger masks move less; it is 0 for a '
+                             'mask that already exceeds the frame when centered (e.g. circular r=0.75). '
+                             'false lets the mask clip the border.')
     parser.add_argument('--prompt_dataset_path', type=str, help='Path to the prompt dataset as a csv file')
     parser.add_argument('--num_prompts', type=int, default=None, help='Number of prompts to run')
     parser.add_argument('--num_cols', type=int, default=4, help='Number of columns (foveation steps per row) for foveation_trajectory_grid')

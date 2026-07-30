@@ -1,5 +1,56 @@
 # Foveated Diffusion — Eval Directory
 
+## `eval.sh` — the entry point for large-scale evaluation
+
+One script, five methods, one configuration block. Every method function receives the same
+mask flags, prompt set, seed/steps/cfg/resolution and sharding; only the method and its
+model differ. Runnable from any directory (it resolves the repo from its own path).
+
+| Method | Script | Model |
+|---|---|---|
+| `high_res` | `inference.py --experiment high_res` | no-fov LoRA |
+| `naive` | `inference.py --experiment naive_mixed_res` | no-fov LoRA |
+| `ours` | `inference.py --experiment ours` | fov LoRA |
+| `tome` | `importance-token-merge/tome_fov_inference.py` | no-fov LoRA |
+| `ralu` | `RALU/RALU_fov_inference_diffsynth.py` | no-fov LoRA |
+
+```bash
+./eval.sh plan            # resolved config, output dirs, image counts — no GPU
+./eval.sh masks           # prove every arm derives an identical mask — no GPU
+./eval.sh ours            # one method, every MASK_CONFIGS entry
+./eval.sh all             # all five, sequentially
+./eval.sh check           # PNG counts vs the prompt count
+
+GPUS="0 1 2 3 4 5 6 7" RANDOM_MASK_CENTER=true ./eval.sh all
+NUM_PROMPTS=2 MASK_CONFIGS="circular:0.25" GPUS="5" ./eval.sh tome     # smoke test
+```
+
+Knobs (all env-overridable, see the `CONFIGURE` block): `MASK_CONFIGS` (`shape:radius`
+pairs), `METHODS`, `PROMPTS`, `NUM_PROMPTS`, `GPUS`, `HEIGHT`/`WIDTH`/`STEPS`/`SEED`/`CFG`/
+`LR_FACTOR`, `RANDOM_MASK_CENTER`/`MASK_CENTER_SEED`/`MASK_CENTER_RANGE`/
+`CLAMP_MASK_TO_FRAME`, `NOFOV_LORA`/`FOV_LORA`/`TOKENAE_FOLDER`, `MERGE_MLP`,
+`RALU_STAGES`/`RALU_LEVEL`/`RALU_Z_MAX`/`OURS_STEPS`, `OUT_ROOT`, `SKIP_COMPLETE`.
+
+Output layout — arms grouped per mask config, so a comparison is one directory listing:
+
+```
+$OUT_ROOT/<shape>_r<radius>[_randcenter<seed>]/<method>/img_%010d.png + metadata_%05d.csv
+$OUT_ROOT/high_res/                     # mask-independent, generated once, shared
+$OUT_ROOT/logs/<method>_<mask_tag>_shard<i>.log
+```
+
+`make_eval_summary.py` renders a methods-as-columns / prompts-as-rows figure from that
+tree, with the foveal boundary drawn on each tile:
+
+```bash
+python make_eval_summary.py --out_root ../results/eval_smoke_5arm \
+    --mask_tag circular_r0.25_randcenter42 --num_prompts 2
+```
+
+The per-baseline launchers (`naive.sh`, `ours.sh`, `RALU/ralu_eval_10k.sh`,
+`importance-token-merge/tome_eval_10k.sh`) still work and remain the record of the existing
+`/local/brian/foveated_diffusion/results/*_eval` dirs; `eval.sh` supersedes them for new runs.
+
 ## `make_video.py`
 
 Video composition utilities. Use the `imp_tome` conda environment to run.
@@ -305,6 +356,9 @@ Polygon trajectories (`polygons`) additionally support triangle, square, hexagon
 | `--num_prompts` | None | Cap on number of prompts to run. |
 | `--full_eval_mask` | `square` | Mask shape for `high_res`/`naive_mixed_res`/`ours` full-eval runs. |
 | `--mask_radius` | 0.30 | Foveation radius for full-eval and trajectory experiments. |
+| `--random_mask_center` | false | Randomize the mask center per prompt in full eval instead of centering it. Prompt `i` uses `foveation_center_for_index(i, mask_center_seed, mask_center_range)`, which is index-addressable, so the mask does not depend on shard count and is identical across ours/naive/ToMe/RALU. Adds `center_x,center_y` columns to `metadata_*.csv`. |
+| `--mask_center_seed` | 42 | Seed for `--random_mask_center`, independent of `--seed`. Every baseline in a comparison must be given the same value. |
+| `--mask_center_range` | 0.3 | Centers drawn uniformly from `[-range, range]^2` in normalized coords (0.3 matches the `user_study` path). Large radii clip the frame edge at large ranges, which shrinks the foveal area. |
 | `--subset_idx` | 0 | Shard index for distributed eval (0 ≤ idx < num_subsets). |
 | `--num_subsets` | 1 | Total shards (one per GPU for distributed runs). |
 
@@ -330,7 +384,8 @@ output_dir/
   img_0000000000.png   # indexed by global prompt idx
   img_0000000001.png
   ...
-  metadata_00000.csv   # image filename + prompt per row (one file per subset)
+  metadata_00000.csv   # image filename + prompt per row (one file per subset).
+                       # With --random_mask_center, also center_x,center_y per row.
 ```
 
 **`foveation_trajectory_grid`:**

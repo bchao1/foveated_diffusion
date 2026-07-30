@@ -5,6 +5,20 @@ step=15000
 ckpt_folder="/local/brian/foveated_diffusion/models/eccv2026_final/finetuned_no_fov/" # new, no tokenAE
 lora_checkpoint="${ckpt_folder}/step-${step}.safetensors"
 
+# Randomized foveation mask center. false (default) = centered, exactly as before.
+# true = prompt i gets its own fixation point from inference.py:foveation_center_for_index,
+# identical across ours/naive/ToMe/RALU for the same seed and range. Pass the SAME
+# MASK_CENTER_SEED / MASK_CENTER_RANGE to every baseline in a comparison.
+#   RANDOM_MASK_CENTER=true ./naive.sh
+RANDOM_MASK_CENTER=${RANDOM_MASK_CENTER:-false}
+MASK_CENTER_SEED=${MASK_CENTER_SEED:-42}
+MASK_CENTER_RANGE=${MASK_CENTER_RANGE:-0.3}
+if [ "${RANDOM_MASK_CENTER}" = "true" ]; then
+    OUT_SUFFIX=${OUT_SUFFIX:-_randcenter${MASK_CENTER_SEED}}
+else
+    OUT_SUFFIX=${OUT_SUFFIX:-}
+fi
+
 run_subset() {
     num_subsets=8
     local gpu_id="$1"
@@ -13,7 +27,10 @@ run_subset() {
         --experiment naive_mixed_res \
         --decode_mode merge \
         --tokenAE_training false \
-        --output_dir /local/brian/foveated_diffusion/results/naive_mixed_res_r_${3}_eval \
+        --random_mask_center "${RANDOM_MASK_CENTER}" \
+        --mask_center_seed "${MASK_CENTER_SEED}" \
+        --mask_center_range "${MASK_CENTER_RANGE}" \
+        --output_dir /local/brian/foveated_diffusion/results/naive_mixed_res_r_${3}${OUT_SUFFIX}_eval \
         --seed 42 \
         --lora_checkpoint "${lora_checkpoint}" \
         --full_eval \

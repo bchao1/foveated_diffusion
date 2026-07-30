@@ -10,6 +10,20 @@ lora_checkpoint="${ckpt_folder}/step-${step}.safetensors"
 # Run full_eval for one subset. Usage: run_subset <subset_idx> [num_subsets]
 # e.g. run_subset 0; run_subset 1; run_subset 2; run_subset 3
 # or: run_subset 0 4 && run_subset 1 4 && run_subset 2 4 && run_subset 3 4
+# Randomized foveation mask center. false (default) = centered, exactly as before.
+# true = prompt i gets its own fixation point from inference.py:foveation_center_for_index,
+# identical across ours/naive/ToMe/RALU for the same seed and range. Pass the SAME
+# MASK_CENTER_SEED / MASK_CENTER_RANGE to every baseline in a comparison.
+#   RANDOM_MASK_CENTER=true ./ours.sh
+RANDOM_MASK_CENTER=${RANDOM_MASK_CENTER:-false}
+MASK_CENTER_SEED=${MASK_CENTER_SEED:-42}
+MASK_CENTER_RANGE=${MASK_CENTER_RANGE:-0.3}
+if [ "${RANDOM_MASK_CENTER}" = "true" ]; then
+    OUT_SUFFIX=${OUT_SUFFIX:-_randcenter${MASK_CENTER_SEED}}
+else
+    OUT_SUFFIX=${OUT_SUFFIX:-}
+fi
+
 run_subset() {
     num_subsets=8
     local gpu_id="$1"
@@ -17,7 +31,10 @@ run_subset() {
     CUDA_VISIBLE_DEVICES=$gpu_id python inference.py \
         --experiment ours \
         --decode_mode merge \
-        --output_dir /local/brian/foveated_diffusion/results/ours_r_${3}_eval \
+        --random_mask_center "${RANDOM_MASK_CENTER}" \
+        --mask_center_seed "${MASK_CENTER_SEED}" \
+        --mask_center_range "${MASK_CENTER_RANGE}" \
+        --output_dir /local/brian/foveated_diffusion/results/ours_r_${3}${OUT_SUFFIX}_eval \
         --seed 42 \
         --tokenAE_training false \
         --lora_checkpoint "${lora_checkpoint}" \
