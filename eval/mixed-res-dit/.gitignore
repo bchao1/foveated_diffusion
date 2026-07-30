@@ -1,0 +1,15 @@
+.vscode/
+__pycache__/
+outputs/
+evals/
+
+*.safetensors
+*.npy
+*.pt
+*.pth
+
+*.mp4
+*.jpg
+
+!assets/
+!assets/**
