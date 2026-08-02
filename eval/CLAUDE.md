@@ -23,10 +23,35 @@ model differ. Runnable from any directory (it resolves the repo from its own pat
 
 GPUS="0 1 2 3 4 5 6 7" RANDOM_MASK_CENTER=true ./eval.sh all
 NUM_PROMPTS=2 MASK_CONFIGS="circular:0.25" GPUS="5" ./eval.sh tome     # smoke test
+
+# BFL's step- and guidance-distilled klein-4B: 4 steps, cfg 1.0, one forward per step
+MODEL=distilled GPUS="0 1 2 3" ./eval.sh all
+
+# ad-hoc prompts instead of a csv
+MODEL=distilled PROMPT_PRESET=lion MASK_CONFIGS="square:0.5" GPUS="7" ./eval.sh all
+PROMPT_LIST="a red fox in snow|a lion at dusk" GPUS="0 1" ./eval.sh ours
 ```
 
-Knobs (all env-overridable, see the `CONFIGURE` block): `MASK_CONFIGS` (`shape:radius`
-pairs), `METHODS`, `PROMPTS`, `NUM_PROMPTS`, `GPUS`, `HEIGHT`/`WIDTH`/`STEPS`/`SEED`/`CFG`/
+Runs on **local GPUs by default** — `run_one` forks one background worker per entry in
+`GPUS` and pins it with `CUDA_VISIBLE_DEVICES`. The `shard` subcommand exists only for a
+scheduler that has already pinned the GPU (Slurm arrays); nothing in the local path needs it.
+
+### `MODEL` — which FLUX.2 checkpoint every arm runs on
+
+| `MODEL` | checkpoint | default `STEPS` / `CFG` | forwards/image |
+|---|---|---|---|
+| `base` (default) | `FLUX.2-klein-base-4B` | 50 / 4.0 | ~100 (CFG = 2 per step) |
+| `distilled` | `FLUX.2-klein-4B` | 4 / 1.0 | 4 (guidance-distilled, no CFG) |
+
+`klein-4B` is `klein-base-4B` after BFL applied LADD — identical architecture (same 169
+tensor names and shapes), weights differing ~3%. `STEPS`/`CFG` follow `MODEL` unless set
+explicitly; `MODEL_ID` overrides the checkpoint directly. All five arms receive the same
+`--model_id`, so a speed comparison stays fair.
+
+Knobs (all env-overridable, see the `CONFIGURE` block): `MODEL` (`base`|`distilled`),
+`MODEL_ID`, `MASK_CONFIGS` (`shape:radius` pairs), `METHODS`, `PROMPTS`, `NUM_PROMPTS`,
+`PROMPT`/`PROMPT_LIST`/`PROMPT_PRESET` (ad-hoc prompts, materialised to a csv so sharding
+and the metric scripts are unchanged), `GPUS`, `HEIGHT`/`WIDTH`/`STEPS`/`SEED`/`CFG`/
 `LR_FACTOR`, `RANDOM_MASK_CENTER`/`MASK_CENTER_SEED`/`MASK_CENTER_RANGE`/
 `CLAMP_MASK_TO_FRAME`, `NOFOV_LORA`/`FOV_LORA`/`TOKENAE_FOLDER`, `MERGE_MLP`,
 `RALU_STAGES`/`RALU_LEVEL`/`RALU_Z_MAX`/`OURS_STEPS`, `OUT_ROOT`, `SKIP_COMPLETE`.

@@ -65,10 +65,25 @@ GPUS=${GPUS:-"0 1 2 3 4 5 6 7"}
 # ---- generation, shared by every method ----------------------------------------------
 HEIGHT=${HEIGHT:-1024}
 WIDTH=${WIDTH:-1024}
-STEPS=${STEPS:-50}
 SEED=${SEED:-42}
-CFG=${CFG:-4.0}                     # true CFG on both sides (inference.py --guidance_scale)
 LR_FACTOR=${LR_FACTOR:-2}           # periphery downsample factor
+
+# ---- which FLUX.2 checkpoint every arm runs on ---------------------------------------
+# base      FLUX.2-klein-base-4B  undistilled foundation model. No guidance embedder, so
+#           guidance comes from true CFG. BFL's reference settings: 50 steps, cfg 4.0.
+# distilled FLUX.2-klein-4B       the same architecture after BFL applied LADD: step- AND
+#           guidance-distilled. BFL's reference settings: 4 steps, cfg 1.0 (one forward per
+#           step, no CFG). 25x fewer forwards than base.
+# STEPS/CFG follow the model unless explicitly overridden.
+MODEL=${MODEL:-base}
+case "${MODEL}" in
+    base)      _DEF_MODEL_ID="black-forest-labs/FLUX.2-klein-base-4B"; _DEF_STEPS=50; _DEF_CFG=4.0;;
+    distilled) _DEF_MODEL_ID="black-forest-labs/FLUX.2-klein-4B";      _DEF_STEPS=4;  _DEF_CFG=1.0;;
+    *) echo "MODEL must be base|distilled (got: ${MODEL})" >&2; exit 1;;
+esac
+MODEL_ID=${MODEL_ID:-${_DEF_MODEL_ID}}
+STEPS=${STEPS:-${_DEF_STEPS}}
+CFG=${CFG:-${_DEF_CFG}}             # true CFG on both sides (inference.py --guidance_scale)
 
 # ---- foveation mask center -----------------------------------------------------------
 # false = centered. true = per-prompt fixation point from
@@ -91,6 +106,11 @@ TOKENAE_FOLDER=${TOKENAE_FOLDER:-}          # optional, `ours` only; empty = not
 # ---- method-specific knobs -----------------------------------------------------------
 MERGE_MLP=${MERGE_MLP:-true}        # tome: headline config, matches our cost at equal tokens
 RALU_STAGES=${RALU_STAGES:-3}       # ralu: 3 = their working design (2 is known broken)
+# Explicit per-stage step counts, e.g. "1 2 1". Overrides both the published proportions and
+# --match_compute. Needed at small budgets: compute-matching to a 4-step target collapses to
+# N=[1,1,1] (3 steps), and proportional scaling to 4 gives [1,1,2], since the level-4 preset
+# [5,6,7] weights the last stage most.
+RALU_N=${RALU_N:-}
 RALU_LEVEL=${RALU_LEVEL:-4}         # ralu: published operating point for N/e proportions
 RALU_Z_MAX=${RALU_Z_MAX:-6.5}       # ralu: authors' re-noising strength
 OURS_STEPS=${OURS_STEPS:-${STEPS}}  # ralu: compute-match target = our step count
@@ -120,6 +140,29 @@ PY=${PY:-/home/brianchc/miniconda3/envs/imp_tome/bin/python}
 
 gpu_arr=($GPUS)
 NUM_SUBSETS=${#gpu_arr[@]}
+
+# A single prompt or an inline list is materialised into a CSV, so sharding, manifests,
+# the metric scripts and make_eval_summary.py all keep working through one code path.
+if [ -n "${PROMPT_PRESET:-}" ]; then
+    case "${PROMPT_PRESET}" in
+        lion) PROMPT="A lion lounges calmly, displaying its powerful physique, with a soft focus highlighting its majestic mane and intense gaze.";;
+        *) echo "unknown PROMPT_PRESET: ${PROMPT_PRESET} (have: lion)" >&2; exit 1;;
+    esac
+fi
+if [ -n "${PROMPT:-}" ] || [ -n "${PROMPT_LIST:-}" ]; then
+    mkdir -p "${OUT_ROOT}"
+    PROMPTS="${OUT_ROOT}/_prompts_adhoc.csv"
+    { echo "image,prompt"
+      if [ -n "${PROMPT_LIST:-}" ]; then
+          i=0; IFS='|'; for _p in ${PROMPT_LIST}; do
+              printf 'images/adhoc_%05d.jpg,"%s"\n' "$i" "${_p//\"/\"\"}"; i=$((i+1))
+          done; unset IFS
+      else
+          printf 'images/adhoc_00000.jpg,"%s"\n' "${PROMPT//\"/\"\"}"
+      fi
+    } > "${PROMPTS}"
+    echo "[eval.sh] ad-hoc prompt set -> ${PROMPTS} ($(($(wc -l < "${PROMPTS}")-1)) prompt(s))"
+fi
 
 EXPECTED=$($PY -c '
 import sys, pandas as pd
@@ -166,6 +209,7 @@ eval_high_res() {
         --experiment high_res --decode_mode direct --tokenAE_training false \
         "${lora[@]}" \
         --num_inference_steps "${STEPS}" --guidance_scale "${CFG}" \
+        --model_id "${MODEL_ID}" \
         $(mask_args "$shape" "$radius") $(eval_args "$subset") \
         --output_dir "$out"
 }
@@ -178,6 +222,7 @@ eval_naive() {
         --soft_foveation_blend true --foveation_outline false \
         "${lora[@]}" \
         --num_inference_steps "${STEPS}" --guidance_scale "${CFG}" \
+        --model_id "${MODEL_ID}" \
         $(mask_args "$shape" "$radius") $(eval_args "$subset") \
         --output_dir "$out"
 }
@@ -191,6 +236,7 @@ eval_ours() {
         --soft_foveation_blend true --foveation_outline false \
         "${lora[@]}" "${tae[@]}" \
         --num_inference_steps "${STEPS}" --guidance_scale "${CFG}" \
+        --model_id "${MODEL_ID}" \
         $(mask_args "$shape" "$radius") $(eval_args "$subset") \
         --output_dir "$out"
 }
@@ -202,6 +248,7 @@ eval_tome() {
         --merge_mlp "${MERGE_MLP}" --enable_tome true \
         "${lora[@]}" \
         --num_inference_steps "${STEPS}" --guidance_scale "${CFG}" \
+        --model_id "${MODEL_ID}" \
         $(mask_args "$shape" "$radius") $(eval_args "$subset") \
         --output_dir "$out"
 }
@@ -209,14 +256,18 @@ eval_tome() {
 eval_ralu() {
     local gpu="$1" subset="$2" shape="$3" radius="$4" out="$5"
     local lora=(); [ -n "${NOFOV_LORA}" ] && lora=(--lora_checkpoint "${NOFOV_LORA}")
+    # explicit N wins over compute-matching; otherwise match RALU's cost to ours@OURS_STEPS
+    local ralu_sched=(--match_compute --ours_steps "${OURS_STEPS}")
+    [ -n "${RALU_N}" ] && ralu_sched=(--N ${RALU_N})
     # --cfg_scale is RALU's name for the same true-CFG knob inference.py calls
     # --guidance_scale; --num_inference_steps is only a fallback since --match_compute
     # solves the total from OURS_STEPS.
     gpu_run "$gpu" $PY "${EVAL_DIR}/RALU/RALU_fov_inference_diffsynth.py" \
         --num_stages "${RALU_STAGES}" --ralu_level "${RALU_LEVEL}" \
-        --match_compute --ours_steps "${OURS_STEPS}" --z_max "${RALU_Z_MAX}" \
+        "${ralu_sched[@]}" --z_max "${RALU_Z_MAX}" \
         "${lora[@]}" \
         --num_inference_steps "${STEPS}" --cfg_scale "${CFG}" \
+        --model_id "${MODEL_ID}" \
         $(mask_args "$shape" "$radius") $(eval_args "$subset") \
         --output_dir "$out"
 }
@@ -304,7 +355,7 @@ print_plan() {
     echo "   lora          no-fov: ${NOFOV_LORA:-<none>}"
     echo "                 fov:    ${FOV_LORA:-<none>}"
     echo "   tome          merge_mlp=${MERGE_MLP}"
-    echo "   ralu          ${RALU_STAGES}-stage level ${RALU_LEVEL}, compute-matched to ours@${OURS_STEPS}, z_max ${RALU_Z_MAX}"
+    echo "   ralu          ${RALU_STAGES}-stage level ${RALU_LEVEL}, $([ -n "${RALU_N}" ] && echo "N=[${RALU_N// /, }] (explicit)" || echo "compute-matched to ours@${OURS_STEPS}"), z_max ${RALU_Z_MAX}"
     echo "   out root      ${OUT_ROOT}"
     local n_cfg n_arm total
     n_cfg=$(echo "${MASK_CONFIGS}" | wc -w)
