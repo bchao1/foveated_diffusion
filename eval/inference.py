@@ -19,7 +19,7 @@ import time
 import random
 import subprocess
 
-from shard_manifest import ShardManifest
+from shard_manifest import ShardManifest, TIMING_COLUMNS, pipe_timings
 import yaml
 
 import torch
@@ -1056,7 +1056,8 @@ def run_full_eval(single_prompt_generation_func, pipe, args, output_dir, prompts
     num_subsets = max(1, getattr(args, "num_subsets", 1))
     # Append-only manifest with resume: required for preemptible Slurm arrays, harmless
     # locally. Same filename and schema as the one-shot metadata_%05d.csv written before.
-    columns = ["image", "prompt"] + (["center_x", "center_y"] if random_center else [])
+    columns = (["image", "prompt"] + (["center_x", "center_y"] if random_center else [])
+               + TIMING_COLUMNS)
     manifest = ShardManifest(output_dir, subset_idx, columns=columns)
     if len(manifest):
         print(f"Resuming: {len(manifest)} sample(s) already complete in this shard")
@@ -1099,6 +1100,8 @@ def run_full_eval(single_prompt_generation_func, pipe, args, output_dir, prompts
         row = {"image": image_name, "prompt": prompt}
         if random_center:
             row["center_x"], row["center_y"] = center[0], center[1]
+        # Set by the pipeline's last __call__, i.e. the one that just produced this image.
+        row.update(pipe_timings(pipe))
         manifest.append(row)
         generated += 1
 

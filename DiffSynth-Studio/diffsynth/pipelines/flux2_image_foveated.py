@@ -934,6 +934,8 @@ class Flux2FoveatedImagePipeline(BasePipeline):
         print('decode mode', decode_mode)
         
         
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         start_t = time.time()
         for progress_id, timestep in enumerate(progress_bar_cmd(self.scheduler.timesteps)):
             timestep_val = timestep.unsqueeze(0).to(dtype=self.torch_dtype, device=self.device)
@@ -1056,6 +1058,8 @@ class Flux2FoveatedImagePipeline(BasePipeline):
                 latents = self.step(self.scheduler, progress_id=progress_id, noise_pred=noise_pred, latents=latents_high_res_step)
             else:
                 latents = self.step(self.scheduler, progress_id=progress_id, noise_pred=noise_pred, latents=latents)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         vit_end_t = time.time()
         
         inputs_shared["latents"] = latents

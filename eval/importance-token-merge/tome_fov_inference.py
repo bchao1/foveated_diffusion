@@ -36,7 +36,7 @@ from inference import (  # noqa: E402
     load_prompt_dataset,
     random_mask_center_range,
 )
-from shard_manifest import ShardManifest  # noqa: E402
+from shard_manifest import ShardManifest, TIMING_COLUMNS, pipe_timings  # noqa: E402
 
 from diffsynth.pipelines.flux2_image import Flux2ImagePipeline, ModelConfig  # noqa: E402
 
@@ -193,7 +193,8 @@ def main(args):
     prompts = load_prompt_dataset(args.prompt_dataset_path)
     num_subsets = max(1, args.num_subsets)
     # Append-only manifest with resume, for preemptible Slurm arrays. See shard_manifest.py.
-    columns = ["image", "prompt"] + (["center_x", "center_y"] if args.random_mask_center else [])
+    columns = (["image", "prompt"] + (["center_x", "center_y"] if args.random_mask_center else [])
+               + TIMING_COLUMNS)
     manifest = ShardManifest(output_dir, args.subset_idx, columns=columns)
     if len(manifest):
         print(f"Resuming: {len(manifest)} sample(s) already complete in this shard")
@@ -224,6 +225,7 @@ def main(args):
         row = {"image": image_name, "prompt": prompt}
         if args.random_mask_center:
             row["center_x"], row["center_y"] = center[0], center[1]
+        row.update(pipe_timings(pipe))
         manifest.append(row)      # image is on disk, so the row may be flushed
         generated += 1
 

@@ -20,6 +20,29 @@ metadata_%05d.csv the drivers used to write in one shot at the end.
 import csv
 import os
 
+# Timing columns every driver appends, so a runtime comparison is one pandas read over the
+# eval tree instead of a per-arm special case.
+TIMING_COLUMNS = ["dit_time_s", "vae_time_s"]
+
+
+def pipe_timings(pipe):
+    """Read the last call's DiT-loop and VAE timings off any of the three pipelines.
+
+    All of them clock the same boundaries (CUDA-synchronized, text encoding already done,
+    stopping before VAE decode), they just spell the attribute differently:
+    `vit_timing` in flux2_image.py / flux2_image_foveated.py, `denoise_time` in RALU's.
+    Missing attributes come back blank rather than raising, so an un-instrumented pipeline
+    still produces a well-formed row.
+    """
+    dit = getattr(pipe, "vit_timing", None)
+    if dit is None:
+        dit = getattr(pipe, "denoise_time", None)
+    vae = getattr(pipe, "vae_timing", None)
+    return {
+        "dit_time_s": "" if dit is None else round(float(dit), 4),
+        "vae_time_s": "" if vae is None else round(float(vae), 4),
+    }
+
 
 class ShardManifest:
     """Append-only metadata_<subset_idx>.csv with resume support."""

@@ -1,0 +1,4 @@
+% Compatibility with distilled diffusion models --- single paragraph, drop-in.
+
+\paragraph{Compatibility with distilled models.}
+Step distillation shortens the denoising trajectory, while foveation reduces the tokens processed at each step---orthogonal axes that we find compose without modification. We run the distilled FLUX.2 [klein] 4B model at 4 steps with $\text{CFG}=1.0$ and simply plug in our foveation LoRA, trained on the non-distilled model and left untouched: foveated diffusion works out of the box, with no retraining and no degradation relative to the non-distilled setting (Fig.~\ref{fig:distilled}). Competing approaches transfer just as directly, but so do their failure modes---the same boundary seams and peripheral artifacts persist at 4 steps, as they stem from the spatial resampling itself rather than the trajectory length. Foveated diffusion is thus an orthogonal speedup whose gains multiply with those of distillation at no additional training cost.

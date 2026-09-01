@@ -1,4 +1,4 @@
-import torch, math, torchvision
+import torch, math, torchvision, time
 from PIL import Image
 from typing import Union
 from tqdm import tqdm
@@ -118,6 +118,11 @@ class Flux2ImagePipeline(BasePipeline):
         # Denoise
         self.load_models_to_device(self.in_iteration_models)
         models = {name: getattr(self, name) for name in self.in_iteration_models}
+        # DiT-loop / VAE timings, same boundaries as flux2_image_foveated.py so the eval
+        # drivers can report a like-for-like denoising cost across every arm.
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        start_t = time.time()
         for progress_id, timestep in enumerate(progress_bar_cmd(self.scheduler.timesteps)):
             timestep = timestep.unsqueeze(0).to(dtype=self.torch_dtype, device=self.device)
             noise_pred = self.cfg_guided_model_fn(
@@ -127,12 +132,20 @@ class Flux2ImagePipeline(BasePipeline):
             )
             inputs_shared["latents"] = self.step(self.scheduler, progress_id=progress_id, noise_pred=noise_pred, **inputs_shared)
         
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        vit_end_t = time.time()
+
         # Decode
         self.load_models_to_device(['vae'])
         latents = rearrange(inputs_shared["latents"], "B (H W) C -> B C H W", H=inputs_shared["height"]//16, W=inputs_shared["width"]//16)
         image = self.vae.decode(latents)
         image = self.vae_output_to_image(image)
         self.load_models_to_device([])
+
+        # individually track time
+        self.vit_timing = vit_end_t - start_t
+        self.vae_timing = time.time() - vit_end_t
 
         return image
 

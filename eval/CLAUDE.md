@@ -76,6 +76,30 @@ The per-baseline launchers (`naive.sh`, `ours.sh`, `RALU/ralu_eval_10k.sh`,
 `importance-token-merge/tome_eval_10k.sh`) still work and remain the record of the existing
 `/local/brian/foveated_diffusion/results/*_eval` dirs; `eval.sh` supersedes them for new runs.
 
+## Runtime metadata — `dit_time_s` / `vae_time_s`
+
+Every eval driver writes two timing columns per image into `metadata_%05d.csv`, so a runtime
+comparison across the five arms is one pandas read over the eval tree.
+
+`dit_time_s` is the **denoising loop only**: the clock starts after text encoding, stops
+before VAE decode, and `torch.cuda.synchronize()` is called at both boundaries. The sync is
+required — without it the launch queue drains during the VAE's first `.cpu()`, which
+undercounts the DiT and inflates the VAE. `vae_time_s` covers decode plus the blend.
+
+The three pipelines spell the attribute differently, so `shard_manifest.pipe_timings(pipe)`
+normalizes them; drivers append `shard_manifest.TIMING_COLUMNS` to their manifest columns.
+
+| Pipeline | Attribute | Used by |
+|---|---|---|
+| `flux2_image_foveated.py` | `vit_timing`, `vae_timing` | `high_res`, `naive`, `ours` |
+| `flux2_image.py` (stock) | `vit_timing`, `vae_timing` | `tome` |
+| `RALU/pipeline_flux2_diffsynth_RALU_fov.py` | `denoise_time`, `vae_timing` | `ralu` |
+
+A missing attribute yields a blank cell rather than an exception, so an un-instrumented
+pipeline still produces a well-formed row. Metadata written before this change has no
+timing columns; `ShardManifest._load_and_repair` only rewrites the header when it drops a
+row, so don't append new runs into a pre-existing directory and expect aligned columns.
+
 ## `make_video.py`
 
 Video composition utilities. Use the `imp_tome` conda environment to run.
@@ -411,6 +435,8 @@ output_dir/
   ...
   metadata_00000.csv   # image filename + prompt per row (one file per subset).
                        # With --random_mask_center, also center_x,center_y per row.
+                       # Always dit_time_s,vae_time_s: the DiT denoising loop and the VAE
+                       # decode for that image, in seconds. See "Runtime metadata" below.
 ```
 
 **`foveation_trajectory_grid`:**

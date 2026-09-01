@@ -1,0 +1,30 @@
+% Supplementary --- extended baseline comparison on the distilled model.
+% Mirrors the structure of the undistilled supplementary baseline paragraphs.
+% Figure label assumed: fig:baseline_distilled (paper_figures/supp/baseline_distilled.png).
+% Numbers are measured over results/iclr_2027_distilled_all (61 prompts, 1024x1024, A6000):
+% DiT time 1.692 s (full resolution) vs. 0.824 s (ours); VAE time 0.226 s vs. 0.287 s;
+% mean token ratio 0.376.
+% Requires \usepackage{hyperref} (or \usepackage{url}) for the \href below.
+
+In Figure \ref{fig:baseline_distilled}, we provide extended baseline comparisons on the
+step- and guidance-distilled
+\href{https://huggingface.co/black-forest-labs/FLUX.2-klein-4B}{FLUX.2-klein-4B} model,
+where all five arms run at $4$ denoising steps with $\text{CFG}=1.0$. The high-resolution region defined by the foveation mask is a circle
+with radius $0.33$ relative to the image diagonal and a randomly placed center.
+
+Our method consistently outperforms the na\"ive mixed-resolution baseline and the two
+token-reduction baselines, all of which retain the boundary seams, scale inconsistencies,
+and structural distortions they exhibit on the undistilled model---these artifacts stem
+from the spatial resampling itself rather than from the length of the denoising
+trajectory, so shortening the trajectory does not remove them. Most importantly, our
+method achieves perceptually indistinguishable quality from the full high-resolution
+distilled baseline while using approximately $62\%$ fewer tokens, resulting in a
+$2.05\times$ speedup in denoising time and a $1.73\times$ speedup end to end; the gap
+between the two is the VAE decode, which we do not foveate and which occupies a larger
+share of the runtime once only $4$ steps remain. Notably, our foveation LoRA is trained on
+the undistilled model and is plugged into the distilled model untouched, with no
+retraining and no degradation relative to the undistilled setting. Step distillation
+shortens the denoising trajectory while foveation reduces the tokens processed at each
+step---orthogonal axes whose speedups compose multiplicatively, so Foveated Diffusion
+delivers a further $2.05\times$ on top of an already heavily accelerated $4$-step,
+guidance-free model at no additional training cost.

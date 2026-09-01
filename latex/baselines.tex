@@ -1,0 +1,19 @@
+% Baselines paragraph --- drop-in, inserted directly after the metrics sentence
+% ("For the na\"ive mixed-resolution baseline and our Foveated Diffusion pipeline, we fix
+%  the foveation mask to be a centered rectangular mask with varying token ratios.").
+%
+% Citation keys assumed (add to the .bib if not already present):
+%   bolya2023tomesd  --- Bolya & Hoffman, Token Merging for Fast Stable Diffusion, CVPRW 2023
+%   wu2025tome       --- Wu et al., Importance-Based Token Merging for Efficient Image and
+%                        Video Generation, ICCV 2025  (arXiv:2411.16720)
+%   ralu2026         --- RALU: Resolution-Aligned Latent Upscaling, CVPR 2026 (arXiv:2507.08422)
+
+\paragraph{Baselines.}
+Beyond the na\"ive mixed-resolution baseline, we compare against two training-free methods
+that, like ours, accelerate diffusion by reducing the number of tokens the DiT processes:
+token merging \citep{bolya2023tomesd,wu2025tome} and RALU \citep{ralu2026}. For an
+apples-to-apples comparison, we drive both with \emph{our} foveation mask in place of
+their own token-selection heuristics, so that all methods operate on the same token layout
+at the same token ratio, and leave every other component of each method intact. All arms
+additionally share the same base model, sampler, guidance scale, prompt order, and
+fixation points.

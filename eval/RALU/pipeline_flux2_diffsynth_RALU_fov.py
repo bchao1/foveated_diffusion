@@ -379,6 +379,8 @@ class Flux2DiffSynthRALUFovPipeline(Flux2ImagePipeline):
         latent_ids = None
         n_1x = None
 
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         start_t = time.time()
         for idx in range(len(N)):
             S, E, sh = 1 - s[idx], 1 - e[idx], shift[idx]
@@ -462,6 +464,8 @@ class Flux2DiffSynthRALUFovPipeline(Flux2ImagePipeline):
                 print(f"  [stage {idx+1}] leaving:  std {latents.float().std():.4f} "
                       f"(expected {exp:.4f})  sigma {1-e[idx]:.4f}")
 
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         vit_end_t = time.time()
 
         # RALU-native mixed-resolution decode, then DiffSynth's VAE
@@ -477,4 +481,5 @@ class Flux2DiffSynthRALUFovPipeline(Flux2ImagePipeline):
 
         self.denoise_time = vit_end_t - start_t
         self.total_time = time.time() - start_t
+        self.vae_timing = self.total_time - self.denoise_time
         return image
