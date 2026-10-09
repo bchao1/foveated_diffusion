@@ -48,6 +48,9 @@ tensor names and shapes), weights differing ~3%. `STEPS`/`CFG` follow `MODEL` un
 explicitly; `MODEL_ID` overrides the checkpoint directly. All five arms receive the same
 `--model_id`, so a speed comparison stays fair.
 
+The finished 10k-image distilled sweep, its metrics and every path to it are written up in
+[`DISTILLED_RESULTS.md`](DISTILLED_RESULTS.md).
+
 Knobs (all env-overridable, see the `CONFIGURE` block): `MODEL` (`base`|`distilled`),
 `MODEL_ID`, `MASK_CONFIGS` (`shape:radius` pairs), `METHODS`, `PROMPTS`, `NUM_PROMPTS`,
 `PROMPT`/`PROMPT_LIST`/`PROMPT_PRESET` (ad-hoc prompts, materialised to a csv so sharding
@@ -99,6 +102,39 @@ A missing attribute yields a blank cell rather than an exception, so an un-instr
 pipeline still produces a well-formed row. Metadata written before this change has no
 timing columns; `ShardManifest._load_and_repair` only rewrites the header when it drops a
 row, so don't append new runs into a pre-existing directory and expect aligned columns.
+
+## `eval/iclr_2027` — the paper's qualitative figures
+
+Four scripts (one per figure) on top of `qual_common.py`, each regenerating the arms it
+needs and then composing the PNG into `paper_figures/`. **See
+[`iclr_2027/README.md`](iclr_2027/README.md)** for the full account; the short version:
+
+| Script | Output |
+|---|---|
+| `make_main_qual.py` | `paper_figures/baseline_comparison_randomized{,_3row}.png` — 6 cols, 2 rows (dog, man) and 3 rows (+ horse); both built by default, `--variants` to pick |
+| `make_supp_101.py` | `paper_figures/supp/baseline_101_{a,b}.png` |
+| `make_supp_123.py` | `paper_figures/supp/baseline_{1,2,3}_{a,b}.png` |
+| `make_supp_distilled.py` | `paper_figures/supp/baseline_distilled.png` — delegates to `eval.sh MODEL=distilled` |
+
+```bash
+PY=/home/brianchc/miniconda3/envs/imp_tome/bin/python   # only env with ToMe/RALU deps
+$PY eval/iclr_2027/make_main_qual.py --stage figure     # compose only, no GPU
+$PY eval/iclr_2027/make_main_qual.py --gpus "2 3"       # regen ToMe/RALU, then compose
+```
+
+Only `tome` and `ralu` are ever regenerated (into `results/iclr_2027_qual/`); `high_res`,
+`naive` and `ours` are read from the frozen `user_study` run in
+`results/eccv2026_final_v2/`. The per-prompt fixation point is replayed from seed 42 and
+checked against each tile's saved `fixation_point.png` on every stage. The main figure's
+tokenization column is synthesized from that same mask and shaded with LoT's token-size
+grays (light = fine, dark = coarse), at LoT's 2 px line weight. The peripheral fill is
+taken one step darker than its area implies, because at that line weight the fine grid's
+own ink otherwise cancels the tonal difference — see the README before changing either.
+
+Reach for `--stage figure` after any styling change — it reads only saved PNGs, rebuilds
+the masks on CPU, and takes seconds.
+
+---
 
 ## `make_video.py`
 

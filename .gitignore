@@ -10,3 +10,10 @@ twitter_videos/
 src/
 tests/
 hf/
+# generated media stays out of git (already-tracked example assets are unaffected)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.mp4

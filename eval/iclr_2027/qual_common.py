@@ -3,7 +3,7 @@
 
 Three entry points sit on top of this module, one per figure:
 
-    make_main_qual.py          paper_figures/baseline_comparison_randomized.png
+    make_main_qual.py          paper_figures/baseline_comparison_randomized{,_3row}.png
     make_supp_101.py           paper_figures/supp/baseline_101_{a,b}.png
     make_supp_123.py           paper_figures/supp/baseline_{1,2,3}_{a,b}.png
 
@@ -497,37 +497,57 @@ FONT_CANDIDATES = [
 # Label height as a fraction of ONE tile's height.
 FONT_FRAC = 0.125
 
-# Token-size ramp from LoT (precompute/flux/vrs_image.py:_TOKEN_RAMP): warm, muted,
-# dark = fine tokens, light = coarse. Sampled at log2(extent)/log2(size_max=8) so a given
-# token size is the same color in every figure.
-_TOKEN_RAMP = (
-    (124, 58, 45), (181, 101, 74), (208, 140, 96),
-    (224, 172, 126), (239, 207, 160), (245, 230, 200),
-)
+# Token-size grays from LoT (scripts/export_qual_figures.py:GRAY_LEVELS, used by its
+# render_layout). Keyed on log2(leaf area) -- level 0 is a 1x1 latent cell -- so light =
+# fine foveal tokens, dark = coarse peripheral ones, and a given token size is the same
+# gray in every figure of either project. Levels 5-6 are the 8x8-era entries LoT keeps
+# so an older tree still renders; we only ever index 0 and 4 (see below).
+GRAY_LEVELS = {0: 248, 1: 220, 2: 190, 3: 155, 4: 118, 5: 78, 6: 38}
+
+# Which levels the two fills are taken from. The fovea is at its true level (a 1x1
+# token, area 1, level 0); the periphery overrides its own log2(area).
+#
+# At lr_factor 2 the periphery is a 2x2 token, area 4, level 2, gray 190 -- against the
+# fovea's 248 that is a 58-step difference, and the 2 px grid lines erase it: the fovea's
+# 8 px cells carry ~43% black ink to the periphery's ~24%, which drags the fovea's MEAN
+# luminance down to 142 against the periphery's 147. The panel then has no tonal contrast
+# at all and the reader has to resolve individual cell sizes to see where the budget went.
+# Taking the fill from level 4 instead (gray 118) puts the periphery at mean 91 against
+# the fovea's 141 -- a 50-step gap in the right direction, dark = coarse.
+#
+# This is the one place the palette is NOT the absolute LoT mapping. LoT gets away with
+# 190 because its panels are 420 px for the whole image, so its coarse leaves are 26 px
+# cells at ~14% ink; ours are 16 px at 24%. Level 3 (155 -> mean 108) is the softer
+# choice if the panel ever reads too heavy.
+FOVEA_LEVEL = 0
+PERIPHERY_LEVEL = 4
 
 
-def _ramp_color(f):
-    x = f * (len(_TOKEN_RAMP) - 1)
-    i = min(int(x), len(_TOKEN_RAMP) - 2)
-    a, b, w = _TOKEN_RAMP[i], _TOKEN_RAMP[i + 1], x - i
-    return tuple(int(round(a[c] + (b[c] - a[c]) * w)) for c in range(3))
+def tokenization_mask_rgb(fov_mask, lr_factor=LR_FACTOR, border_px=4):
+    """The HR/LR token grid, shaded with LoT's token-size gray palette.
 
-
-def tokenization_mask_rgb(fov_mask, lr_factor=LR_FACTOR, size_max=8, border_px=4):
-    """The HR/LR token grid, colored by token size with LoT's absolute palette.
-
-    Foveal tokens span 1 latent cell (16 px), peripheral tokens span `lr_factor` cells,
-    so they take ramp(0) and ramp(log2(lr_factor)/log2(size_max)) respectively. Black
+    Foveal tokens span 1 latent cell (16 px, area 1) and take FOVEA_LEVEL. Peripheral
+    tokens span `lr_factor` cells on a side and take PERIPHERY_LEVEL, which
+    is darker than their own area implies -- see the note on PERIPHERY_LEVEL. Black
     borders `border_px` wide, drawn on the grid each region actually uses.
+
+    `border_px` is 4 to put the grid lines at 2 px in the composed figure (the main figure
+    downsamples by 2), which is what LoT draws. LoT's `render_layout` outlines every leaf
+    at width 1 and adjacent leaves double up, so its interior lines measure 2 px at ANY
+    cell size -- 420 px panels, 6.5 px cells and all. Matching that is the whole point of
+    sharing the palette, so match the line weight too.
+
+    That line weight is what forces PERIPHERY_LEVEL: it loads the fine grid with enough
+    ink to cancel the fill difference, so the tonal separation has to be put back by hand
+    rather than by thinning the lines away from LoT's weight.
     """
     mask = fov_mask.detach().cpu().numpy() if hasattr(fov_mask, "detach") else np.asarray(fov_mask)
     up = np.repeat(np.repeat(mask, 16, axis=0), 16, axis=1)[:HEIGHT, :WIDTH]
     hr_region = up > 0.5
 
-    denom = float(np.log2(size_max))
     vis = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
-    vis[hr_region] = _ramp_color(0.0)
-    vis[~hr_region] = _ramp_color(min(float(np.log2(lr_factor)) / denom, 1.0))
+    vis[hr_region] = (GRAY_LEVELS[FOVEA_LEVEL],) * 3
+    vis[~hr_region] = (GRAY_LEVELS[PERIPHERY_LEVEL],) * 3
 
     yy = np.arange(HEIGHT)[:, None]
     xx = np.arange(WIDTH)[None, :]
