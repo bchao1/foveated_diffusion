@@ -65,19 +65,38 @@ case "$MODE" in
     test-only)
         for r in smoke_abl_rope_standard "${RUNS[@]}" eval_ref_rank32fov_10k; do eval "$(sbatch_cmd "$r" --test-only)"; done ;;
     submit-all)
-        preflight || exit 1; mkdir -p "${LOG_ROOT}" "${RESULTS_ROOT}"
-        jobs="${EXP_ROOT}/jobs.tsv"
+        # Idempotent: rerun until every job is in. Skips a job that is queued (by name) or
+        # whose output already exists. MaxSubmitJobsPerAccount (32 on pm07, shared with the
+        # whole account) makes partial submission normal; exit 3 = some jobs still missing.
+        preflight >/dev/null || { preflight; exit 1; }
+        mkdir -p "${LOG_ROOT}" "${RESULTS_ROOT}"
+        jobs="${EXP_ROOT}/jobs.tsv"; missing=0
         [ -f "$REF_LORA" ] || { echo "missing ${REF_LORA}"; exit 1; }
-        j=$(eval "$(sbatch_cmd eval_ref_rank32fov_10k)") || exit 1; j=${j%%;*}
-        printf '%s\t%s\t%s\n' "$(date -Is)" "$j" eval_ref_rank32fov_10k | tee -a "$jobs"
+        queued() { squeue -u "$USER" -h -n "fovabl_$1" -o %i | head -1; }
+        try_submit() {   # try_submit <name> [dependency]; prints job id or nothing
+            local out; out=$(eval "$(sbatch_cmd "$1" "" "${2:-}")" 2>&1) || { echo "WAIT  $1: ${out##*error: }" >&2; return 1; }
+            out=${out%%;*}; printf '%s\t%s\t%s\n' "$(date -Is)" "$out" "$1${2:+ ($2)}" >> "$jobs"
+            echo "SUBMITTED $out $1${2:+ ($2)}" >&2; echo "$out"
+        }
+        evaluated() { [ "$(ls "${RESULTS_ROOT}/$1"/circular_r0.25_randcenter42/ours/img_*.png 2>/dev/null | wc -l)" -ge 10000 ]; }
+        if [ -z "$(queued eval_ref_rank32fov_10k)" ] && ! evaluated ref_rank32fov_10k; then
+            try_submit eval_ref_rank32fov_10k >/dev/null || missing=1; fi
         for r in "${RUNS[@]}"; do
-            if ls "${EXP_ROOT}/${r}"/step-*.safetensors >/dev/null 2>&1; then
-                echo "skip $r: ${EXP_ROOT}/${r} already has checkpoints"; continue; fi
-            t=$(eval "$(sbatch_cmd "$r")") || exit 1; t=${t%%;*}
-            printf '%s\t%s\t%s\n' "$(date -Is)" "$t" "$r" | tee -a "$jobs"
-            e=$(eval "$(sbatch_cmd "eval_$r" "" "--dependency=afterok:${t}")") || exit 1; e=${e%%;*}
-            printf '%s\t%s\t%s\n' "$(date -Is)" "$e" "eval_$r (afterok:$t)" | tee -a "$jobs"
-        done ;;
+            t=$(queued "$r")
+            if [ -z "$t" ] && [ ! -f "${EXP_ROOT}/${r}/step-${MAX_STEPS}.safetensors" ]; then
+                # Submit each training run at most once: a run that left the queue without its
+                # final checkpoint failed. Look at its log; do not cold-start another paid run.
+                if awk -F'\t' -v r="$r" '$3==r{f=1} END{exit !f}' "$jobs" 2>/dev/null; then
+                    echo "STOP  $r: submitted before ($(awk -F'\t' -v r="$r" '$3==r{print $2}' "$jobs" | tail -1)), not queued, no step-${MAX_STEPS}; check its log" >&2
+                    missing=1; continue; fi
+                t=$(try_submit "$r") || { missing=1; continue; }
+            fi
+            [ -n "$(queued "eval_$r")" ] || evaluated "$r" && continue
+            if [ -n "$t" ]; then try_submit "eval_$r" "--dependency=afterok:${t}" >/dev/null || missing=1
+            else try_submit "eval_$r" >/dev/null || missing=1; fi
+        done
+        [ "$missing" = 0 ] && echo "ALL SUBMITTED" >&2
+        exit $((missing * 3)) ;;
     smoke)
         preflight || exit 1; mkdir -p "${LOG_ROOT}"
         for r in smoke_abl_rope_standard smoke_abl_res_embed; do
