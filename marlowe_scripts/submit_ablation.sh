@@ -14,6 +14,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 source "${SCRIPT_DIR}/ablation_env.sh"
+command -v sbatch >/dev/null || module load slurm/slurm/25.05.2 >/dev/null 2>&1
 MODE=${1:-preflight}; shift || true
 RUNS=(abl_rope_standard abl_res_embed)
 
@@ -45,6 +46,9 @@ preflight() {
         if [ -e "$p" ]; then echo "  ok      $p"; else echo "  MISSING $p"; ok=0; fi
     done
     [ -f "${TRAIN_CSV}" ] && echo "  train rows: $(( $(wc -l < "${TRAIN_CSV}") - 1 )) (expect 95288)"
+    local ntar; ntar=$(ls "${DATASET_DIR}"/images/*/.done 2>/dev/null | wc -l)
+    if [ "$ntar" -eq 106 ]; then echo "  ok      images: 106/106 tars extracted"
+    else echo "  MISSING images: ${ntar}/106 tars extracted (see ${DATASET_DIR}/fetch.log)"; ok=0; fi
     grep -q "rope_mode" "${REPO}/DiffSynth-Studio/examples/flux2/model_training/train_foveated.py" \
         && echo "  ok      train_foveated.py has --rope_mode" || { echo "  MISSING --rope_mode: git pull in ${REPO}"; ok=0; }
     for r in "${RUNS[@]}"; do [ -e "${EXP_ROOT}/${r}" ] && echo "  NOTE    ${EXP_ROOT}/${r} exists"; done

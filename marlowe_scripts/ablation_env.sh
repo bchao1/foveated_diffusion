@@ -17,7 +17,9 @@ BASIC_ACCOUNT=${BASIC_ACCOUNT:-marlowe-m000051}        # preempt partition
 CYCLE_SCRATCH=${CYCLE_SCRATCH:-/scratch/m000051-pm07/brianchc}   # purged after the cycle
 BASE_SCRATCH=${BASE_SCRATCH:-/scratch/m000051/brian}             # survives cycles
 
-REPO=${REPO:-/users/brianchc/foveated_diffusion}
+# A git worktree pinned to the ablation commit, separate from the main Marlowe checkout
+# (/users/brianchc/foveated_diffusion has local commits and edits; leave it alone).
+REPO=${REPO:-/users/brianchc/projects/foveated_diffusion_iclr_abl}
 DATASET_DIR=${DATASET_DIR:-${CYCLE_SCRATCH}/datasets/Aesthetic-Train-V2}
 TRAIN_CSV=${TRAIN_CSV:-${DATASET_DIR}/metadata_train.csv}
 EXP_ROOT=${EXP_ROOT:-${CYCLE_SCRATCH}/foveated_diffusion/experiments}
@@ -27,7 +29,6 @@ CONDA_SH=${CONDA_SH:-/cm/shared/apps/Mambaforge/24.3.0-0/etc/profile.d/conda.sh}
 CONDA_ENV=${CONDA_ENV:-${BASE_SCRATCH}/conda_environments/camera_ctrl}
 export DIFFSYNTH_MODEL_BASE_PATH=${DIFFSYNTH_MODEL_BASE_PATH:-${BASE_SCRATCH}/models}
 export DIFFSYNTH_SKIP_DOWNLOAD=${DIFFSYNTH_SKIP_DOWNLOAD:-True}
-export HF_HOME=${HF_HOME:-${BASE_SCRATCH}/.cache/huggingface}
 export PYTHONNOUSERSITE=1
 export PYTHONPATH=${REPO}/DiffSynth-Studio
 

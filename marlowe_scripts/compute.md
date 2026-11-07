@@ -13,7 +13,8 @@ Shared procedures are in the global `marlowe` skill. This file holds the project
 | Allocation | 23,500 GPU-hours. Usage: `sreport cluster UserUtilizationByAccount -T cpu,gres/gpu Start=2026-10-30 End=now account=marlowe-m000051-pm07 -t hours` |
 | Cycle scratch | `/scratch/m000051-pm07/brianchc` (purged after the cycle) |
 | Base scratch | `/scratch/m000051/brian` (conda envs, model weights) |
-| Repo | `/users/brianchc/foveated_diffusion`, branch `v2` |
+| Repo | worktree `/users/brianchc/projects/foveated_diffusion_iclr_abl` (detached at the ablation commit). The main checkout `/users/brianchc/foveated_diffusion` has local commits and edits, so do not pull there. |
+| Slurm | `module load slurm/slurm/25.05.2` |
 | Conda env | `/scratch/m000051/brian/conda_environments/camera_ctrl` |
 | Models | `DIFFSYNTH_MODEL_BASE_PATH=/scratch/m000051/brian/models` |
 | Dataset | `/scratch/m000051-pm07/brianchc/datasets/Aesthetic-Train-V2` (split CSVs copied from apollo `/local/brian/Aesthetic-Train-V2`) |
@@ -31,7 +32,7 @@ The reference is wandb `flux2-training/cbx1ng9w` (`rank_32_fov`): commit `ce1c90
 | `abl_res_embed` | `--resolution_embedding` |
 
 ```bash
-cd /users/brianchc/foveated_diffusion/marlowe_scripts
+cd /users/brianchc/projects/foveated_diffusion_iclr_abl/marlowe_scripts
 ./submit_ablation.sh preflight     # paths, env, data, models
 ./submit_ablation.sh test-only     # sbatch --test-only
 ./submit_ablation.sh smoke         # 1 GPU, preempt, 20 steps per run
