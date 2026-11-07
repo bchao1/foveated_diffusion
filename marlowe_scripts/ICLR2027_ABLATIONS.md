@@ -99,6 +99,10 @@ All output paths are under `/scratch/m000051-pm07/brianchc/foveated_diffusion/`.
 
 A training job exits with success only if `step-10000.safetensors` exists and its metadata shows the right architecture. So `afterok` never evaluates a broken checkpoint. Each training folder also gets `launch_<job>.txt` (commit and full args) and `gpu_<job>.csv` (memory trace). If the compute node has no network, wandb logs offline. Then run `wandb sync <run>/wandb` from the login node.
 
+The pm07 account allows 32 submitted jobs in total (QOS `medium`, every array element counts), and other project members share that limit. If `submit-all` prints `WAIT ... job submit limit` and exits with code 3, run it again later. It skips jobs that are already queued or finished, and it submits each training run at most once.
+
+Status on 2026-11-06 18:35: `559560` (`eval_ref_rank32fov_10k`) is queued. The other four jobs wait for account slots, and a loop on apollo retries `submit-all` every 10 min.
+
 To run a single job: use `./submit_ablation.sh submit abl_res_embed`, or the 1-GPU preempt `smoke` job (20 steps per arm).
 
 ## 6. Monitor
