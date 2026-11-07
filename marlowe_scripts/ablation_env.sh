@@ -34,9 +34,26 @@ export PYTHONPATH=${REPO}/DiffSynth-Studio
 
 # ---- resources ----------------------------------------------------------------------
 TRAIN_GPUS=${TRAIN_GPUS:-8}           # batch partition: whole node
-TRAIN_PROCS=${TRAIN_PROCS:-6}         # processes = effective batch; 6 matches the reference
+# Processes = effective batch. The reference used 6 (apollo); the user chose 8 per arm
+# (2026-11-06), which matches the paper's stated batch of 8. Set TRAIN_PROCS=6 to copy it.
+TRAIN_PROCS=${TRAIN_PROCS:-8}
 TRAIN_TIME=${TRAIN_TIME:-12:00:00}     # reference: ~36 min / 1k steps on H100 -> ~6 h
 SMOKE_TIME=${SMOKE_TIME:-01:00:00}
+EVAL_TIME=${EVAL_TIME:-12:00:00}       # 10k images on 8 GPUs
+
+# ---- evaluation: the Table 1 setting (iclr_2027_base/circular_r0.25_randcenter42) ------
+RESULTS_ROOT=${RESULTS_ROOT:-${CYCLE_SCRATCH}/foveated_diffusion/results/iclr_abl}
+EVAL_PROMPTS=${EVAL_PROMPTS:-${DATASET_DIR}/metadata_test.csv}
+EVAL_MASK=${EVAL_MASK:-circular:0.25}
+REF_LORA=${REF_LORA:-${EXP_ROOT}/reference/rank_32_fov/step-10000.safetensors}
+# eval arm -> LoRA checkpoint
+eval_lora() {
+    case "$1" in
+        ref_rank32fov_10k) echo "${REF_LORA}" ;;
+        abl_rope_standard|abl_res_embed) echo "${EXP_ROOT}/$1/step-${MAX_STEPS}.safetensors" ;;
+        *) echo "unknown eval arm: $1" >&2; return 1 ;;
+    esac
+}
 
 # ---- the reference recipe (marlowe_scripts/no_tokenAE_lora.sh), verbatim -------------
 MAX_STEPS=${MAX_STEPS:-10000}

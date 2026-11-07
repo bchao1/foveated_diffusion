@@ -35,6 +35,11 @@ echo " repo $(git -C "${REPO}" rev-parse HEAD) ($(git -C "${REPO}" status --porc
 echo "=============================================================="
 { echo "job ${SLURM_JOB_ID}"; echo "commit $(git -C "${REPO}" rev-parse HEAD)"; printf '%q ' "${ARGS[@]}"; echo; } > "${OUT}/launch_${SLURM_JOB_ID}.txt"
 
+# wandb needs network from the compute node; log offline instead of crashing without it.
+if ! timeout 15 curl -sfI https://api.wandb.ai >/dev/null 2>&1; then
+    export WANDB_MODE=offline; echo "wandb: no network on $(hostname), WANDB_MODE=offline (sync later: wandb sync ${OUT}/wandb)"
+fi
+
 # GPU memory trace (peak memory is the open question for the smoke run).
 nvidia-smi --query-gpu=timestamp,index,memory.used,utilization.gpu --format=csv -l 30 > "${OUT}/gpu_${SLURM_JOB_ID}.csv" &
 smi_pid=$!
