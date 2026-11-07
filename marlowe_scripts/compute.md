@@ -20,7 +20,7 @@ Shared procedures are in the global `marlowe` skill. This file holds the project
 | Dataset | `/scratch/m000051-pm07/brianchc/datasets/Aesthetic-Train-V2` (split CSVs copied from apollo `/local/brian/Aesthetic-Train-V2`) |
 | Experiments | `/scratch/m000051-pm07/brianchc/foveated_diffusion/experiments/<run>` |
 
-All paths are variables in `ablation_env.sh`. If a path changes, edit it there.
+All paths are variables in `ablation_env.sh`. If a path changes, edit it there. The full procedure for the rebuttal ablations is in [`ICLR2027_ABLATIONS.md`](ICLR2027_ABLATIONS.md).
 
 ## ICLR 2027 rebuttal ablations
 
