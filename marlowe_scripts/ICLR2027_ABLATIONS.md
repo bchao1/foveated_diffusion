@@ -70,7 +70,7 @@ If you set this up again in a later cycle:
 
 1. On apollo, start the SSH master (see `compute.md`).
 2. Download the dataset on Marlowe with `fetch_aesthetic_marlowe.sh`. It needs `tar_sizes.txt` next to it, and it is safe to rerun. Hugging Face gives about 120 MB/s, but apollo to Marlowe over SSH gives only 2–11 MB/s.
-3. Copy `metadata_{train,test}.csv` from apollo. Do not regenerate them, because the split is ours.
+3. Copy `metadata_{train,test}.csv` from [`data/aesthetic_train_v2/`](../data/aesthetic_train_v2/) into the dataset root. Do not regenerate them, because the split is ours.
 4. Download the FLUX weights with `huggingface_hub.snapshot_download` (`text_encoder`, `transformer`, `vae`, `tokenizer`, `scheduler`, json files), then compare md5 against apollo.
 5. Add a git worktree at the ablation commit, and point `REPO` in `ablation_env.sh` to it.
 
