@@ -32,6 +32,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../image_generation"))
 
 from diffsynth.pipelines.flux2_image_foveated import Flux2FoveatedImagePipeline
+from diffsynth.models.flux2_dit_foveated import (
+    ROPE_MODES, read_foveation_arch, configure_foveation_arch_from_checkpoint,
+)
 from diffsynth.pipelines.flux2_image import Flux2ImagePipeline, ModelConfig
 from diffsynth.core import load_state_dict
 
@@ -805,6 +808,30 @@ def _get_cfg(cfg, args, key, default=None):
     return getattr(args, key, default)
 
 
+def load_lora_with_arch(pipe, args):
+    """Load args.lora_checkpoint into pipe.dit, then set the DiT architecture it was trained with.
+
+    Ablation checkpoints carry rope_mode / resolution_embedding in their safetensors metadata
+    (train_foveated.py). Old checkpoints have none and load as the paper model. --rope_mode and
+    --resolution_embedding only fill in a checkpoint without metadata; a conflict raises.
+    """
+    pipe.load_lora(pipe.dit, args.lora_checkpoint)
+    print(f"Loaded LoRA checkpoint from {args.lora_checkpoint}")
+    if not args.lora_checkpoint.endswith(".safetensors"):
+        return
+    if hasattr(pipe.dit, "set_rope_mode"):
+        configure_foveation_arch_from_checkpoint(
+            pipe.dit, args.lora_checkpoint,
+            rope_mode=args.rope_mode, resolution_embedding=args.resolution_embedding,
+        )
+    else:
+        arch = read_foveation_arch(args.lora_checkpoint)
+        if arch["rope_mode"] != "phase_aligned" or arch["resolution_embedding"]:
+            raise ValueError(f"{args.lora_checkpoint} needs the foveated DiT "
+                             f"(rope_mode={arch['rope_mode']}, resolution_embedding={arch['resolution_embedding']}), "
+                             "but this experiment loads the plain FLUX.2 pipeline")
+
+
 def _str_to_bool(s):
     """Parse true/false to bool. Accepts bool (passthrough), 'true'/'false'/'1'/'0'/'yes'/'no', or numeric."""
     if isinstance(s, bool):
@@ -1213,8 +1240,7 @@ def run_user_study(pipe, args, output_dir, token_upsampler, token_downsampler):
         print(f"Saved {idx:05d}/ (img_high_res.png, img_naive.png, mask.png, fixation_point.png)")
 
     if args.lora_checkpoint is not None:
-        pipe.load_lora(pipe.dit, args.lora_checkpoint)
-        print(f"Loaded LoRA checkpoint from {args.lora_checkpoint}")
+        load_lora_with_arch(pipe, args)
     if args.dit_checkpoint is not None:
         state_dict = load_state_dict(args.dit_checkpoint, torch_dtype=torch.bfloat16)
         pipe.dit.load_state_dict(state_dict)
@@ -1666,8 +1692,7 @@ def main(args):
 
     # Load LoRA checkpoint (skip for user_study: LoRA loaded only for "ours" inside run_user_study)
     if args.lora_checkpoint is not None and args.experiment != "user_study":
-        pipe.load_lora(pipe.dit, args.lora_checkpoint)
-        print(f"Loaded LoRA checkpoint from {args.lora_checkpoint}")
+        load_lora_with_arch(pipe, args)
     elif args.lora_checkpoint is not None and args.experiment == "user_study":
         print("User study: LoRA will be loaded only for 'ours' runs (baseline and naive use base DiT)")
     else:
@@ -1740,6 +1765,12 @@ if __name__ == "__main__":
     parser.add_argument('--tokenAE_arch', type=str, default="adapter", choices=["adapter", "flux2", "dit"],
                         help='TokenAE architecture: adapter (CNN), flux2 (Flux2 token AE), dit (DiT block up/down). Overridden by tokenAE_config.yaml when loading from tokenAE_folder.')
     parser.add_argument('--lora_checkpoint', default=None, type=str, help='Path to the LoRA .safetensors checkpoint')
+    # Architecture ablations. Normally read from the checkpoint metadata; set these only for a
+    # checkpoint without metadata. A value that disagrees with the metadata stops the run.
+    parser.add_argument('--rope_mode', default=None, choices=list(ROPE_MODES),
+                        help='Override for checkpoints without metadata: phase_aligned (paper) or standard')
+    parser.add_argument('--resolution_embedding', default=None, type=lambda v: str(v).lower() in ("true", "1", "yes"),
+                        help='Override for checkpoints without metadata: true/false')
 
     # DiT checkpoint
     parser.add_argument('--dit_checkpoint', default=None, type=str, help='Path to the DiT checkpoint')

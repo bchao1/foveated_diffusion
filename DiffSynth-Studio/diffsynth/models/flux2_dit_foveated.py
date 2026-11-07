@@ -37,6 +37,14 @@ from .flux2_dit import (
 )
 
 
+# Architecture-ablation config, stored in the LoRA safetensors metadata so a checkpoint
+# describes the DiT it was trained with. Checkpoints without these keys are paper models.
+ROPE_MODES = ("phase_aligned", "standard")
+META_ROPE_MODE = "foveation_rope_mode"
+META_RES_EMBED = "foveation_resolution_embedding"
+RES_EMBED_KEY = "resolution_embedding.weight"
+
+
 # =====================================================================
 # CRPA (Cross-Resolution Phase-Aligned) Attention Processor for FLUX2
 # =====================================================================
@@ -680,6 +688,29 @@ class Flux2DiTFoveated(torch.nn.Module):
 
         self.gradient_checkpointing = False
 
+        # Architecture ablations (ICLR 2027 rebuttal). Defaults reproduce the paper model.
+        #   rope_mode="phase_aligned": CRPA attention (LR queries use the LR grid and
+        #                              subsampled keys).
+        #   rope_mode="standard":      one joint attention, every token keeps its HR-grid
+        #                              RoPE id (LR tokens sit at their block's top-left).
+        #   resolution_embedding:      learned [2, inner_dim] table (row 0 = LR, row 1 = HR)
+        #                              added to image tokens after x_embedder. None = off.
+        self.rope_mode = "phase_aligned"
+        self.resolution_embedding = None
+
+    def set_rope_mode(self, mode: str):
+        if mode not in ROPE_MODES:
+            raise ValueError(f"rope_mode must be one of {ROPE_MODES}, got {mode!r}")
+        self.rope_mode = mode
+
+    def enable_resolution_embedding(self):
+        """Add a zero-initialized resolution embedding. Zero init keeps step 0 identical to the model without it."""
+        if self.resolution_embedding is not None:
+            return
+        ref = self.x_embedder.weight
+        self.resolution_embedding = nn.Embedding(2, self.inner_dim).to(device=ref.device, dtype=ref.dtype)
+        nn.init.zeros_(self.resolution_embedding.weight)
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -735,6 +766,17 @@ class Flux2DiTFoveated(torch.nn.Module):
         hidden_states = self.x_embedder(hidden_states)
         encoder_hidden_states = self.context_embedder(encoder_hidden_states)
 
+        if resolution_mask is not None and resolution_mask.ndim == 2:
+            resolution_mask = resolution_mask[0]
+
+        # 2b. Optional learned resolution embedding (ablation). No mask = all tokens HR.
+        if self.resolution_embedding is not None:
+            if resolution_mask is None:
+                res_idx = torch.ones(hidden_states.shape[1], dtype=torch.long, device=hidden_states.device)
+            else:
+                res_idx = (resolution_mask > 0.5).long()
+            hidden_states = hidden_states + self.resolution_embedding(res_idx).unsqueeze(0).to(hidden_states.dtype)
+
         # 3. Calculate RoPE embeddings with phase alignment for foveation
         if img_ids.ndim == 3:
             img_ids = img_ids[0]
@@ -756,9 +798,11 @@ class Flux2DiTFoveated(torch.nn.Module):
         rope_cos_lr, rope_sin_lr = self.pos_embed(ids_lr)
 
         # Pack into structure for CRPA Processor
-        if resolution_mask is not None:
-            if resolution_mask.ndim == 2:
-                resolution_mask = resolution_mask[0]
+        if resolution_mask is not None and self.rope_mode == "standard":
+            # Ablation: no phase alignment. Joint attention with the HR-grid ids as built
+            # by the pipeline (the processors' res_mask=None branch).
+            image_rotary_emb = ((rope_cos_hr, rope_sin_hr), None, None, None)
+        elif resolution_mask is not None:
             # Create text mask (all ones - text is always "high-res")
             txt_mask = torch.ones(txt_ids.shape[0], device=resolution_mask.device, dtype=resolution_mask.dtype)
             full_res_mask = torch.cat((txt_mask, resolution_mask), dim=0).bool()
@@ -809,3 +853,74 @@ class Flux2DiTFoveated(torch.nn.Module):
         output = self.proj_out(hidden_states)
 
         return output
+
+
+# =====================================================================
+# Checkpoint <-> architecture config
+# =====================================================================
+
+def foveation_arch_metadata(dit: "Flux2DiTFoveated") -> Dict[str, str]:
+    """String metadata to write into a checkpoint trained with this DiT."""
+    return {
+        META_ROPE_MODE: dit.rope_mode,
+        META_RES_EMBED: "true" if dit.resolution_embedding is not None else "false",
+    }
+
+
+def read_foveation_arch(path: str) -> Dict[str, Any]:
+    """Read the architecture config of a .safetensors checkpoint.
+
+    Returns {"rope_mode", "resolution_embedding", "has_metadata", "embedding"}. A checkpoint
+    without metadata (every pre-rebuttal checkpoint) reads as phase_aligned, no embedding.
+    """
+    from safetensors import safe_open
+    with safe_open(path, framework="pt") as f:
+        meta = f.metadata() or {}
+        keys = set(f.keys())
+        embedding = f.get_tensor(RES_EMBED_KEY) if RES_EMBED_KEY in keys else None
+    has_metadata = META_ROPE_MODE in meta or META_RES_EMBED in meta
+    rope_mode = meta.get(META_ROPE_MODE, "phase_aligned")
+    res_embed = meta.get(META_RES_EMBED, "false").lower() == "true"
+    if rope_mode not in ROPE_MODES:
+        raise ValueError(f"{path}: unknown {META_ROPE_MODE}={rope_mode!r}")
+    if res_embed != (embedding is not None):
+        raise ValueError(
+            f"{path}: metadata says resolution_embedding={res_embed}, but the tensor "
+            f"{RES_EMBED_KEY} is {'present' if embedding is not None else 'missing'}"
+        )
+    return {"rope_mode": rope_mode, "resolution_embedding": res_embed,
+            "has_metadata": has_metadata, "embedding": embedding}
+
+
+def configure_foveation_arch_from_checkpoint(
+    dit: "Flux2DiTFoveated",
+    path: str,
+    rope_mode: Optional[str] = None,
+    resolution_embedding: Optional[bool] = None,
+) -> Dict[str, Any]:
+    """Set dit.rope_mode and the resolution embedding from a checkpoint.
+
+    rope_mode / resolution_embedding are optional CLI values. They apply only to a
+    checkpoint without metadata; if they disagree with the metadata, this raises, so a
+    wrong flag cannot silently produce a wrong evaluation.
+    """
+    arch = read_foveation_arch(path)
+    for name, cli in (("rope_mode", rope_mode), ("resolution_embedding", resolution_embedding)):
+        if cli is None:
+            continue
+        if arch["has_metadata"] and cli != arch[name]:
+            raise ValueError(f"{path}: --{name}={cli} disagrees with checkpoint metadata {name}={arch[name]}")
+        if not arch["has_metadata"]:
+            if name == "resolution_embedding" and cli and arch["embedding"] is None:
+                raise ValueError(f"{path}: --resolution_embedding true, but the checkpoint has no {RES_EMBED_KEY}")
+            arch[name] = cli
+    dit.set_rope_mode(arch["rope_mode"])
+    if arch["resolution_embedding"]:
+        dit.enable_resolution_embedding()
+        w = dit.resolution_embedding.weight
+        dit.resolution_embedding.weight.data.copy_(arch["embedding"].to(device=w.device, dtype=w.dtype))
+    elif dit.resolution_embedding is not None:
+        raise ValueError(f"{path}: checkpoint has no resolution embedding, but the DiT already has one")
+    print(f"<foveation arch> rope_mode={dit.rope_mode} resolution_embedding={arch['resolution_embedding']} "
+          f"(from {'metadata' if arch['has_metadata'] else 'defaults/CLI'}: {path})")
+    return arch

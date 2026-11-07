@@ -3,6 +3,9 @@ import yaml
 from diffsynth.core import UnifiedDataset
 from diffsynth.pipelines.flux2_image_foveated import Flux2FoveatedImagePipeline
 from diffsynth.pipelines.flux2_image import ModelConfig
+from diffsynth.models.flux2_dit_foveated import (
+    ROPE_MODES, foveation_arch_metadata, configure_foveation_arch_from_checkpoint,
+)
 from diffsynth.diffusion import *
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -134,6 +137,8 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         is_foveated_pipeline=True,
         foveated_training_mode="random",
         lr_downsample_factor=2,
+        rope_mode="phase_aligned",
+        resolution_embedding=False,
     ):
         super().__init__()
         # Load models
@@ -171,6 +176,12 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         self._main_trainable = [p for p in (trainable_models.split(",") if trainable_models else []) + ([lora_base_model] if lora_base_model else [])]
         self._token_ae_trainable = ["token_upsampler", "token_downsampler"] if (token_upsampler is not None and token_downsampler is not None) else []
 
+        # Architecture ablations (ICLR 2027 rebuttal). Set before LoRA injection.
+        self.pipe.dit.set_rope_mode(rope_mode)
+        if resolution_embedding:
+            self.pipe.dit.enable_resolution_embedding()
+        print("<Flux2FoveatedImageTrainingModule> ===> rope_mode={}, resolution_embedding={}".format(rope_mode, resolution_embedding))
+
         # Training mode
         self.switch_pipe_to_training_mode(
             self.pipe, effective_trainable,
@@ -178,6 +189,12 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
             preset_lora_path, preset_lora_model,
             task=task,
         )
+        # LoRA injection freezes every non-adapter DiT parameter. Re-enable the embedding,
+        # so it trains with the LoRA (same optimizer and lr) and lands in the checkpoint.
+        if resolution_embedding:
+            self.pipe.dit.resolution_embedding.requires_grad_(True)
+            if lora_checkpoint is not None:
+                configure_foveation_arch_from_checkpoint(self.pipe.dit, lora_checkpoint)
         
         # Other configs
         self.use_gradient_checkpointing = use_gradient_checkpointing
@@ -258,6 +275,10 @@ class Flux2FoveatedImageTrainingModule(DiffusionTrainingModule):
         }
         inputs_shared = self.parse_extra_inputs(data, self.extra_inputs, inputs_shared)
         return inputs_shared, inputs_posi, inputs_nega
+
+    def checkpoint_metadata(self):
+        """safetensors metadata: the DiT architecture config the checkpoint needs at inference."""
+        return foveation_arch_metadata(self.pipe.dit)
 
     def export_trainable_state_dict(self, state_dict, remove_prefix=None):
         """Export trainable state dict, excluding token upsampler/downsampler (saved separately)."""
@@ -512,6 +533,12 @@ def flux2_parser():
         ),
     )
 
+    # Architecture ablations (ICLR 2027 rebuttal). Written to checkpoint metadata.
+    parser.add_argument("--rope_mode", type=str, default="phase_aligned", choices=list(ROPE_MODES),
+                        help="phase_aligned = paper (CRPA). standard = joint attention, HR-grid RoPE ids for every token.")
+    parser.add_argument("--resolution_embedding", action="store_true",
+                        help="Add a learned, zero-initialized HR/LR embedding to image tokens after x_embedder.")
+
     return parser
 
 
@@ -566,6 +593,8 @@ if __name__ == "__main__":
         is_foveated_pipeline=args.is_foveated_pipeline,
         foveated_training_mode=getattr(args, "foveated_training_mode", "random"),
         lr_downsample_factor=args.lr_downsample_factor,
+        rope_mode=args.rope_mode,
+        resolution_embedding=args.resolution_embedding,
     )
     # Create logger (WandB or standard)
     if args.use_wandb:

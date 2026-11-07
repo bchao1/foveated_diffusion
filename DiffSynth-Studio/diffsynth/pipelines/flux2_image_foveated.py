@@ -1490,6 +1490,10 @@ class Flux2FoveatedUnit_InputImageEmbedder(PipelineUnit):
         """
         mode = getattr(pipe, "foveated_training_mode", "saliency")
 
+        # random/fixed training draws its mask in the loss; skip the unused saliency pass.
+        if mode in ("random", "fixed"):
+            return None
+
         if mode == "bbox":
             # Run YOLO detector directly on the input image to obtain bboxes,
             # then convert them to a foveation mask using the exact same logic

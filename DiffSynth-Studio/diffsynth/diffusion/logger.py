@@ -92,7 +92,12 @@ class ModelLogger:
             state_dict = self.state_dict_converter(state_dict)
             os.makedirs(self.output_path, exist_ok=True)
             path = os.path.join(self.output_path, file_name)
-            accelerator.save(state_dict, path, safe_serialization=True)
+            metadata = unwrapped.checkpoint_metadata() if hasattr(unwrapped, "checkpoint_metadata") else None
+            if metadata:
+                from safetensors.torch import save_file
+                save_file({k: v.detach().contiguous().cpu() for k, v in state_dict.items()}, path, metadata=metadata)
+            else:
+                accelerator.save(state_dict, path, safe_serialization=True)
             # Save token upsampler/downsampler to tokenAE subdirectory if applicable
             if hasattr(unwrapped, "save_token_ae") and callable(getattr(unwrapped, "save_token_ae")):
                 token_ae_path = os.path.join(self.output_path, "tokenAE")
